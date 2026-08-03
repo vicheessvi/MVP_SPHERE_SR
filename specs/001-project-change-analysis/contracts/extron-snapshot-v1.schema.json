@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mvp-sphere-sr.local/schemas/extron-snapshot-v1.schema.json",
+  "title": "MVP_SPHERE_SR Extron Snapshot v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "snapshotId",
+    "capturedAt",
+    "collectorVersion",
+    "sourceSystem",
+    "completeness",
+    "ip",
+    "ok",
+    "webBlocks"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "snapshotId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "collectorVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceSystem": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectId": {
+      "type": ["string", "null"]
+    },
+    "roomId": {
+      "type": ["string", "null"]
+    },
+    "completeness": {
+      "$ref": "#/$defs/completeness"
+    },
+    "ip": {
+      "type": "string",
+      "format": "ipv4"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "failedStage": {
+      "type": ["string", "null"]
+    },
+    "ping": {
+      "type": "object",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "returnCode": { "type": "integer" },
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" }
+      },
+      "required": ["ok"],
+      "additionalProperties": true
+    },
+    "preAuthWarmup": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "loginAttempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "username": { "type": "string" },
+          "ok": { "type": "boolean" }
+        },
+        "required": ["ok"],
+        "additionalProperties": true
+      }
+    },
+    "successfulCredential": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "webInterface": {
+      "type": "object",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "evidence": { "type": "string" },
+        "markers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/httpCheck" }
+        }
+      },
+      "required": ["ok"],
+      "additionalProperties": true
+    },
+    "webBlocks": {
+      "type": "object",
+      "required": ["Firmware", "Project Info", "LAN Settings"],
+      "properties": {
+        "Firmware": {
+          "type": "object",
+          "required": ["Version"],
+          "properties": {
+            "Version": { "type": ["string", "null"] },
+            "Last Updated": { "type": ["string", "null"] },
+            "Raw": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "Project Info": {
+          "type": "object",
+          "required": ["Project", "Connected Devices"],
+          "properties": {
+            "Project": { "type": ["string", "null"] },
+            "Version": { "type": ["string", "null"] },
+            "Creation Date": { "type": ["string", "null"] },
+            "Revision Date": { "type": ["string", "null"] },
+            "Saved with": { "type": ["string", "null"] },
+            "Target Firmware": { "type": ["string", "null"] },
+            "Author": { "type": ["string", "null"] },
+            "Controller Type": { "type": ["string", "null"] },
+            "GV Host": { "type": ["string", "boolean", "null"] },
+            "Connected Devices": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/device" }
+            },
+            "TLP Project": {
+              "type": ["object", "null"],
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "Device Status": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "LAN Settings": {
+          "type": "object",
+          "properties": {
+            "DHCP": { "type": ["string", "boolean", "null"] },
+            "Host Name": { "type": ["string", "null"] },
+            "IP Address": { "type": ["string", "null"] },
+            "Subnet Mask": { "type": ["string", "null"] },
+            "Gateway": { "type": ["string", "null"] },
+            "DNS Server": { "type": ["string", "array", "null"] },
+            "MAC Address": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "GUI": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "device": { "type": ["string", "null"] },
+              "addr": { "type": ["string", "null"] },
+              "gui": { "type": ["string", "null"] },
+              "status": { "type": ["string", "null"] },
+              "evidence": { "type": ["string", "null"] },
+              "configLayout": {
+                "type": ["object", "null"],
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "readMode": {
+      "type": ["string", "null"]
+    },
+    "diagnostics": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "validEmails": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "email"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "sectionStatus": {
+      "enum": ["complete", "partial", "failed", "unknown"]
+    },
+    "completeness": {
+      "type": "object",
+      "required": [
+        "project",
+        "controller",
+        "devices",
+        "network",
+        "firmware",
+        "gui",
+        "runtime",
+        "diagnostics"
+      ],
+      "properties": {
+        "project": { "$ref": "#/$defs/sectionStatus" },
+        "controller": { "$ref": "#/$defs/sectionStatus" },
+        "devices": { "$ref": "#/$defs/sectionStatus" },
+        "network": { "$ref": "#/$defs/sectionStatus" },
+        "firmware": { "$ref": "#/$defs/sectionStatus" },
+        "gui": { "$ref": "#/$defs/sectionStatus" },
+        "runtime": { "$ref": "#/$defs/sectionStatus" },
+        "diagnostics": { "$ref": "#/$defs/sectionStatus" }
+      },
+      "additionalProperties": false
+    },
+    "device": {
+      "type": "object",
+      "properties": {
+        "inventoryId": { "type": ["string", "null"] },
+        "serialNumber": { "type": ["string", "null"] },
+        "addr": { "type": ["string", "null"] },
+        "macAddress": { "type": ["string", "null"] },
+        "modelname": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "partnum": { "type": ["string", "null"] },
+        "vtlpweb": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "default": { "type": "boolean" },
+              "type": { "type": "string" },
+              "url": { "type": "string" },
+              "version": { "type": ["integer", "string"] }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "httpCheck": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string" },
+        "statusCode": { "type": "integer" },
+        "httpVersion": { "type": ["string", "null"] },
+        "contentType": { "type": ["string", "null"] },
+        "contentLength": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

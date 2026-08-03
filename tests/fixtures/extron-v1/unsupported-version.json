@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "9.0",
+  "snapshotId": "90000000-0000-4000-8000-000000000001",
+  "capturedAt": "2026-08-01T06:00:00Z",
+  "collectorVersion": "9.0.0-test",
+  "sourceSystem": "synthetic-fixture",
+  "completeness": { "project": "complete", "controller": "complete", "devices": "complete", "network": "complete", "firmware": "complete", "gui": "complete", "runtime": "complete", "diagnostics": "complete" },
+  "ip": "192.0.2.10",
+  "ok": true,
+  "webBlocks": { "Firmware": { "Version": "9" }, "Project Info": { "Project": "Unsupported.gcp", "Connected Devices": [] }, "LAN Settings": {} }
+}

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MVP_SPHERE_SR — browser tests</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <div>
+          <h1>Browser regression tests</h1>
+          <p class="page-subtitle">Dependency-free проверки state, импорта, matching, timeline, baseline, review и сравнений.</p>
+        </div>
+        <a class="button secondary" href="index.html">Открыть приложение</a>
+      </header>
+      <section class="card" aria-labelledby="test-summary-title">
+        <h2 id="test-summary-title">Результат</h2>
+        <div id="test-summary" class="info-panel" role="status">Выполняются проверки…</div>
+        <ol id="test-results" class="data-list"></ol>
+      </section>
+      <section class="card section-stack">
+        <h2>Покрытие Foundation + US1–US4</h2>
+        <ul>
+          <li>state initialization, schema validation и referential integrity;</li>
+          <li>atomic storage save, quota preflight и rollback;</li>
+          <li>corrupt-state preservation;</li>
+          <li>JSON backup validation и round-trip;</li>
+          <li>demo roles и safe HTML escaping.</li>
+          <li>Extron v1/legacy contracts, SHA-256 duplicate guard и raw-size limit;</li>
+          <li>normalization, project/device identity, completeness-safe removal;</li>
+          <li>end-to-end intake → persist → previous comparison.</li>
+          <li>capturedAt ordering, deterministic ties и current state;</li>
+          <li>idempotent selected comparison и late-snapshot graph reflow.</li>
+          <li>single active baseline, replacement history и confirmations;</li>
+          <li>persistent drift и expiration-pending guard.</li>
+          <li>полный Change Event contract и восемь event filters;</li>
+          <li>append-only reviews, role matrix и controlled match recalculation.</li>
+        </ul>
+      </section>
+    </main>
+    <script src="app.js"></script>
+    <script src="tests/fixtures/expectations.js"></script>
+    <script src="tests/fixtures/timeline-expectations.js"></script>
+    <script src="tests/fixtures/baseline-expectations.js"></script>
+    <script src="tests.js"></script>
+  </body>
+</html>

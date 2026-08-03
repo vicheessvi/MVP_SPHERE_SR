@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "1.0",
+  "snapshotId": "10000000-0000-4000-8000-000000000001",
+  "capturedAt": "2026-06-01T06:00:00Z",
+  "collectorVersion": "1.0.0-test",
+  "sourceSystem": "synthetic-fixture",
+  "projectId": "room-101",
+  "completeness": {
+    "project": "complete",
+    "controller": "complete",
+    "devices": "complete",
+    "network": "complete",
+    "firmware": "complete",
+    "gui": "complete",
+    "runtime": "partial",
+    "diagnostics": "partial"
+  },
+  "ip": "10.20.30.10",
+  "ok": true,
+  "webBlocks": {
+    "Firmware": { "Version": "3.2.1", "Last Updated": "2026-05-20" },
+    "Project Info": {
+      "Project": "Meeting Room 101.gcp",
+      "Version": "1.4",
+      "Connected Devices": [
+        {
+          "inventoryId": "panel-main",
+          "serialNumber": "TP-0001",
+          "addr": "10.20.30.21",
+          "macAddress": "00:11:22:33:44:55",
+          "modelname": "TLP Pro 725T",
+          "name": "Main Panel",
+          "partnum": "60-1563-02",
+          "vtlpweb": [{ "default": true, "type": "touchlink", "url": "/gui/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "version": 7 }]
+        },
+        {
+          "inventoryId": "panel-wall",
+          "serialNumber": "TP-0002",
+          "addr": "10.20.30.22",
+          "macAddress": "00:11:22:33:44:66",
+          "modelname": "TLP Pro 525T",
+          "name": "Wall Panel",
+          "partnum": "60-1564-02",
+          "vtlpweb": []
+        }
+      ],
+      "TLP Project": {
+        "modelname": "IPCP Pro 350",
+        "partnumber": "60-1384-01",
+        "serialNumber": "CTRL-0001",
+        "systemdevs": [
+          { "inventoryId": "panel-main", "serialNumber": "TP-0001", "addr": "10.20.30.21", "macAddress": "00:11:22:33:44:55", "modelname": "TLP Pro 725T", "name": "Main Panel", "partnum": "60-1563-02" },
+          { "inventoryId": "panel-wall", "serialNumber": "TP-0002", "addr": "10.20.30.22", "macAddress": "00:11:22:33:44:66", "modelname": "TLP Pro 525T", "name": "Wall Panel", "partnum": "60-1564-02" }
+        ]
+      }
+    },
+    "LAN Settings": {
+      "DHCP": false,
+      "Host Name": "room-101-controller",
+      "IP Address": "10.20.30.10",
+      "Subnet Mask": "255.255.255.0",
+      "Gateway": "10.20.30.1",
+      "DNS Server": ["10.20.0.2", "10.20.0.3"],
+      "MAC Address": "AA:BB:CC:DD:EE:01"
+    },
+    "GUI": []
+  }
+}

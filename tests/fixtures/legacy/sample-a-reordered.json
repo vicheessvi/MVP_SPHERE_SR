@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "ip": "10.22.187.2",
+  "outputFile": "2026-06-01_09-41-28/10.22.187.2.json",
+  "webBlocks": {
+    "LAN Settings": { "MAC Address": "aa:bb:cc:dd:ee:10", "DNS Server": "10.22.0.2", "Gateway": "10.22.187.1", "Subnet Mask": "255.255.255.0", "IP Address": "10.22.187.2", "Host Name": " LEGACY-CONTROLLER ", "DHCP": false },
+    "Project Info": {
+      "TLP Project": { "systemdevs": [{ "partnum": "60-1563-02", "name": " Legacy   Panel ", "modelname": "TLP Pro 725T", "macAddress": "11-22-33-44-55-66", "addr": "10.22.187.5" }], "partnumber": "60-1384-01", "modelname": "IPCP Pro 350" },
+      "Connected Devices": [{ "vtlpweb": [{ "version": 3, "url": "/gui/11111111-2222-4333-8444-555555555555", "type": "touchlink", "default": true }], "partnum": "60-1563-02", "name": " Legacy Panel ", "modelname": "TLP Pro 725T", "macAddress": "11-22-33-44-55-66", "addr": "10.22.187.5" }],
+      "Version": "4.2",
+      "Project": " Legacy Room.gcp "
+    },
+    "Firmware": { "Version": " 2.7.0 " },
+    "GUI": []
+  },
+  "webInterface": { "markers": ["Extron"], "evidence": "Extron control processor", "ok": true },
+  "diagnostics": { "missingOrErroredFields": ["collectorVersion"] }
+}

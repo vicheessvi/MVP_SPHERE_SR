@@ -1,0 +1,13 @@
+# Local editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.tmp
+*.swp
+*.log
+
+# Local-only configuration and generated backups
+.env*
+*.local.json
+mvp-sphere-sr-backup-*.json
