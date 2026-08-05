@@ -9,6 +9,7 @@
 - Архитектура приложения: автономный browser-only MVP, прямой запуск `index.html`
 - Constitution: версия 1.0.0 в `.specify/memory/constitution.md`
 - Текущий этап: MVP и acceptance завершены; задачи `T001`–`T060` закрыты
+- Demo-login session: только `sessionStorage`; persistent state и backup всегда имеют `currentUserId: null`
 
 ## Как должен работать ИИ-агент
 

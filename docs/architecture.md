@@ -10,6 +10,7 @@
 - CSS3;
 - Vanilla JavaScript;
 - browser `localStorage`;
+- browser `sessionStorage` только для текущей demo-сессии;
 - JSON import/export для полного backup;
 - встроенные browser APIs: File API, Blob URL и при доступности Web Crypto.
 
@@ -28,6 +29,8 @@ Backend, база данных, package manager, build step, frontend framework 
 ## Модель данных
 
 Единый versioned state хранится под ключом `mvpSphereSrState.v1`. Он содержит локальных demo users, projects, immutable-at-application-level snapshots, normalized observations, match decisions, change sets/events, baselines, reviews, retention audit и history.
+
+Текущий demo-пользователь не является частью persistent state: `currentUserId` поддерживается только как legacy schema field и сохраняется со значением `null`. Идентификатор активной вкладки хранится под ключом `mvpSphereSrSession.v1` в `sessionStorage`, поэтому закрытие вкладки завершает demo-сессию.
 
 Полная модель описана в `specs/001-project-change-analysis/data-model.md`.
 
@@ -52,8 +55,8 @@ Retention выполняется только при запуске страни
 
 Browser-only MVP не является защищённой системой:
 
-- UI-роли не обеспечивают настоящую авторизацию;
-- `localStorage` доступен пользователю browser profile и DevTools;
+- Demo-вход и UI-роли не обеспечивают защищённую авторизацию;
+- `sessionStorage` и `localStorage` доступны пользователю browser profile и DevTools;
 - данные могут быть потеряны при очистке storage;
 - raw snapshot и history не имеют tamper-resistant защиты;
 - использовать можно только synthetic/sanitized или явно разрешённые локальные данные.
@@ -68,7 +71,7 @@ Browser-only MVP не является защищённой системой:
 - проверка прямого запуска `index.html` в согласованном desktop browser;
 - проверка backup/restore, quota failure и поведения после reload.
 
-Текущий automated набор: 58/58 PASS, включая контроль 10 snapshots × 100 devices с суммарным raw input не более 3 МиБ и пределом обработки 10 секунд. Пользователь подтвердил фактический `file://` launch и работоспособность приложения в desktop browser; browser/version не указаны.
+Текущий automated набор: 61/61 PASS, включая lifecycle demo-сессии и контроль 10 snapshots × 100 devices с суммарным raw input не более 3 МиБ и пределом обработки 10 секунд. Пользователь подтвердил фактический `file://` launch базовой версии; после изменения session lifecycle требуется целевая проверка закрытия и повторного открытия вкладки.
 
 ## Деплой
 

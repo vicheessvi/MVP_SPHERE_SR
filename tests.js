@@ -94,6 +94,7 @@
     assert(api, "MvpSphereSR API отсутствует");
     assertEqual(api.STATE_VERSION, 1);
     assertEqual(api.STORAGE_KEY, "mvpSphereSrState.v1");
+    assertEqual(api.SESSION_KEY, "mvpSphereSrSession.v1");
   });
 
   test("Demo state содержит все обязательные массивы", () => {
@@ -133,6 +134,33 @@
     const loaded = api.loadState(storage);
     assertEqual(loaded.state.settings.retentionDays, 365);
     assertEqual(loaded.recovery, null);
+  });
+
+  test("Demo login session хранится отдельно в sessionStorage", () => {
+    const state = api.createDemoState();
+    const sessionStorage = new MemoryStorage();
+    const saved = api.writeSessionUserId(state, "user-administrator", sessionStorage);
+    assert(saved.ok, saved.errors?.join("; "));
+    assertEqual(sessionStorage.getItem(api.SESSION_KEY), "user-administrator");
+    assertEqual(api.readSessionUserId(state, sessionStorage), "user-administrator");
+    assertEqual(state.currentUserId, null, "Persistent state не должен содержать session user");
+  });
+
+  test("Новая вкладка без sessionStorage всегда начинает с login screen", () => {
+    const state = api.createDemoState();
+    state.currentUserId = "user-administrator";
+    const cleaned = api.clearPersistedUserSession(state);
+    assertEqual(cleaned.currentUserId, null);
+    assertEqual(state.currentUserId, "user-administrator", "Очистка должна быть immutable");
+    assertEqual(api.readSessionUserId(cleaned, new MemoryStorage()), null);
+  });
+
+  test("Невалидная или завершённая session очищается", () => {
+    const state = api.createDemoState();
+    const sessionStorage = new MemoryStorage({ [api.SESSION_KEY]: "missing-user" });
+    assertEqual(api.readSessionUserId(state, sessionStorage), null);
+    assertEqual(sessionStorage.getItem(api.SESSION_KEY), null);
+    assert(api.clearSessionUserId(sessionStorage));
   });
 
   test("Повреждённый JSON не перезаписывается", () => {
@@ -637,7 +665,8 @@
     assert(!api.canPerformAction(state, "user-av-engineer", "reset_state"));
     assert(!api.canPerformAction(state, "user-av-engineer", "manage_users"));
     assert(api.canPerformAction(state, "user-administrator", "reset_state"));
-    assert(api.SECURITY_NOTICE.includes("не является настоящей авторизацией"));
+    assert(api.SECURITY_NOTICE.includes("не являются защищённой авторизацией"));
+    assert(api.SECURITY_NOTICE.includes("sessionStorage"));
     assert(api.SECURITY_NOTICE.includes("localStorage"));
   });
 

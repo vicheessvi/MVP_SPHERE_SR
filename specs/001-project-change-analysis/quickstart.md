@@ -32,6 +32,13 @@
 - Пользователь подтвердил работоспособность запрошенных ручных сценариев; browser/version не указаны.
 - `T059`: **COMPLETE**.
 
+### Session lifecycle update — 2026-08-04
+
+- Automated suite после переноса demo-session в `sessionStorage`: **61/61 PASS**.
+- Persistent `localStorage` state и JSON backup не содержат активного пользователя (`currentUserId: null`).
+- Старый сохранённый `currentUserId` очищается при первом запуске обновлённой версии.
+- Targeted manual recheck: открыть приложение, войти, перезагрузить вкладку (вход должен сохраниться), закрыть вкладку и открыть `index.html` снова (должна появиться форма входа).
+
 ## Required synthetic fixtures
 
 ```text

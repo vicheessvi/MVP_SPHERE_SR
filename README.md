@@ -13,6 +13,8 @@ Demo-учётные записи:
 - AV-инженер: `engineer` / `engineer`
 - Администратор: `admin` / `admin`
 
+Demo-сессия хранится только в `sessionStorage`: перезагрузка текущей вкладки сохраняет вход, а новое открытие после закрытия вкладки снова показывает форму входа. Проекты и snapshots продолжают храниться отдельно в `localStorage`.
+
 Dependency-free проверки открываются через `tests.html`.
 
 ## Первый сценарий
@@ -35,7 +37,7 @@ Retention по умолчанию составляет 1095 дней, прове
 
 ## Важно про безопасность
 
-Browser-only MVP предназначен для synthetic/sanitized demo data. `localStorage`, локальные роли и history не обеспечивают настоящую информационную безопасность или tamper-resistant audit trail. Реальные чувствительные инфраструктурные данные требуют отдельной production-архитектуры.
+Browser-only MVP предназначен для synthetic/sanitized demo data. `sessionStorage`, `localStorage`, локальные роли и history не обеспечивают настоящую информационную безопасность или tamper-resistant audit trail. Реальные чувствительные инфраструктурные данные требуют отдельной production-архитектуры.
 
 Временные исключения из принципов I и VI constitution, их владелец, компенсации и условие устранения зафиксированы в `docs/decisions/ADR-0003-browser-only-demo-stack.md`.
 

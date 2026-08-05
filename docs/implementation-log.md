@@ -493,3 +493,34 @@ UI получил skip-link, расширенный keyboard focus, тексто
 
 - Для новых крупных или рискованных изменений использовать новый Full SpecKit cycle.
 - До работы с реальными чувствительными данными выполнить exit condition из ADR-0003.
+
+## 2026-08-04 — Demo-сессия отделена от persistent state
+
+### Итог
+
+По принятому SpecKit-lite изменению устранён автоматический вход после повторного открытия файла. Demo-пользователь хранится только в `sessionStorage` до закрытия вкладки; `localStorage` и JSON backup содержат `currentUserId: null`. При первом запуске обновлённой версии legacy session из persistent state очищается безопасной полной записью state.
+
+Предупреждение интерфейса уточнено: demo-вход включён, но не является защищённой авторизацией.
+
+### Что входит
+
+- восстановление demo-сессии после reload текущей вкладки;
+- завершение сессии при закрытии вкладки или явном выходе;
+- очистка session при reset, corrupt-state reset и backup import;
+- регрессионные тесты session lifecycle.
+
+### Что не входит
+
+- backend-аутентификация, шифрование, защищённые cookies или production access control.
+
+### Проверки
+
+- JavaScript syntax: PASS.
+- Dependency-free regression/performance suite: 61/61 PASS.
+- Persistent state/backup session isolation: PASS.
+- Targeted direct-open recheck после закрытия вкладки: ожидает подтверждения пользователя.
+
+### Риски / дальнейшие шаги
+
+- `sessionStorage` и demo credentials доступны пользователю browser profile; это остаётся UI-механизмом, а не security boundary.
+- Для настоящей авторизации требуется новый Full SpecKit cycle и изменение архитектуры согласно exit condition ADR-0003.

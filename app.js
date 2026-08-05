@@ -6,12 +6,13 @@
   // ---------------------------------------------------------------------------
 
   const STORAGE_KEY = "mvpSphereSrState.v1";
+  const SESSION_KEY = "mvpSphereSrSession.v1";
   const BACKUP_SCHEMA = "mvp-sphere-sr-backup";
   const STATE_VERSION = 1;
   const DEFAULT_RETENTION_DAYS = 1095;
   const DEFAULT_MAX_STATE_BYTES = 4 * 1024 * 1024;
   const DEFAULT_MAX_RAW_INPUT_BYTES = 3 * 1024 * 1024;
-  const SECURITY_NOTICE = "Локальная demo-роль не является настоящей авторизацией; localStorage доступен пользователю browser profile. Используйте только synthetic/sanitized данные.";
+  const SECURITY_NOTICE = "Demo-вход и роли не являются защищённой авторизацией; sessionStorage и localStorage доступны пользователю browser profile. Используйте только synthetic/sanitized данные.";
 
   const COMMON_ACTIONS = Object.freeze([
     "view",
@@ -387,6 +388,66 @@
         },
         created: false
       };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ephemeral demo session (separate from persistent project state)
+  // ---------------------------------------------------------------------------
+
+  function clearPersistedUserSession(state) {
+    const next = deepClone(state);
+    next.currentUserId = null;
+    return next;
+  }
+
+  function resolveSessionStorage(storage) {
+    if (storage) return storage;
+    try {
+      return global.sessionStorage || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function readSessionUserId(state, storage) {
+    const targetStorage = resolveSessionStorage(storage);
+    if (!targetStorage || typeof targetStorage.getItem !== "function") return null;
+    try {
+      const userId = targetStorage.getItem(SESSION_KEY);
+      const valid = state.users.some((user) => user.id === userId && user.active);
+      if (valid) return userId;
+      if (userId !== null && typeof targetStorage.removeItem === "function") targetStorage.removeItem(SESSION_KEY);
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function writeSessionUserId(state, userId, storage) {
+    const targetStorage = resolveSessionStorage(storage);
+    if (!state.users.some((user) => user.id === userId && user.active)) {
+      return { ok: false, errors: ["Demo-пользователь для session не найден или неактивен"] };
+    }
+    if (!targetStorage || typeof targetStorage.setItem !== "function") {
+      return { ok: false, errors: ["sessionStorage недоступен"] };
+    }
+    try {
+      targetStorage.setItem(SESSION_KEY, userId);
+      return { ok: true, errors: [] };
+    } catch (error) {
+      return { ok: false, errors: [String(error.message || error)] };
+    }
+  }
+
+  function clearSessionUserId(storage) {
+    const targetStorage = resolveSessionStorage(storage);
+    if (!targetStorage || typeof targetStorage.removeItem !== "function") return false;
+    try {
+      targetStorage.removeItem(SESSION_KEY);
+      return true;
+    } catch (error) {
+      return false;
     }
   }
 
@@ -1991,6 +2052,7 @@
 
   const api = Object.freeze({
     STORAGE_KEY,
+    SESSION_KEY,
     BACKUP_SCHEMA,
     STATE_VERSION,
     DEFAULT_MAX_STATE_BYTES,
@@ -2003,6 +2065,8 @@
     applyRetention,
     assignBaseline,
     canPerformAction,
+    clearPersistedUserSession,
+    clearSessionUserId,
     createBackup,
     createDemoState,
     createSelectedComparison,
@@ -2035,11 +2099,13 @@
     normalizeText,
     normalizeUnordered,
     resolveMatchDecision,
+    readSessionUserId,
     saveState,
     sha256Text,
     validateBackup,
     validateExtronV1,
-    validateState
+    validateState,
+    writeSessionUserId
   });
 
   global.MvpSphereSR = api;
@@ -2056,6 +2122,16 @@
   let state = loaded.state;
   let recovery = loaded.recovery;
   let startupMessage = null;
+  const sessionStorageRef = resolveSessionStorage();
+  if (!recovery && state.currentUserId !== null) {
+    const cleaned = clearPersistedUserSession(state);
+    const saved = saveState(cleaned, global.localStorage);
+    state = cleaned;
+    if (!saved.ok) {
+      startupMessage = { text: `Legacy login-session не удалена из persistent state: ${saved.errors.join("; ")}`, type: "warning" };
+    }
+  }
+  let sessionUserId = recovery ? null : readSessionUserId(state, sessionStorageRef);
   if (!recovery) {
     const retained = applyRetention(state, { actorId: "system", reason: "Startup retention" });
     if (!retained.ok) {
@@ -2091,7 +2167,7 @@
   render();
 
   function currentUser() {
-    return state.users.find((user) => user.id === state.currentUserId && user.active) || null;
+    return state.users.find((user) => user.id === sessionUserId && user.active) || null;
   }
 
   function setMessage(text, type) {
@@ -2843,6 +2919,8 @@
         action: "Выход из demo-интерфейса",
         entityType: "session"
       });
+      clearSessionUserId(sessionStorageRef);
+      sessionUserId = null;
       ui.route = "dashboard";
       commitState(next);
       return;
@@ -2870,6 +2948,8 @@
       }
       if (global.confirm("Сбросить весь локальный state и вернуть demo-данные? Сначала экспортируйте backup.")) {
         const fresh = createDemoState();
+        clearSessionUserId(sessionStorageRef);
+        sessionUserId = null;
         commitState(fresh, "Demo-state сброшен.");
       }
       return;
@@ -2883,6 +2963,8 @@
     if (event.target.closest("[data-reset-corrupt]")) {
       if (global.confirm("Безвозвратно заменить повреждённое значение чистым demo-state?")) {
         const fresh = createDemoState();
+        clearSessionUserId(sessionStorageRef);
+        sessionUserId = null;
         if (commitState(fresh, "Повреждённое состояние заменено demo-state.")) recovery = null;
       }
     }
@@ -3120,7 +3202,7 @@
       return;
     }
     let next = deepClone(state);
-    next.currentUserId = user.id;
+    next.currentUserId = null;
     if (!next.settings.demoWarningAcceptedAt) next.settings.demoWarningAcceptedAt = nowIso();
     next = appendHistory(next, {
       actorId: user.id,
@@ -3128,8 +3210,19 @@
       action: "Вход в demo-интерфейс",
       entityType: "session"
     });
+    const sessionResult = writeSessionUserId(next, user.id, sessionStorageRef);
+    if (!sessionResult.ok) {
+      setMessage(`Demo-session не создана: ${sessionResult.errors.join("; ")}`, "error");
+      render();
+      return;
+    }
+    sessionUserId = user.id;
     ui.route = "dashboard";
-    commitState(next);
+    if (!commitState(next)) {
+      clearSessionUserId(sessionStorageRef);
+      sessionUserId = null;
+      render();
+    }
   }
 
   function readFileText(file) {
@@ -3217,6 +3310,8 @@
         setMessage(`Backup не импортирован: ${result.errors.join("; ")}`, "error");
       } else {
         state = result.state;
+        clearSessionUserId(sessionStorageRef);
+        sessionUserId = null;
         setMessage("Backup успешно импортирован. Войдите повторно.", "success");
         ui.route = "dashboard";
       }
