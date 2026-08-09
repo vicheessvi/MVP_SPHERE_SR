@@ -5,14 +5,16 @@
   // Constants and state schema
   // ---------------------------------------------------------------------------
 
-  const STORAGE_KEY = "mvpSphereSrState.v1";
+  const STORAGE_KEY = "mvpSphereSrState.v3";
+  const LEGACY_STORAGE_KEY = "mvpSphereSrState.v2";
   const SESSION_KEY = "mvpSphereSrSession.v1";
   const BACKUP_SCHEMA = "mvp-sphere-sr-backup";
-  const STATE_VERSION = 1;
+  const STATE_VERSION = 3;
   const DEFAULT_RETENTION_DAYS = 1095;
-  const DEFAULT_MAX_STATE_BYTES = 4 * 1024 * 1024;
-  const DEFAULT_MAX_RAW_INPUT_BYTES = 3 * 1024 * 1024;
-  const SECURITY_NOTICE = "Demo-вход и роли не являются защищённой авторизацией; sessionStorage и localStorage доступны пользователю browser profile. Используйте только synthetic/sanitized данные.";
+  const DEFAULT_MAX_STATE_BYTES = Number.MAX_SAFE_INTEGER;
+  const DEFAULT_MAX_RAW_INPUT_BYTES = Number.MAX_SAFE_INTEGER;
+  const DASHBOARD_LIST_LIMIT = 8;
+  const SECURITY_NOTICE = "Данные хранятся локально в зашифрованном runtime-хранилище. Сетевые обращения разрешены только к явно выбранным IP оборудования. Credentials изолированы в OS-bound vault и не входят в аналитику или backup.";
 
   const COMMON_ACTIONS = Object.freeze([
     "view",
@@ -36,13 +38,44 @@
     "baselineAssignments",
     "reviewDecisions",
     "retentionAudits",
-    "history"
+    "history",
+    "srImports",
+    "locations",
+    "inventoryDevices",
+    "pollingRuns",
+    "pollingResults",
+    "deviceChanges",
+    "inventoryIssues"
   ]);
 
-  const ROLE_NAMES = Object.freeze({
-    administrator: "Администратор",
-    av_engineer: "AV-инженер"
-  });
+  const ROLE_NAMES = Object.freeze({ administrator: "Администратор МЦТП" });
+
+  const POLLING_ADAPTERS = Object.freeze([
+    Object.freeze({
+      key: "controller/extron",
+      category: "controller",
+      manufacturerNormalized: "extron",
+      support: "not_implemented",
+      transport: null,
+      normalizerKey: "extron-json-v1",
+      credentialMode: "not_configured"
+    }),
+    Object.freeze({
+      key: "panel/extron",
+      category: "panel",
+      manufacturerNormalized: "extron",
+      support: "not_implemented",
+      transport: null,
+      normalizerKey: "extron-json-v1",
+      credentialMode: "not_configured"
+    })
+  ]);
+
+  const SR_REQUIRED_HEADERS = Object.freeze([
+    "Название комнаты", "Адрес комнаты", "VIP комната", "Тип оборудования",
+    "Наименование", "Модель", "Тип модели", "Производитель", "IP", "MAC",
+    "SIP URI", "Инвентарный номер", "Серийный номер", "VIP оборудование"
+  ]);
 
   // ---------------------------------------------------------------------------
   // Pure helpers
@@ -140,28 +173,17 @@
     const createdAt = nowIso();
     const administrator = {
       id: "user-administrator",
-      name: "Администратор MVP",
-      login: "admin",
-      password: "admin",
+      name: "Администратор МЦТП",
+      login: "administrator",
+      password: null,
       role: "administrator",
       active: true,
       createdAt,
       updatedAt: createdAt
     };
-    const engineer = {
-      id: "user-av-engineer",
-      name: "AV-инженер",
-      login: "engineer",
-      password: "engineer",
-      role: "av_engineer",
-      active: true,
-      createdAt,
-      updatedAt: createdAt
-    };
-
     return {
       version: STATE_VERSION,
-      users: [administrator, engineer],
+      users: [administrator],
       projects: [],
       snapshots: [],
       assets: [],
@@ -170,6 +192,13 @@
       baselineAssignments: [],
       reviewDecisions: [],
       retentionAudits: [],
+      srImports: [],
+      locations: [],
+      inventoryDevices: [],
+      pollingRuns: [],
+      pollingResults: [],
+      deviceChanges: [],
+      inventoryIssues: [],
       history: [
         makeHistoryEntry({
           id: "history-demo-initialized",
@@ -178,7 +207,7 @@
           actorName: administrator.name,
           action: "Инициализировано локальное demo-state",
           entityType: "system",
-          details: "Созданы демонстрационные роли Administrator и AV Engineer"
+          details: "Создана единственная роль Администратор МЦТП"
         })
       ],
       settings: {
@@ -187,7 +216,8 @@
         legacyTimezone: "Europe/Moscow",
         normalizerVersion: "1.0.0",
         severityPolicyVersion: "1.0.0",
-        demoWarningAcceptedAt: null
+        demoWarningAcceptedAt: null,
+        ignoredPollingPaths: []
       },
       currentUserId: null
     };
@@ -203,6 +233,28 @@
   function migrateState(candidate) {
     if (!isPlainObject(candidate)) {
       return { ok: false, errors: ["State должен быть JSON object"] };
+    }
+    if (candidate.version === STATE_VERSION) {
+      return { ok: true, state: deepClone(candidate), migrated: false };
+    }
+    if ([1, 2].includes(candidate.version)) {
+      const next = deepClone(candidate);
+      next.version = STATE_VERSION;
+      ["srImports", "locations", "inventoryDevices", "pollingRuns", "pollingResults", "deviceChanges", "inventoryIssues"].forEach((key) => {
+        if (!Array.isArray(next[key])) next[key] = [];
+      });
+      if (!isPlainObject(next.settings)) next.settings = {};
+      if (!Array.isArray(next.settings.ignoredPollingPaths)) next.settings.ignoredPollingPaths = [];
+      let administrator = (next.users || []).find((user) => user && user.role === "administrator");
+      if (!administrator) administrator = createDemoState().users[0];
+      if (administrator) {
+        administrator.name = "Администратор МЦТП";
+        administrator.active = true;
+        administrator.updatedAt = nowIso();
+      }
+      next.users = [administrator];
+      next.currentUserId = null;
+      return { ok: true, state: next, migrated: true };
     }
     if (candidate.version !== STATE_VERSION) {
       return {
@@ -226,8 +278,13 @@
     });
     if (!isPlainObject(candidate.settings)) {
       errors.push("settings должен быть object");
-    } else if (!Number.isInteger(candidate.settings.retentionDays) || candidate.settings.retentionDays <= 0) {
-      errors.push("settings.retentionDays должен быть положительным целым числом");
+    } else {
+      if (!Number.isInteger(candidate.settings.retentionDays) || candidate.settings.retentionDays <= 0) {
+        errors.push("settings.retentionDays должен быть положительным целым числом");
+      }
+      if (!Array.isArray(candidate.settings.ignoredPollingPaths)) {
+        errors.push("settings.ignoredPollingPaths должен быть массивом");
+      }
     }
 
     if (errors.length) return { ok: false, errors };
@@ -237,12 +294,20 @@
     const projectIds = candidate.projects.map((item) => item && item.id);
     const snapshotIds = candidate.snapshots.map((item) => item && item.id);
     const assetIds = candidate.assets.map((item) => item && item.id);
+    const locationIds = candidate.locations.map((item) => item && item.id);
+    const inventoryDeviceIds = candidate.inventoryDevices.map((item) => item && item.id);
+    const pollingRunIds = candidate.pollingRuns.map((item) => item && item.id);
+    const pollingResultIds = candidate.pollingResults.map((item) => item && item.id);
 
     if (userIds.some((id) => !id) || !unique(userIds)) errors.push("User IDs должны быть заполнены и уникальны");
     if (userLogins.some((login) => !login) || !unique(userLogins)) errors.push("User logins должны быть заполнены и уникальны");
     if (projectIds.some((id) => !id) || !unique(projectIds)) errors.push("Project IDs должны быть заполнены и уникальны");
     if (snapshotIds.some((id) => !id) || !unique(snapshotIds)) errors.push("Snapshot IDs должны быть заполнены и уникальны");
     if (assetIds.some((id) => !id) || !unique(assetIds)) errors.push("Asset IDs должны быть заполнены и уникальны");
+    if (locationIds.some((id) => !id) || !unique(locationIds)) errors.push("Location IDs должны быть заполнены и уникальны");
+    if (inventoryDeviceIds.some((id) => !id) || !unique(inventoryDeviceIds)) errors.push("Inventory Device IDs должны быть заполнены и уникальны");
+    if (pollingRunIds.some((id) => !id) || !unique(pollingRunIds)) errors.push("Polling Run IDs должны быть заполнены и уникальны");
+    if (pollingResultIds.some((id) => !id) || !unique(pollingResultIds)) errors.push("Polling Result IDs должны быть заполнены и уникальны");
 
     candidate.users.forEach((user, index) => {
       if (!isPlainObject(user)) {
@@ -290,6 +355,45 @@
       }
       if (!projectIds.includes(baseline.projectId)) errors.push(`baselineAssignments[${index}].projectId не существует`);
       if (!snapshotIds.includes(baseline.snapshotId)) errors.push(`baselineAssignments[${index}].snapshotId не существует`);
+    });
+
+    candidate.inventoryDevices.forEach((device, index) => {
+      if (!isPlainObject(device)) {
+        errors.push(`inventoryDevices[${index}] должен быть object`);
+        return;
+      }
+      if (device.locationId !== null && device.locationId !== undefined && !locationIds.includes(device.locationId)) {
+        errors.push(`inventoryDevices[${index}].locationId не существует`);
+      }
+    });
+
+    candidate.pollingRuns.forEach((run, index) => {
+      if (!isPlainObject(run)) {
+        errors.push(`pollingRuns[${index}] должен быть object`);
+        return;
+      }
+      (run.deviceIds || []).forEach((deviceId) => {
+        if (!inventoryDeviceIds.includes(deviceId)) errors.push(`pollingRuns[${index}].deviceIds содержит неизвестное устройство`);
+      });
+    });
+
+    candidate.pollingResults.forEach((result, index) => {
+      if (!isPlainObject(result)) {
+        errors.push(`pollingResults[${index}] должен быть object`);
+        return;
+      }
+      if (!pollingRunIds.includes(result.runId)) errors.push(`pollingResults[${index}].runId не существует`);
+      if (result.deviceId !== null && !inventoryDeviceIds.includes(result.deviceId)) errors.push(`pollingResults[${index}].deviceId не существует`);
+    });
+
+    candidate.deviceChanges.forEach((change, index) => {
+      if (!isPlainObject(change)) {
+        errors.push(`deviceChanges[${index}] должен быть object`);
+        return;
+      }
+      if (!inventoryDeviceIds.includes(change.deviceId)) errors.push(`deviceChanges[${index}].deviceId не существует`);
+      if (!pollingResultIds.includes(change.fromPollingResultId)) errors.push(`deviceChanges[${index}].fromPollingResultId не существует`);
+      if (!pollingResultIds.includes(change.toPollingResultId)) errors.push(`deviceChanges[${index}].toPollingResultId не существует`);
     });
 
     return { ok: errors.length === 0, errors };
@@ -360,7 +464,9 @@
       };
     }
 
-    const raw = targetStorage.getItem(STORAGE_KEY);
+    const currentRaw = targetStorage.getItem(STORAGE_KEY);
+    const legacyRaw = currentRaw === null ? targetStorage.getItem(LEGACY_STORAGE_KEY) : null;
+    const raw = currentRaw === null ? legacyRaw : currentRaw;
     if (raw === null) {
       const fresh = createDemoState();
       const saved = saveState(fresh, targetStorage);
@@ -377,7 +483,11 @@
       if (!migrated.ok) throw new Error(migrated.errors.join("; "));
       const validation = validateState(migrated.state);
       if (!validation.ok) throw new Error(validation.errors.join("; "));
-      return { state: migrated.state, recovery: null, created: false };
+      if (migrated.migrated || currentRaw === null) {
+        const saved = saveState(migrated.state, targetStorage);
+        if (!saved.ok) throw new Error(saved.errors.join("; "));
+      }
+      return { state: migrated.state, recovery: null, created: false, migrated: migrated.migrated };
     } catch (error) {
       return {
         state: createDemoState(),
@@ -470,13 +580,15 @@
     const errors = [];
     if (!isPlainObject(value)) return { ok: false, errors: ["Backup должен быть JSON object"] };
     if (value.schema !== BACKUP_SCHEMA) errors.push(`schema должен быть ${BACKUP_SCHEMA}`);
-    if (value.version !== STATE_VERSION) errors.push(`version должен быть ${STATE_VERSION}`);
+    if (![1, 2, STATE_VERSION].includes(value.version)) errors.push(`version должен быть 1, 2 или ${STATE_VERSION}`);
     if (!value.exportedAt || Number.isNaN(new Date(value.exportedAt).getTime())) {
       errors.push("exportedAt должен быть корректной ISO date-time");
     }
-    const stateValidation = validateState(value.state);
+    const migrated = migrateState(value.state);
+    if (!migrated.ok) errors.push(...migrated.errors.map((item) => `state: ${item}`));
+    const stateValidation = migrated.ok ? validateState(migrated.state) : { ok: false, errors: [] };
     if (!stateValidation.ok) errors.push(...stateValidation.errors.map((item) => `state: ${item}`));
-    return { ok: errors.length === 0, errors, state: errors.length ? null : deepClone(value.state) };
+    return { ok: errors.length === 0, errors, state: errors.length ? null : deepClone(migrated.state) };
   }
 
   function importBackupText(text, storage, options) {
@@ -557,8 +669,8 @@
     if (typeof value === "boolean") return value;
     if (typeof value === "number") return value !== 0;
     const text = normalizeText(value);
-    if (["true", "yes", "on", "1", "enabled"].includes(text)) return true;
-    if (["false", "no", "off", "0", "disabled"].includes(text)) return false;
+    if (["true", "yes", "on", "1", "enabled", "да", "vip"].includes(text)) return true;
+    if (["false", "no", "off", "0", "disabled", "нет"].includes(text)) return false;
     return null;
   }
 
@@ -587,6 +699,626 @@
       sourcePath,
       quality: rawValue === undefined || rawValue === null ? "missing" : "valid"
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // SR inventory and polling primitives
+  // ---------------------------------------------------------------------------
+
+  function normalizeSrHeader(value) {
+    return normalizeText(value) || "";
+  }
+
+  function normalizeManufacturer(value) {
+    const normalized = normalizeText(value);
+    if (normalized === "huawey") return "huawei";
+    return normalized;
+  }
+
+  function getSrValue(row, expectedHeader) {
+    if (!isPlainObject(row)) return null;
+    const expected = normalizeSrHeader(expectedHeader);
+    const key = Object.keys(row).find((candidate) => normalizeSrHeader(candidate) === expected);
+    return key === undefined ? null : row[key];
+  }
+
+  function classifySrDevice(row) {
+    const modelType = normalizeText(getSrValue(row, "Тип модели"));
+    const equipmentType = normalizeText(getSrValue(row, "Тип оборудования"));
+    if (modelType === "video conference") return "vcs";
+    if (equipmentType === "controller") return "controller";
+    if (modelType === "панель управления") return "panel";
+    return "other";
+  }
+
+  function normalizeIpv4(value) {
+    const display = normalizeDisplay(value);
+    if (!display) return null;
+    const parts = display.split(".");
+    if (parts.length !== 4) return null;
+    const numbers = parts.map((part) => (/^\d{1,3}$/.test(part) ? Number(part) : NaN));
+    if (numbers.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+    return numbers.join(".");
+  }
+
+  function parseRunFolderTimestamp(folderName) {
+    const raw = normalizeDisplay(folderName) || "";
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})$/);
+    if (!match) return { ok: false, capturedAt: null, error: "Имя папки должно соответствовать YYYY-MM-DD_HH-MM-SS" };
+    const parts = match.slice(1).map(Number);
+    const [year, month, day, hour, minute, second] = parts;
+    const date = new Date(year, month - 1, day, hour, minute, second, 0);
+    const valid = date.getFullYear() === year
+      && date.getMonth() === month - 1
+      && date.getDate() === day
+      && date.getHours() === hour
+      && date.getMinutes() === minute
+      && date.getSeconds() === second;
+    return valid
+      ? { ok: true, capturedAt: date.toISOString(), source: "folder_name", error: null }
+      : { ok: false, capturedAt: null, error: "Имя папки содержит некорректную календарную дату" };
+  }
+
+  function parsePollingFilenameIp(filename) {
+    const safeName = normalizeDisplay(filename) || "";
+    const basename = safeName.replace(/^.*[\\/]/, "").replace(/\.json$/i, "").trim();
+    const ip = normalizeIpv4(basename);
+    return ip
+      ? { ok: true, ip, error: null }
+      : { ok: false, ip: null, error: "Имя JSON не содержит корректный IPv4" };
+  }
+
+  function getCaseInsensitive(object, expectedKey) {
+    if (!isPlainObject(object)) return undefined;
+    const expected = normalizeText(expectedKey);
+    const key = Object.keys(object).find((candidate) => normalizeText(candidate) === expected);
+    return key === undefined ? undefined : object[key];
+  }
+
+  function detectExtronJsonDeviceType(payload) {
+    const blocks = getCaseInsensitive(payload, "webBlocks");
+    const projectInfo = getCaseInsensitive(blocks, "Project Info");
+    const controllerType = normalizeText(getCaseInsensitive(projectInfo, "Controller Type"));
+    if (controllerType === "primary controller") return "controller";
+    if (controllerType === "tlp") return "panel";
+    return "unknown";
+  }
+
+  function derivePollingStatus(payload) {
+    const failedStage = normalizeText(getCaseInsensitive(payload, "failedStage"));
+    const ping = getCaseInsensitive(payload, "ping");
+    const pingOk = isPlainObject(ping) && typeof getCaseInsensitive(ping, "ok") === "boolean"
+      ? getCaseInsensitive(ping, "ok")
+      : null;
+    let pingStatus = "unknown";
+    if (failedStage === "ping" && pingOk === false) pingStatus = "failed";
+    else if (pingOk === true) pingStatus = "ok";
+    const explicitOk = getCaseInsensitive(payload, "ok");
+    const pollStatus = explicitOk === true ? "success" : explicitOk === false ? "error" : "unknown";
+    return {
+      pollStatus: pingStatus === "failed" ? "error" : pollStatus,
+      pingStatus,
+      authorizationStatus: "unknown",
+      rebootCount: null,
+      gcPlus: null
+    };
+  }
+
+  function resolvePollingCapability(device) {
+    const category = normalizeText(device && device.category);
+    const manufacturerNormalized = normalizeManufacturer(device && (device.manufacturerNormalized || device.manufacturerRaw));
+    const descriptor = POLLING_ADAPTERS.find((item) => item.category === category && item.manufacturerNormalized === manufacturerNormalized);
+    if (descriptor) return deepClone(descriptor);
+    return {
+      key: null,
+      category,
+      manufacturerNormalized,
+      support: category && manufacturerNormalized ? "not_implemented" : "unknown",
+      transport: null,
+      normalizerKey: null,
+      credentialMode: "not_configured"
+    };
+  }
+
+  function normalizeMacLoose(value) {
+    const normalized = normalizeMac(value);
+    return normalized || null;
+  }
+
+  function stableJsonValue(value) {
+    if (Array.isArray(value)) return value.map(stableJsonValue);
+    if (!isPlainObject(value)) return typeof value === "string" ? value.trim() : value;
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJsonValue(value[key])]));
+  }
+
+  function pollingPayloadProjection(payload) {
+    if (!isPlainObject(payload)) return {};
+    const projected = {
+      ok: getCaseInsensitive(payload, "ok") ?? null,
+      failedStage: getCaseInsensitive(payload, "failedStage") ?? null,
+      ping: getCaseInsensitive(payload, "ping") ?? null,
+      webInterface: getCaseInsensitive(payload, "webInterface") ?? null,
+      webBlocks: getCaseInsensitive(payload, "webBlocks") ?? null
+    };
+    return stableJsonValue(projected);
+  }
+
+  function flattenPollingChanges(before, after, path, ignoredPaths, output) {
+    const currentPath = path || "$";
+    if (ignoredPaths.some((ignored) => ignored === currentPath || currentPath.startsWith(`${ignored}.`))) return;
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    if (isPlainObject(before) || isPlainObject(after)) {
+      const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+      [...keys].sort().forEach((key) => flattenPollingChanges(before?.[key], after?.[key], `${currentPath}.${key}`, ignoredPaths, output));
+      return;
+    }
+    output.push({ path: currentPath, oldValue: before === undefined ? null : deepClone(before), newValue: after === undefined ? null : deepClone(after) });
+  }
+
+  function createInventoryIssue(input) {
+    return {
+      id: createId("inventory-issue"),
+      kind: input.kind || "data_quality",
+      severity: input.severity || "warning",
+      sourceType: input.sourceType || "sr_row",
+      sourceId: input.sourceId || null,
+      rowNumber: input.rowNumber || null,
+      deviceId: input.deviceId || null,
+      message: String(input.message || "Проблема входных данных"),
+      details: input.details ? deepClone(input.details) : null,
+      createdAt: input.createdAt || nowIso(),
+      status: "open"
+    };
+  }
+
+  function rowsFromWorkbook(arrayBuffer) {
+    if (!global.XLSX) return { ok: false, errors: ["Локальная библиотека XLSX не загружена"] };
+    try {
+      const workbook = global.XLSX.read(arrayBuffer, { type: "array", cellDates: false });
+      for (const sheetName of workbook.SheetNames || []) {
+        const matrix = global.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", raw: false });
+        const headerIndex = matrix.findIndex((row) => Array.isArray(row) && row.some((cell) => normalizeDisplay(cell)));
+        if (headerIndex < 0) continue;
+        const headers = matrix[headerIndex].map((header) => normalizeDisplay(header) || "");
+        const duplicates = headers.filter((header, index) => header && headers.findIndex((candidate) => normalizeSrHeader(candidate) === normalizeSrHeader(header)) !== index);
+        if (duplicates.length) return { ok: false, errors: [`Повторяющиеся заголовки: ${duplicates.join(", ")}`] };
+        const missingHeaders = SR_REQUIRED_HEADERS.filter((required) => !headers.some((header) => normalizeSrHeader(header) === normalizeSrHeader(required)));
+        if (missingHeaders.length) return { ok: false, errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
+        const rows = matrix.slice(headerIndex + 1)
+          .filter((row) => Array.isArray(row) && row.some((cell) => normalizeDisplay(cell)))
+          .map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""])));
+        return { ok: true, sheetName, headers, rows, errors: [] };
+      }
+      return { ok: false, errors: ["В XLSX не найден непустой лист"] };
+    } catch (error) {
+      return { ok: false, errors: [`XLSX не прочитан: ${error.message || String(error)}`] };
+    }
+  }
+
+  function normalizedSrRow(row) {
+    const get = (header) => getSrValue(row, header);
+    const manufacturerRaw = normalizeDisplay(get("Производитель"));
+    return {
+      roomName: normalizeDisplay(get("Название комнаты")),
+      roomAddress: normalizeDisplay(get("Адрес комнаты")),
+      roomVip: normalizeBoolean(get("VIP комната")),
+      equipmentTypeRaw: normalizeDisplay(get("Тип оборудования")),
+      equipmentTypeNormalized: normalizeText(get("Тип оборудования")),
+      nameRaw: normalizeDisplay(get("Наименование")),
+      modelRaw: normalizeDisplay(get("Модель")),
+      modelNormalized: normalizeText(get("Модель")),
+      modelTypeRaw: normalizeDisplay(get("Тип модели")),
+      modelTypeNormalized: normalizeText(get("Тип модели")),
+      manufacturerRaw,
+      manufacturerNormalized: normalizeManufacturer(manufacturerRaw),
+      ipRaw: normalizeDisplay(get("IP")),
+      ipNormalized: normalizeIpv4(get("IP")),
+      macRaw: normalizeDisplay(get("MAC")),
+      macNormalized: normalizeMacLoose(get("MAC")),
+      sipUri: normalizeDisplay(get("SIP URI")),
+      inventoryNumber: normalizeDisplay(get("Инвентарный номер")),
+      serialNumber: normalizeDisplay(get("Серийный номер")),
+      deviceVip: normalizeBoolean(get("VIP оборудование")),
+      domain: normalizeDisplay(get("Домен")),
+      category: classifySrDevice(row),
+      rawRow: deepClone(row)
+    };
+  }
+
+  function findInventoryCandidates(devices, row) {
+    const levels = [
+      row.inventoryNumber && ((device) => normalizeText(device.inventoryNumber) === normalizeText(row.inventoryNumber)),
+      row.serialNumber && row.manufacturerNormalized && ((device) => normalizeText(device.serialNumber) === normalizeText(row.serialNumber) && device.manufacturerNormalized === row.manufacturerNormalized),
+      row.macNormalized && ((device) => device.macNormalized === row.macNormalized),
+      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized && ((device) => device.ipNormalized === row.ipNormalized || (device.ipHistory || []).includes(row.ipNormalized))
+    ].filter(Boolean);
+    for (const matcher of levels) {
+      const candidates = devices.filter(matcher);
+      if (candidates.length) return candidates;
+    }
+    return [];
+  }
+
+  function importSrRows(currentState, input) {
+    const rows = Array.isArray(input.rows) ? input.rows : [];
+    const headers = input.headers || Object.keys(rows[0] || {});
+    const missingHeaders = SR_REQUIRED_HEADERS.filter((required) => !headers.some((header) => normalizeSrHeader(header) === normalizeSrHeader(required)));
+    if (missingHeaders.length) return { ok: false, outcome: "failed", state: deepClone(currentState), errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
+    if (input.rawSha256 && currentState.srImports.some((item) => item.rawSha256 === input.rawSha256)) {
+      return { ok: true, outcome: "duplicate", state: deepClone(currentState), errors: [] };
+    }
+    let next = deepClone(currentState);
+    const importedAt = input.importedAt || nowIso();
+    const srImport = { id: createId("sr-import"), filename: input.filename || "inventory.xlsx", sheetName: input.sheetName || "", rawSha256: input.rawSha256 || null, importedAt, importedById: input.actorId || "system", rowCount: rows.length, acceptedCount: 0, rejectedCount: 0, status: "processing" };
+    next.inventoryDevices.forEach((device) => { device.inCurrentSr = false; });
+    next.locations.forEach((location) => { location.inCurrentSr = false; });
+    rows.forEach((rawRow, index) => {
+      const rowNumber = index + 2;
+      const row = normalizedSrRow(rawRow);
+      const hasIdentity = row.inventoryNumber || row.serialNumber || row.macNormalized || row.ipNormalized;
+      if (!hasIdentity) {
+        srImport.rejectedCount += 1;
+        next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Строка не содержит пригодного inventory/serial/MAC/IP", details: { rawRow } }));
+        return;
+      }
+      const locationKey = `${normalizeText(row.roomName) || ""}|${normalizeText(row.roomAddress) || ""}`;
+      let location = next.locations.find((item) => item.identityKey === locationKey);
+      if (!location) {
+        location = { id: createId("location"), identityKey: locationKey, name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain, inCurrentSr: true, firstSeenAt: importedAt, lastSeenAt: importedAt };
+        next.locations.push(location);
+      } else {
+        Object.assign(location, { name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain || location.domain || null, inCurrentSr: true, lastSeenAt: importedAt });
+      }
+      const candidates = findInventoryCandidates(next.inventoryDevices, row);
+      let device = candidates.length === 1 ? candidates[0] : null;
+      if (candidates.length > 1) next.inventoryIssues.push(createInventoryIssue({ kind: "ambiguous_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Найдено несколько кандидатов; создана отдельная запись", details: { candidateIds: candidates.map((item) => item.id) } }));
+      const oldIp = device?.ipNormalized || null;
+      if (!device) {
+        device = { id: createId("inventory-device"), firstSeenAt: importedAt, ipHistory: [] };
+        next.inventoryDevices.push(device);
+      }
+      if (oldIp && oldIp !== row.ipNormalized && !device.ipHistory.includes(oldIp)) device.ipHistory.push(oldIp);
+      Object.assign(device, row, { locationId: location.id, inCurrentSr: true, lastSeenAt: importedAt, lastSrImportId: srImport.id, sourceRowNumber: rowNumber, pollingCapability: resolvePollingCapability(row) });
+      if (row.ipRaw && !row.ipNormalized) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_ip", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: `Некорректный IP: ${row.ipRaw}` }));
+      if (row.category === "other") next.inventoryIssues.push(createInventoryIssue({ kind: "unknown_category", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Строка не относится к ВКС, контроллеру или панели" }));
+      srImport.acceptedCount += 1;
+    });
+    srImport.status = srImport.rejectedCount || next.inventoryIssues.some((issue) => issue.sourceId === srImport.id) ? "partial" : "processed";
+    next.srImports.push(srImport);
+    next = appendHistory(next, { actorId: input.actorId || "system", action: "Импортирована выгрузка SR", entityType: "sr_import", entityId: srImport.id, details: `${srImport.filename}: ${srImport.acceptedCount}/${srImport.rowCount}` });
+    return { ok: true, outcome: srImport.status, state: next, srImportId: srImport.id, acceptedCount: srImport.acceptedCount, rejectedCount: srImport.rejectedCount, errors: [] };
+  }
+
+  async function sha256Bytes(value) {
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    if (global.crypto?.subtle) {
+      const hash = await global.crypto.subtle.digest("SHA-256", bytes);
+      return [...new Uint8Array(hash)].map((part) => part.toString(16).padStart(2, "0")).join("");
+    }
+    return sha256Text(String.fromCharCode(...bytes));
+  }
+
+  async function importSrWorkbook(currentState, input) {
+    const parsed = rowsFromWorkbook(input.arrayBuffer);
+    if (!parsed.ok) return { ok: false, outcome: "failed", state: deepClone(currentState), errors: parsed.errors };
+    return importSrRows(currentState, { ...input, ...parsed, rawSha256: await sha256Bytes(input.arrayBuffer) });
+  }
+
+  function ensurePollingRun(next, input, capturedAt) {
+    if (input.runId) return next.pollingRuns.find((item) => item.id === input.runId) || null;
+    const key = `${capturedAt}|${input.folderName || "manual"}`;
+    let run = next.pollingRuns.find((item) => item.identityKey === key);
+    if (!run) {
+      run = { id: createId("polling-run"), kind: "import", identityKey: key, folderName: input.folderName || null, capturedAt, capturedAtSource: input.capturedAtSource || "manual", importedAt: input.importedAt || nowIso(), importedById: input.actorId || "system", fileCount: 0, successCount: 0, errorCount: 0 };
+      next.pollingRuns.push(run);
+    }
+    return run;
+  }
+
+  function createPollingPlan(currentState, input) {
+    const category = normalizeText(input.category);
+    if (!["vcs", "controller", "panel"].includes(category)) return { ok: false, state: deepClone(currentState), errors: ["Категория плана не поддерживается"] };
+    const scheduledAt = normalizeDate(input.scheduledAt);
+    if (!scheduledAt) return { ok: false, state: deepClone(currentState), errors: ["Дата и время плана обязательны"] };
+    const manufacturer = normalizeManufacturer(input.manufacturer);
+    const devices = currentState.inventoryDevices.filter((device) => device.inCurrentSr !== false && device.category === category && (!manufacturer || device.manufacturerNormalized === manufacturer));
+    const capabilities = devices.map(resolvePollingCapability);
+    let next = deepClone(currentState);
+    const plan = {
+      id: createId("polling-run"), kind: "plan", identityKey: `plan|${scheduledAt}|${category}|${manufacturer || "all"}|${nowIso()}`,
+      folderName: null, capturedAt: scheduledAt, capturedAtSource: "planned", importedAt: nowIso(), importedById: input.actorId || "system",
+      deviceIds: devices.map((device) => device.id), fileCount: 0, successCount: 0, errorCount: 0, status: "blocked_no_adapter",
+      selectionSummary: { category, manufacturer: manufacturer || null, total: devices.length, implemented: capabilities.filter((item) => item.support === "implemented" && item.transport).length, notImplemented: capabilities.filter((item) => item.support !== "implemented" || !item.transport).length }
+    };
+    next.pollingRuns.push(plan);
+    next = appendHistory(next, { actorId: input.actorId || "system", action: "Сформирован план опроса", entityType: "polling_run", entityId: plan.id, details: `${category}: ${devices.length}; execution blocked` });
+    return { ok: true, state: next, plan, errors: [] };
+  }
+
+  function timeValue(value) {
+    const parsed = new Date(value || 0).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function compareTimedEntities(left, right, field) {
+    return timeValue(left?.[field]) - timeValue(right?.[field]) || String(left?.id || "").localeCompare(String(right?.id || ""));
+  }
+
+  function dashboardCapability(device) {
+    const stored = device?.pollingCapability;
+    const capability = stored && typeof stored.support === "string" ? stored : resolvePollingCapability(device);
+    if (capability.support === "implemented" && capability.transport) return "supported";
+    if (!device?.category || !normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw)) return "unknown";
+    return "unsupported";
+  }
+
+  function dashboardPeriodScope(candidateState, filters, latestRun, nowValue) {
+    const period = filters.period || "latest_run";
+    const now = new Date(nowValue || nowIso());
+    const nowMs = now.getTime();
+    if (!Number.isFinite(nowMs)) return { valid: false, errors: ["Некорректное текущее время"] };
+    let from = null;
+    let to = nowMs;
+    let label = "Последний запуск";
+    if (period === "latest_run") {
+      if (latestRun) from = to = timeValue(latestRun.capturedAt);
+    } else if (period === "today") {
+      const start = new Date(now); start.setHours(0, 0, 0, 0); from = start.getTime(); label = "Сегодня";
+    } else if (period === "7d" || period === "30d") {
+      const days = period === "7d" ? 7 : 30; from = nowMs - days * 86400000; label = `${days} дней`;
+    } else if (period === "custom") {
+      const fromDate = filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00.000Z`) : null;
+      const toDate = filters.dateTo ? new Date(`${filters.dateTo}T23:59:59.999Z`) : null;
+      if (!fromDate || !toDate || !Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime()) || fromDate > toDate) {
+        return { valid: false, errors: ["Произвольный диапазон должен содержать корректные даты от и до"] };
+      }
+      from = fromDate.getTime(); to = toDate.getTime(); label = `${filters.dateFrom} — ${filters.dateTo}`;
+    } else if (period === "all") {
+      to = null; label = "Вся история";
+    } else {
+      return { valid: false, errors: ["Период Dashboard не поддерживается"] };
+    }
+    return { valid: true, errors: [], kind: period, from, to, label, includes(value) { const time = timeValue(value); return Boolean(time) && (from === null || time >= from) && (to === null || time <= to); } };
+  }
+
+  function dashboardStatus(device, latestResult) {
+    const capability = dashboardCapability(device);
+    if (capability === "unsupported") return "UNSUPPORTED";
+    if (capability === "unknown") return "UNKNOWN";
+    if (!latestResult) return "NOT_POLLED";
+    if (latestResult.pollStatus === "success") return "SUCCESS";
+    if (latestResult.pollStatus === "error") return "FAILED";
+    return "UNKNOWN";
+  }
+
+  function safeDashboardValue(value, path) {
+    if (/(password|passwd|token|secret|credential|authorization|api.?key)/i.test(String(path || ""))) return "[скрыто]";
+    const text = typeof value === "string" ? value : value === undefined ? "—" : JSON.stringify(value);
+    return String(text ?? "—").slice(0, 160);
+  }
+
+  function incrementDistribution(map, key) {
+    const label = normalizeDisplay(key) || "Не указано";
+    map.set(label, (map.get(label) || 0) + 1);
+  }
+
+  function distributionRows(map, limit) {
+    return [...map].map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, "ru")).slice(0, limit);
+  }
+
+  function getDashboardSummary(candidateState, inputFilters, options) {
+    const filters = { ...(inputFilters || {}) };
+    const settings = options || {};
+    const limit = Math.max(1, Math.min(Number(settings.limit) || DASHBOARD_LIST_LIMIT, 50));
+    const currentDevices = candidateState.inventoryDevices.filter((device) => device.inCurrentSr !== false && ["vcs", "controller", "panel"].includes(device.category));
+    const locationsById = new Map(candidateState.locations.map((location) => [location.id, location]));
+    const latestResults = new Map();
+    const everPolledIds = new Set();
+    for (const result of candidateState.pollingResults) {
+      if (!result.deviceId) continue;
+      everPolledIds.add(result.deviceId);
+      const previous = latestResults.get(result.deviceId);
+      if (!previous || compareTimedEntities(previous, result, "capturedAt") < 0) latestResults.set(result.deviceId, result);
+    }
+    const latestRun = [...candidateState.pollingRuns].sort((left, right) => compareTimedEntities(right, left, "capturedAt"))[0] || null;
+    const period = dashboardPeriodScope(candidateState, filters, latestRun, settings.now);
+    if (!period.valid) return { valid: false, errors: period.errors, filters, period: null };
+    const activeChanges = candidateState.deviceChanges.filter((change) => change.status === "active");
+    const changeIds = new Set(activeChanges.map((change) => change.deviceId));
+    const states = currentDevices.map((device) => {
+      const location = locationsById.get(device.locationId) || null;
+      const latestResult = latestResults.get(device.id) || null;
+      const operationalStatus = dashboardStatus(device, latestResult);
+      const isVip = Boolean(device.deviceVip || location?.vip);
+      const hasChanges = changeIds.has(device.id);
+      const hasCurrentPingFailure = latestResult?.pingStatus === "failed";
+      const isProblem = operationalStatus === "FAILED" || hasCurrentPingFailure;
+      return { device, location, latestResult, capabilityStatus: dashboardCapability(device), operationalStatus, isVip, hasChanges, hasCurrentPingFailure, isProblem };
+    }).filter((item) => {
+      const device = item.device;
+      return (!filters.category || device.category === filters.category)
+        && (!filters.manufacturer || device.manufacturerNormalized === normalizeManufacturer(filters.manufacturer))
+        && (!filters.model || normalizeText(device.modelRaw) === normalizeText(filters.model))
+        && (!filters.locationId || device.locationId === filters.locationId)
+        && (!filters.vip || String(item.isVip) === filters.vip)
+        && (!filters.pollStatus || ({ success: "SUCCESS", failed: "FAILED", not_polled: "NOT_POLLED", unsupported: "UNSUPPORTED", unknown: "UNKNOWN" }[filters.pollStatus] || "") === item.operationalStatus);
+    });
+    const scopedIds = new Set(states.map((item) => item.device.id));
+    const categoryCounts = { vcs: 0, controller: 0, panel: 0 };
+    const manufacturerCounts = new Map();
+    const modelCounts = new Map();
+    const scopedLocationIds = new Set();
+    for (const item of states) {
+      categoryCounts[item.device.category] += 1;
+      incrementDistribution(manufacturerCounts, item.device.manufacturerRaw || item.device.manufacturerNormalized);
+      incrementDistribution(modelCounts, item.device.modelRaw);
+      if (item.device.locationId) scopedLocationIds.add(item.device.locationId);
+    }
+    const latestRunResultIds = new Set(candidateState.pollingResults.filter((result) => result.runId === latestRun?.id && result.deviceId).map((result) => result.deviceId));
+    for (const id of latestRun?.deviceIds || []) latestRunResultIds.add(id);
+    const scopedChanges = activeChanges.filter((change) => scopedIds.has(change.deviceId));
+    const changedDeviceIds = new Set(scopedChanges.map((change) => change.deviceId));
+    const periodResults = candidateState.pollingResults.filter((result) => period.includes(result.capturedAt) && (!result.deviceId || scopedIds.has(result.deviceId)));
+    const periodChanges = scopedChanges.filter((change) => period.includes(change.detectedAt));
+    const issueTime = (issue) => issue.timestamp || issue.createdAt || candidateState.pollingResults.find((result) => result.id === issue.sourceId)?.importedAt;
+    const periodIssues = candidateState.inventoryIssues.filter((issue) => issue.status !== "closed" && period.includes(issueTime(issue)) && (!issue.deviceId || scopedIds.has(issue.deviceId)));
+    const dataIssueKinds = new Set(["malformed_json", "invalid_filename_ip", "unmatched_ip", "ambiguous_ip", "classification_conflict", "invalid_ip", "missing_identity", "ambiguous_identity", "unknown_category"]);
+    const openDataIssues = candidateState.inventoryIssues.filter((issue) => issue.status !== "closed" && dataIssueKinds.has(issue.kind) && (!issue.deviceId || scopedIds.has(issue.deviceId)));
+    const unmatchedResults = candidateState.pollingResults.filter((result) => result.matchStatus === "unmatched" && (period.kind === "all" || result.runId === latestRun?.id || period.includes(result.capturedAt)));
+    const locationAgg = new Map();
+    for (const item of states) {
+      if (!item.location) continue;
+      if (!locationAgg.has(item.location.id)) locationAgg.set(item.location.id, { locationId: item.location.id, name: item.location.name || "Без названия", address: item.location.address || "", vip: Boolean(item.location.vip), totalDevices: 0, problemDevices: 0, pingFailures: 0, failures: 0, changedDevices: 0, noData: 0 });
+      const row = locationAgg.get(item.location.id);
+      row.totalDevices += 1;
+      if (item.isProblem) row.problemDevices += 1;
+      if (item.hasCurrentPingFailure) row.pingFailures += 1;
+      if (item.operationalStatus === "FAILED") row.failures += 1;
+      if (item.hasChanges) row.changedDevices += 1;
+      if (["NOT_POLLED", "UNSUPPORTED", "UNKNOWN"].includes(item.operationalStatus)) row.noData += 1;
+    }
+    const locations = [...locationAgg.values()].filter((row) => row.problemDevices || row.changedDevices || row.noData).sort((left, right) => right.problemDevices - left.problemDevices || Number(right.vip) - Number(left.vip) || left.name.localeCompare(right.name, "ru")).slice(0, limit);
+    const deviceById = new Map(states.map((item) => [item.device.id, item]));
+    const equipmentProblems = states.filter((item) => item.isProblem).map((item) => ({ timestamp: item.latestResult?.capturedAt, kind: item.hasCurrentPingFailure ? "ping_failure" : "polling_failure", scope: "equipment", severity: "critical", deviceId: item.device.id, category: item.device.category, locationId: item.device.locationId, location: item.location?.name || "—", device: item.device.nameRaw || item.device.modelRaw || "Устройство", ip: item.device.ipNormalized || item.device.ipRaw || "—", description: item.hasCurrentPingFailure ? "Нет ping по последнему опросу" : "Последний опрос завершился ошибкой" }));
+    const dataProblems = openDataIssues.map((issue) => { const linkedResult = candidateState.pollingResults.find((result) => result.id === issue.sourceId); const item = deviceById.get(issue.deviceId || linkedResult?.deviceId); return { timestamp: issueTime(issue), kind: issue.kind, scope: "data", severity: "warning", deviceId: item?.device.id || null, category: item?.device.category || null, locationId: item?.device.locationId || null, location: item?.location?.name || "—", device: item?.device.nameRaw || linkedResult?.filename || "Файл импорта", ip: item?.device.ipNormalized || linkedResult?.filenameIp || "—", description: String(issue.message || "Ошибка данных").slice(0, 240) }; });
+    const recentChanges = scopedChanges.map((change) => { const item = deviceById.get(change.deviceId); return { timestamp: change.detectedAt, deviceId: change.deviceId, category: item?.device.category || null, location: item?.location?.name || "—", device: item?.device.nameRaw || item?.device.modelRaw || "Устройство", manufacturer: item?.device.manufacturerRaw || "—", model: item?.device.modelRaw || "—", path: change.path || "—", oldValue: safeDashboardValue(change.oldValue, change.path), newValue: safeDashboardValue(change.newValue, change.path) }; }).sort((left, right) => timeValue(right.timestamp) - timeValue(left.timestamp)).slice(0, limit);
+    const latestProblems = [...equipmentProblems, ...dataProblems].sort((left, right) => timeValue(right.timestamp) - timeValue(left.timestamp)).slice(0, limit);
+    const latestSr = [...candidateState.srImports].sort((left, right) => compareTimedEntities(right, left, "importedAt"))[0] || null;
+    const vipStates = states.filter((item) => item.isVip);
+    const latestTimestamp = [...latestResults.values()].filter((result) => scopedIds.has(result.deviceId)).sort((left, right) => compareTimedEntities(right, left, "capturedAt"))[0]?.capturedAt || null;
+    const runStatus = latestRun ? latestRun.status || (latestRun.errorCount ? (latestRun.successCount ? "partial" : "failed") : latestRun.kind === "plan" ? "planned" : "completed") : null;
+    const latestRunCategories = new Set((latestRun?.deviceIds || []).map((id) => currentDevices.find((device) => device.id === id)?.category).filter(Boolean));
+    const drilldownByCategory = Object.fromEntries(["vcs", "controller", "panel"].map((category) => {
+      const rows = states.filter((item) => item.device.category === category);
+      return [category, {
+        total: rows.length,
+        success: rows.filter((item) => item.operationalStatus === "SUCCESS").length,
+        failed: rows.filter((item) => item.operationalStatus === "FAILED").length,
+        notPolled: rows.filter((item) => item.operationalStatus === "NOT_POLLED").length,
+        unsupported: rows.filter((item) => item.operationalStatus === "UNSUPPORTED").length,
+        pingFailures: rows.filter((item) => item.hasCurrentPingFailure).length,
+        changed: rows.filter((item) => item.hasChanges).length,
+        vipProblems: rows.filter((item) => item.isVip && item.isProblem).length
+      }];
+    }));
+    return {
+      valid: true, errors: [], filters, period: { kind: period.kind, from: period.from === null ? null : new Date(period.from).toISOString(), to: period.to === null ? null : new Date(period.to).toISOString(), label: period.label },
+      emptyState: candidateState.srImports.length ? (candidateState.pollingResults.length ? null : "no_polling") : "no_sr",
+      context: { sr: latestSr ? { id: latestSr.id, filename: latestSr.filename, importedAt: latestSr.importedAt, status: latestSr.status, rowCount: latestSr.rowCount } : null, latestRun: latestRun ? { id: latestRun.id, kind: latestRun.kind, capturedAt: latestRun.capturedAt, status: runStatus, deviceCount: latestRun.deviceIds?.length || latestRun.fileCount || 0, successCount: latestRun.successCount || 0, errorCount: latestRun.errorCount || 0, categories: [...latestRunCategories], manufacturer: latestRun.selectionSummary?.manufacturer || null } : null, lastPollingAt: latestTimestamp },
+      inventory: { total: states.length, byCategory: categoryCounts, locations: scopedLocationIds.size, vipDevices: vipStates.length, vipLocations: new Set(vipStates.map((item) => item.device.locationId).filter(Boolean)).size },
+      coverage: { everPolled: states.filter((item) => everPolledIds.has(item.device.id)).length, notPolled: states.filter((item) => item.operationalStatus === "NOT_POLLED").length, success: states.filter((item) => item.operationalStatus === "SUCCESS").length, failed: states.filter((item) => item.operationalStatus === "FAILED").length, unsupported: states.filter((item) => item.operationalStatus === "UNSUPPORTED").length, unknown: states.filter((item) => item.operationalStatus === "UNKNOWN").length, inLatestRun: states.filter((item) => latestRunResultIds.has(item.device.id)).length },
+      health: { normal: states.filter((item) => item.operationalStatus === "SUCCESS" && !item.hasChanges).length, warning: states.filter((item) => item.operationalStatus === "SUCCESS" && item.hasChanges).length, error: states.filter((item) => item.operationalStatus === "FAILED").length, noData: states.filter((item) => item.operationalStatus === "NOT_POLLED").length, unsupported: states.filter((item) => item.operationalStatus === "UNSUPPORTED").length, unknown: states.filter((item) => item.operationalStatus === "UNKNOWN").length },
+      problems: { currentPingFailures: states.filter((item) => item.hasCurrentPingFailure).length, currentFailures: states.filter((item) => item.operationalStatus === "FAILED").length, unmatched: unmatchedResults.length, dataErrors: openDataIssues.length },
+      periodMetrics: { results: periodResults.length, failedResults: periodResults.filter((result) => result.pollStatus === "error").length, pingFailures: new Set(periodResults.filter((result) => result.pingStatus === "failed").map((result) => result.deviceId || result.id)).size, changedDevices: new Set(periodChanges.map((change) => change.deviceId)).size, changes: periodChanges.length, dataErrors: periodIssues.filter((issue) => dataIssueKinds.has(issue.kind)).length },
+      changes: { changedDevices: changedDeviceIds.size, total: scopedChanges.length, recent: recentChanges, newInLatestSr: latestSr ? states.filter((item) => item.device.firstSeenAt === latestSr.importedAt).length : 0, missingFromLatestSr: candidateState.inventoryDevices.filter((device) => device.inCurrentSr === false && ["vcs", "controller", "panel"].includes(device.category)).length },
+      vip: { devices: vipStates.length, locations: new Set(vipStates.map((item) => item.device.locationId).filter(Boolean)).size, problems: vipStates.filter((item) => item.isProblem).length, noData: vipStates.filter((item) => ["NOT_POLLED", "UNSUPPORTED", "UNKNOWN"].includes(item.operationalStatus)).length },
+      locations, latestProblems, recentChanges,
+      drilldown: { byCategory: drilldownByCategory },
+      distributions: { categories: distributionRows(new Map([["Терминалы ВКС", categoryCounts.vcs], ["Контроллеры", categoryCounts.controller], ["Панели управления", categoryCounts.panel]]), 3), manufacturers: distributionRows(manufacturerCounts, limit), models: distributionRows(modelCounts, limit) },
+      freshness: { latestTimestamp, noData: states.filter((item) => !item.latestResult).length, outdated: null },
+      blockedAnalytics: { authorization: null, reboots: null, gcPlus: null, freshnessThreshold: null }
+    };
+  }
+
+  function getInventoryAnalytics(candidateState, category) {
+    const devices = candidateState.inventoryDevices.filter((device) => device.inCurrentSr !== false && (!category || device.category === category));
+    const latest = devices.map((device) => candidateState.pollingResults.filter((result) => result.deviceId === device.id).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))[0]).filter(Boolean);
+    const deviceIds = new Set(devices.map((device) => device.id));
+    const changes = candidateState.deviceChanges.filter((change) => change.status === "active" && deviceIds.has(change.deviceId));
+    const changedDeviceIds = new Set(changes.map((change) => change.deviceId));
+    return {
+      total: devices.length, polled: latest.length, unpolled: devices.length - latest.length,
+      success: latest.filter((result) => result.pollStatus === "success").length,
+      errors: latest.filter((result) => result.pollStatus === "error").length,
+      pingFailures: latest.filter((result) => result.pingStatus === "failed").length,
+      changedDevices: changedDeviceIds.size, changes: changes.length,
+      authorizationFailures: null, rebootCount: null, gcPlusLocations: null
+    };
+  }
+
+  function filterInventoryDevices(candidateState, category, inputFilters) {
+    const filters = inputFilters || {};
+    return candidateState.inventoryDevices.filter((device) => {
+      if (device.category !== category) return false;
+      const location = candidateState.locations.find((item) => item.id === device.locationId);
+      const latest = candidateState.pollingResults.filter((item) => item.deviceId === device.id).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))[0];
+      const hasChanges = candidateState.deviceChanges.some((item) => item.deviceId === device.id && item.status === "active");
+      const support = dashboardCapability(device);
+      const haystack = [device.nameRaw, device.modelRaw, device.manufacturerRaw, device.ipRaw, device.serialNumber, device.inventoryNumber, location?.name, location?.address].map((item) => normalizeText(item) || "").join(" ");
+      return (!filters.search || haystack.includes(normalizeText(filters.search)))
+        && (!filters.manufacturer || device.manufacturerNormalized === normalizeManufacturer(filters.manufacturer))
+        && (!filters.current || (filters.current === "yes" ? device.inCurrentSr !== false : device.inCurrentSr === false))
+        && (!filters.pollStatus || (latest?.pollStatus || "never") === filters.pollStatus)
+        && (!filters.vip || String(Boolean(device.deviceVip || location?.vip)) === filters.vip)
+        && (!filters.ping || (latest?.pingStatus || "unknown") === filters.ping)
+        && (!filters.changed || String(hasChanges) === filters.changed)
+        && (!filters.support || support === filters.support)
+        && (!filters.model || normalizeText(device.modelRaw) === normalizeText(filters.model))
+        && (!filters.locationId || device.locationId === filters.locationId);
+    });
+  }
+
+  function rebuildDeviceChanges(next, deviceId) {
+    next.deviceChanges = next.deviceChanges.filter((item) => item.deviceId !== deviceId);
+    const ignored = (next.settings.ignoredPollingPaths || []).map((item) => String(item).startsWith("$") ? String(item) : `$.${item}`);
+    const results = next.pollingResults.filter((item) => item.deviceId === deviceId && item.parseStatus === "parsed")
+      .sort((a, b) => new Date(a.capturedAt) - new Date(b.capturedAt) || a.id.localeCompare(b.id));
+    for (let index = 1; index < results.length; index += 1) {
+      const differences = [];
+      flattenPollingChanges(results[index - 1].normalizedData, results[index].normalizedData, "$", ignored, differences);
+      differences.forEach((difference) => next.deviceChanges.push({ id: createId("device-change"), deviceId, fromPollingResultId: results[index - 1].id, toPollingResultId: results[index].id, detectedAt: nowIso(), status: "active", ...difference }));
+    }
+  }
+
+  async function ingestPollingResultText(currentState, input) {
+    let next = deepClone(currentState);
+    const timestamp = input.capturedAt ? { ok: Boolean(normalizeDate(input.capturedAt)), capturedAt: normalizeDate(input.capturedAt), source: input.capturedAtSource || "manual" } : parseRunFolderTimestamp(input.folderName || "");
+    if (!timestamp.ok) return { ok: false, outcome: "failed", state: next, errors: [timestamp.error || "Некорректная дата запуска"] };
+    const run = ensurePollingRun(next, input, timestamp.capturedAt);
+    if (!run) return { ok: false, outcome: "failed", state: next, errors: ["Polling run не найден"] };
+    const rawText = String(input.text || "");
+    const rawSha256 = await sha256Text(rawText);
+    const ipInfo = parsePollingFilenameIp(input.name || "");
+    if (next.pollingResults.some((item) => item.runId === run.id && item.rawSha256 === rawSha256 && item.filename === input.name)) return { ok: true, outcome: "duplicate", state: next, errors: [] };
+    let payload = null;
+    let parseError = null;
+    try { payload = JSON.parse(rawText); } catch (error) { parseError = error.message || String(error); }
+    const candidates = ipInfo.ip ? next.inventoryDevices.filter((device) => device.ipNormalized === ipInfo.ip || (device.ipHistory || []).includes(ipInfo.ip)) : [];
+    const device = candidates.length === 1 ? candidates[0] : null;
+    const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
+    const status = payload ? derivePollingStatus(payload) : { pollStatus: "error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
+    const result = {
+      id: createId("polling-result"), runId: run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
+      deviceId: device?.id || null, capturedAt: timestamp.capturedAt, importedAt: input.importedAt || nowIso(),
+      rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
+      detectedCategory, matchStatus: device ? "matched" : candidates.length > 1 ? "ambiguous" : "unmatched",
+      classificationConflict: Boolean(device && detectedCategory !== "unknown" && device.category !== detectedCategory),
+      normalizedData: payload ? pollingPayloadProjection(payload) : {}, ...status
+    };
+    next.pollingResults.push(result);
+    run.fileCount += 1;
+    if (parseError || status.pollStatus === "error") run.errorCount += 1; else run.successCount += 1;
+    if (parseError) next.inventoryIssues.push(createInventoryIssue({ kind: "malformed_json", sourceType: "polling_result", sourceId: result.id, message: `JSON не прочитан: ${parseError}` }));
+    if (!ipInfo.ok) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_filename_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.error }));
+    if (!device) next.inventoryIssues.push(createInventoryIssue({ kind: candidates.length > 1 ? "ambiguous_ip" : "unmatched_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.ip ? `IP ${ipInfo.ip} не сопоставлен однозначно` : "IP отсутствует" }));
+    if (result.classificationConflict) next.inventoryIssues.push(createInventoryIssue({ kind: "classification_conflict", sourceType: "polling_result", sourceId: result.id, deviceId: device.id, message: `SR=${device.category}, JSON=${detectedCategory}` }));
+    if (device) rebuildDeviceChanges(next, device.id);
+    next = appendHistory(next, { actorId: input.actorId || "system", action: "Импортирован результат опроса", entityType: "polling_result", entityId: result.id, details: `${result.filename}: ${result.matchStatus}` });
+    return { ok: true, outcome: parseError ? "failed" : result.matchStatus, state: next, pollingResultId: result.id, runId: run.id, errors: parseError ? [parseError] : [] };
+  }
+
+  async function ingestPollingRunFiles(currentState, input) {
+    const folderTimestamp = input.capturedAt ? { ok: true, capturedAt: normalizeDate(input.capturedAt), source: "manual" } : parseRunFolderTimestamp(input.folderName || "");
+    if (!folderTimestamp.ok || !folderTimestamp.capturedAt) return { ok: false, outcome: "failed", state: deepClone(currentState), errors: [folderTimestamp.error || "Некорректная дата запуска"] };
+    let next = deepClone(currentState);
+    const run = ensurePollingRun(next, { ...input, capturedAtSource: folderTimestamp.source }, folderTimestamp.capturedAt);
+    const results = [];
+    for (const file of input.files || []) {
+      const imported = await ingestPollingResultText(next, { ...input, ...file, runId: run.id, capturedAt: folderTimestamp.capturedAt, capturedAtSource: folderTimestamp.source });
+      next = imported.state;
+      results.push({ name: file.name, outcome: imported.outcome, errors: imported.errors });
+    }
+    return { ok: true, outcome: results.some((item) => item.outcome === "failed") ? "partial" : "processed", state: next, runId: run.id, results, errors: [] };
   }
 
   function detectSnapshotProfile(payload) {
@@ -2052,14 +2784,18 @@
 
   const api = Object.freeze({
     STORAGE_KEY,
+    LEGACY_STORAGE_KEY,
     SESSION_KEY,
     BACKUP_SCHEMA,
     STATE_VERSION,
     DEFAULT_MAX_STATE_BYTES,
     DEFAULT_MAX_RAW_INPUT_BYTES,
+    DASHBOARD_LIST_LIMIT,
     SECURITY_NOTICE,
     STATE_ARRAY_KEYS,
     ROLE_NAMES,
+    POLLING_ADAPTERS,
+    SR_REQUIRED_HEADERS,
     appendHistory,
     addReviewDecision,
     applyRetention,
@@ -2069,17 +2805,23 @@
     clearSessionUserId,
     createBackup,
     createDemoState,
+    createPollingPlan,
     createSelectedComparison,
     deepClone,
     deriveLegacyMetadata,
+    derivePollingStatus,
+    detectExtronJsonDeviceType,
     detectSecrets,
     detectSnapshotProfile,
     endBaseline,
     escapeHtml,
     formatBytes,
+    filterInventoryDevices,
     getActivePreviousChangeSets,
     getActiveBaselineAssignment,
     getBaselineDrift,
+    getInventoryAnalytics,
+    getDashboardSummary,
     getChangeEvents,
     getLatestReviewDecision,
     getProjectCurrentSnapshot,
@@ -2087,6 +2829,10 @@
     getProjectTimeline,
     getUnresolvedMatches,
     importBackupText,
+    importSrRows,
+    importSrWorkbook,
+    ingestPollingResultText,
+    ingestPollingRunFiles,
     ingestSnapshotText,
     loadState,
     mapSnapshotToProject,
@@ -2094,13 +2840,25 @@
     measureStateBytes,
     migrateState,
     normalizeBoolean,
+    normalizeIpv4,
+    normalizeManufacturer,
+    normalizedSrRow,
     normalizeMac,
     normalizeSnapshot,
     normalizeText,
+    normalizeSrHeader,
     normalizeUnordered,
+    parsePollingFilenameIp,
+    parseRunFolderTimestamp,
+    pollingPayloadProjection,
+    rebuildDeviceChanges,
+    rowsFromWorkbook,
+    classifySrDevice,
+    resolvePollingCapability,
     resolveMatchDecision,
     readSessionUserId,
     saveState,
+    sha256Bytes,
     sha256Text,
     validateBackup,
     validateExtronV1,
@@ -2118,26 +2876,51 @@
   const app = document.getElementById("app");
   if (!app) return;
 
-  const loaded = loadState(global.localStorage);
+  if (!global.__MVP_SECURE_RUNTIME__) {
+    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Требуется защищённый локальный runtime</h1><p>Прямое открытие <code>index.html</code> отключено, поскольку browser storage не обеспечивает требуемую защиту и объём.</p><p class="muted">Запустите <code>powershell -ExecutionPolicy Bypass -File .\\start.ps1</code>.</p></section></main>`;
+    return;
+  }
+
+  const persistenceStorage = createSecureRuntimeStorage();
+
+  function createSecureRuntimeStorage() {
+    function request(method, key, value) {
+      const xhr = new XMLHttpRequest();
+      xhr.open(method, `/api/storage/${encodeURIComponent(key)}`, false);
+      if (method !== "GET") xhr.setRequestHeader("X-MVP-CSRF", String(global.__MVP_CSRF__ || ""));
+      if (method === "PUT") xhr.setRequestHeader("Content-Type", "application/json; charset=utf-8");
+      xhr.send(value === undefined ? null : value);
+      if (method === "GET" && xhr.status === 404) return null;
+      if (xhr.status < 200 || xhr.status >= 300) throw new Error(`Secure runtime storage error (${xhr.status})`);
+      return xhr.responseText;
+    }
+    return {
+      getItem(key) { return request("GET", key); },
+      setItem(key, value) { request("PUT", key, String(value)); },
+      removeItem(key) { request("DELETE", key); }
+    };
+  }
+
+  const loaded = loadState(persistenceStorage);
   let state = loaded.state;
   let recovery = loaded.recovery;
   let startupMessage = null;
   const sessionStorageRef = resolveSessionStorage();
   if (!recovery && state.currentUserId !== null) {
     const cleaned = clearPersistedUserSession(state);
-    const saved = saveState(cleaned, global.localStorage);
+    const saved = saveState(cleaned, persistenceStorage);
     state = cleaned;
     if (!saved.ok) {
       startupMessage = { text: `Legacy login-session не удалена из persistent state: ${saved.errors.join("; ")}`, type: "warning" };
     }
   }
-  let sessionUserId = recovery ? null : readSessionUserId(state, sessionStorageRef);
+  let sessionUserId = recovery ? null : "user-administrator";
   if (!recovery) {
     const retained = applyRetention(state, { actorId: "system", reason: "Startup retention" });
     if (!retained.ok) {
       startupMessage = { text: `Startup retention не выполнен: ${retained.errors.join("; ")}`, type: "error" };
     } else if (retained.changed) {
-      const saved = saveState(retained.state, global.localStorage);
+      const saved = saveState(retained.state, persistenceStorage);
       if (saved.ok) {
         state = retained.state;
         startupMessage = {
@@ -2158,7 +2941,14 @@
     selectedSnapshotId: null,
     selectedChangeSetId: null,
     selectedEventId: null,
-    eventFilters: {}
+    selectedInventoryDeviceId: null,
+    eventFilters: {},
+    inventoryFilters: {},
+    srImportResults: [],
+    pollingImportResults: [],
+    pollingPlanResult: null,
+    inventoryBusy: false,
+    dashboardFilters: { period: "latest_run" }
   };
 
   document.addEventListener("click", handleClick);
@@ -2175,7 +2965,7 @@
   }
 
   function commitState(nextState, successMessage) {
-    const result = saveState(nextState, global.localStorage);
+    const result = saveState(nextState, persistenceStorage);
     if (!result.ok) {
       setMessage(`Сохранение отменено: ${result.errors.join("; ")}`, "error");
       render();
@@ -2199,6 +2989,7 @@
       return;
     }
     app.innerHTML = renderShell(user);
+    if (ui.route === "upload") queueMicrotask(refreshCredentialSummary);
   }
 
   function renderRecovery() {
@@ -2223,24 +3014,10 @@
         <section class="login-card" aria-labelledby="login-title">
           <div class="brand-mark" aria-hidden="true">SR</div>
           <h1 id="login-title">MVP_SPHERE_SR</h1>
-          <p class="page-subtitle">Локальный аудит изменений проектов и оборудования</p>
+          <p class="page-subtitle">Защищённая локальная сессия недоступна</p>
           <div class="warning-panel" role="note">${escapeHtml(SECURITY_NOTICE)}</div>
           ${renderMessage()}
-          <form class="form-grid" data-login-form autocomplete="off">
-            <div class="field">
-              <label for="login">Логин</label>
-              <input id="login" name="login" required spellcheck="false">
-            </div>
-            <div class="field">
-              <label for="password">Пароль</label>
-              <input id="password" name="password" type="password" required>
-            </div>
-            <button class="button primary" type="submit">Войти в demo</button>
-          </form>
-          <div class="demo-credentials" aria-label="Демонстрационные учётные записи">
-            <button class="demo-credential" type="button" data-fill-login="engineer" data-fill-password="engineer"><strong>AV-инженер</strong><br>engineer / engineer</button>
-            <button class="demo-credential" type="button" data-fill-login="admin" data-fill-password="admin"><strong>Администратор</strong><br>admin / admin</button>
-          </div>
+          <p>Закройте эту вкладку и запустите приложение через <code>start.ps1</code>. Пароль приложения не используется: доступ создаётся локальным runtime для текущего пользователя Windows.</p>
         </section>
       </main>`;
   }
@@ -2251,27 +3028,25 @@
         <aside class="sidebar">
           <div class="sidebar-brand">MVP_SPHERE_SR</div>
           <nav class="nav-list" aria-label="Основная навигация">
-            ${navButton("dashboard", "Обзор")}
-            ${navButton("projects", "Проекты")}
-            ${navButton("events", "События")}
-            ${navButton("matches", "Сопоставления")}
+            ${navButton("dashboard", "Главный экран")}
+            ${navButton("vcs", "Терминалы ВКС")}
+            ${navButton("controllers", "Контроллеры")}
+            ${navButton("panels", "Панели управления")}
             ${navButton("upload", "Загрузка")}
-            ${navButton("snapshots", "Снимки")}
-            ${navButton("settings", "Хранилище")}
+            ${navButton("settings", "Локальное хранилище")}
           </nav>
         </aside>
         <div class="workspace">
           <header class="topbar">
-            <div><strong>Локальный анализ</strong><br><span class="muted">State хранится только в этом browser profile</span></div>
+            <div><strong>Защищённый локальный анализ</strong><br><span class="muted">Зашифрованное дисковое хранилище · loopback runtime</span></div>
             <div class="user-summary">
               <span>${escapeHtml(user.name)}</span>
               <span class="role-chip">${escapeHtml(ROLE_NAMES[user.role])}</span>
-              <button class="button secondary" type="button" data-logout>Выйти</button>
             </div>
           </header>
           <div class="security-notice" role="note">
             <span>${escapeHtml(SECURITY_NOTICE)}</span>
-            <span class="storage-chip">State: ${formatBytes(measureStateBytes(state))} / ${formatBytes(DEFAULT_MAX_STATE_BYTES)}</span>
+            <span class="storage-chip">State: ${formatBytes(measureStateBytes(state))} · без application quota</span>
           </div>
           <main id="main-content" class="page" tabindex="-1">
             ${renderMessage()}
@@ -2283,12 +3058,8 @@
 
   function renderRoute(user) {
     if (ui.route === "settings") return renderSettings(user);
-    if (ui.route === "projects") return renderProjects();
-    if (ui.route === "events") return renderEvents();
-    if (ui.route === "matches") return renderMatches();
     if (ui.route === "upload") return renderUpload();
-    if (ui.route === "snapshots") return renderSnapshots();
-    if (ui.route === "comparison") return renderComparison();
+    if (["vcs", "controllers", "panels"].includes(ui.route)) return renderInventoryRoute(ui.route);
     return renderDashboard();
   }
 
@@ -2304,42 +3075,196 @@
   }
 
   function renderDashboard() {
-    const openIssues = state.snapshots.reduce((total, snapshot) => total + (Array.isArray(snapshot.qualityIssues) ? snapshot.qualityIssues.filter((issue) => issue.status !== "resolved").length : 0), 0);
-    const unreviewed = getChangeEvents(state, { reviewStatus: "unreviewed" }).length;
-    return `
-      <header class="page-header">
-        <div>
-          <h1>Обзор локального аудита</h1>
-          <p class="page-subtitle">Импортируйте последовательные снимки одного проекта, чтобы увидеть нормализованные изменения.</p>
-        </div>
-        <button class="button primary" type="button" data-route="upload">Загрузить снимки</button>
-      </header>
-      <section class="stats-grid" aria-label="Сводные показатели">
-        ${statCard("Проекты", state.projects.length)}
-        ${statCard("Снимки", state.snapshots.length)}
-        ${statCard("Без проверки", unreviewed)}
-        ${statCard("Проблемы данных", openIssues)}
+    const summary = getDashboardSummary(state, ui.dashboardFilters);
+    const header = `<header class="page-header dashboard-header"><div><p class="eyebrow">Оперативное состояние</p><h1>Главный экран</h1><p class="page-subtitle">Фактические данные актуальной SR и polling history без demo-значений.</p></div><div class="button-row"><button class="button primary" type="button" data-route="upload">Запустить опрос</button><button class="button secondary" type="button" data-route="upload">Загрузить SR / результаты</button></div></header>`;
+    const filterPanel = renderDashboardFilters(ui.dashboardFilters);
+    if (!summary.valid) return `${header}${filterPanel}<div class="error-panel section-gap" role="alert">${escapeHtml(summary.errors.join("; "))}</div>`;
+    if (summary.emptyState === "no_sr") return `${header}<section class="empty-state dashboard-empty"><h2>Нет данных SR</h2><p>Для начала работы загрузите локальную XLSX-выгрузку SR. Данные не покинут защищённый runtime.</p><button class="button primary" type="button" data-route="upload">Загрузить SR</button></section>`;
+    const sr = summary.context.sr;
+    const run = summary.context.latestRun;
+    const noPolling = summary.emptyState === "no_polling" ? `<div class="info-panel section-gap"><strong>Данные опросов пока отсутствуют.</strong> Inventory показан по SR; устройства не считаются ошибочными.</div>` : "";
+    return `${header}
+      <section class="dashboard-context" aria-label="Контекст данных">
+        <div><span class="eyebrow">Актуальная SR</span><strong>${escapeHtml(formatDateTime(sr?.importedAt))}</strong><small>${escapeHtml(sr?.filename || "Имя недоступно")} · ${Number(sr?.rowCount) || 0} строк</small></div>
+        <div><span class="eyebrow">Последний polling run</span><strong>${run ? escapeHtml(formatDateTime(run.capturedAt)) : "Нет запусков"}</strong><small>${run ? `${escapeHtml(dashboardRunLabel(run))} · ${run.deviceCount} устройств` : "Результаты ещё не импортированы"}</small></div>
+        <div><span class="eyebrow">Последние данные</span><strong>${summary.freshness.latestTimestamp ? escapeHtml(formatDateTime(summary.freshness.latestTimestamp)) : "Нет данных"}</strong><small>${summary.freshness.latestTimestamp ? escapeHtml(formatAge(summary.freshness.latestTimestamp)) : "Возраст snapshot неизвестен"}</small></div>
       </section>
-      <div class="section-stack">
-        <section class="card">
-          <h2>Текущее состояние</h2>
-          <ul class="data-list">
-            <li><span>Версия state</span><strong>${state.version}</strong></li>
-            <li><span>Локальный размер</span><strong>${formatBytes(measureStateBytes(state))}</strong></li>
-            <li><span>Retention</span><strong>${state.settings.retentionDays} дней</strong></li>
-            <li><span>Последняя запись истории</span><strong>${formatDateTime(state.history.at(-1)?.timestamp)}</strong></li>
-          </ul>
-        </section>
-        ${state.snapshots.length ? `
-          <section class="card">
-            <h2>Последние снимки</h2>
-            ${renderSnapshotRows([...state.snapshots].reverse().slice(0, 5))}
-          </section>` : `
-          <section class="empty-state">
-            <h2>Снимки ещё не импортированы</h2>
-            <p>Загрузите synthetic/sanitized Extron JSON. Первый снимок создаст базовое состояние, последующие — сравнения.</p>
-          </section>`}
-      </div>`;
+      ${filterPanel}${noPolling}
+      <section class="dashboard-section" aria-labelledby="inventory-kpi"><div class="section-heading"><div><p class="eyebrow">Latest state</p><h2 id="inventory-kpi">Инвентарь</h2></div><span class="badge info">${summary.inventory.locations} локаций</span></div>
+        <div class="dashboard-kpi-grid">
+          ${dashboardRouteKpi("Всего оборудования", summary.inventory.total, "Актуальные контролируемые устройства", null)}
+          ${dashboardRouteKpi("Терминалы ВКС", summary.inventory.byCategory.vcs, "Тип модели: Video Conference", "vcs")}
+          ${dashboardRouteKpi("Контроллеры", summary.inventory.byCategory.controller, "Тип оборудования: controller", "controllers")}
+          ${dashboardRouteKpi("Панели управления", summary.inventory.byCategory.panel, "Тип модели: Панель управления", "panels")}
+        </div>
+      </section>
+      <section class="dashboard-section" aria-labelledby="coverage-kpi"><div class="section-heading"><div><p class="eyebrow">Latest state</p><h2 id="coverage-kpi">Покрытие опросом</h2></div><span class="muted">Одно устройство учитывается один раз по последнему snapshot</span></div>
+        <div class="dashboard-kpi-grid operational-grid">
+          ${dashboardMetricKpi("Успешно", summary.coverage.success, "Последний результат успешен", "success", summary, "success")}
+          ${dashboardMetricKpi("Ошибки", summary.coverage.failed, "Последний опрос завершился ошибкой", "critical", summary, "failed")}
+          ${dashboardMetricKpi("Нет ping", summary.problems.currentPingFailures, "Нет ping сейчас", "critical", summary, "pingFailures")}
+          ${dashboardMetricKpi("Не опрошено", summary.coverage.notPolled, "Поддерживается, но history отсутствует", "warning", summary, "notPolled")}
+          ${dashboardMetricKpi("Не поддерживается", summary.coverage.unsupported, "Нет автоматического adapter", "neutral", summary, "unsupported")}
+          ${dashboardRouteKpi("Когда-либо опрошено", summary.coverage.everPolled, `В последнем run: ${summary.coverage.inLatestRun}`, null)}
+        </div>
+      </section>
+      <section class="attention-panel dashboard-section" aria-labelledby="attention-kpi"><div class="section-heading"><div><p class="eyebrow">Требует внимания</p><h2 id="attention-kpi">Текущие проблемы</h2></div><span class="badge ${summary.problems.currentFailures ? "critical" : "success"}">${summary.problems.currentFailures ? `${summary.problems.currentFailures} устройств` : "Известных ошибок нет"}</span></div>
+        <div class="attention-grid"><div><strong>${summary.problems.currentPingFailures}</strong><span>Нет ping сейчас</span></div><div><strong>${summary.problems.currentFailures}</strong><span>Ошибки оборудования</span></div><div><strong>${summary.problems.unmatched}</strong><span>Не сопоставлено с SR</span></div><div><strong>${summary.problems.dataErrors}</strong><span>Ошибки данных</span></div></div>
+      </section>
+      <div class="dashboard-main-grid section-gap">
+        <section class="card"><div class="section-heading"><div><p class="eyebrow">Selected period</p><h2>Активность: ${escapeHtml(summary.period.label)}</h2></div></div><ul class="data-list"><li><span>Результаты</span><strong>${summary.periodMetrics.results}</strong></li><li><span>Неуспешные results</span><strong>${summary.periodMetrics.failedResults}</strong></li><li><span>Устройства с ping failures</span><strong>${summary.periodMetrics.pingFailures}</strong></li><li><span>Устройства с изменениями</span><strong>${summary.periodMetrics.changedDevices}</strong></li><li><span>Change records</span><strong>${summary.periodMetrics.changes}</strong></li><li><span>Ошибки данных</span><strong>${summary.periodMetrics.dataErrors}</strong></li></ul><p class="muted">Эти показатели относятся к периоду и не заменяют current-state KPI выше.</p></section>
+        ${renderLatestRun(summary)}
+        ${renderVipSummary(summary)}
+      </div>
+      <div class="dashboard-main-grid section-gap">
+        ${renderDashboardProblems(summary)}
+        ${renderDashboardChanges(summary)}
+      </div>
+      <section class="card section-gap"><div class="section-heading"><div><p class="eyebrow">Приоритет</p><h2>Локации, требующие внимания</h2></div></div>${renderAttentionLocations(summary)}</section>
+      <div class="dashboard-main-grid section-gap">
+        ${renderDistribution("По производителям", summary.distributions.manufacturers, summary.inventory.total)}
+        ${renderDistribution("По моделям", summary.distributions.models, summary.inventory.total)}
+        ${renderDistribution("По категориям", summary.distributions.categories, summary.inventory.total)}
+      </div>
+      <section class="card section-gap blocked-analytics"><h2>Показатели, ожидающие достоверных данных</h2><div class="blocked-grid"><div><strong>Авторизация</strong><span>Недостаточно данных</span></div><div><strong>Перезагрузки</strong><span>Недостаточно данных</span></div><div><strong>GCPlus</strong><span>Недостаточно данных</span></div><div><strong>Устаревшие данные</strong><span>Порог не настроен</span></div></div></section>`;
+  }
+
+  function dashboardRunLabel(run) {
+    const categoryLabels = { vcs: "ВКС", controller: "Контроллеры", panel: "Панели" };
+    const categories = (run.categories || []).map((item) => categoryLabels[item] || item).join(", ");
+    return [categories || (run.kind === "plan" ? "План опроса" : "Импорт результатов"), run.manufacturer].filter(Boolean).join(" / ");
+  }
+
+  function formatAge(value) {
+    const age = Date.now() - timeValue(value);
+    if (!Number.isFinite(age) || age < 0) return "Возраст неизвестен";
+    const hours = Math.floor(age / 3600000);
+    if (hours < 1) return "Менее часа назад";
+    if (hours < 24) return `${hours} ч назад`;
+    return `${Math.floor(hours / 24)} дн назад`;
+  }
+
+  function renderDashboardFilters(filters) {
+    const devices = state.inventoryDevices.filter((item) => item.inCurrentSr !== false && ["vcs", "controller", "panel"].includes(item.category));
+    const manufacturers = devices.map((item) => item.manufacturerNormalized).filter(Boolean);
+    const models = devices.map((item) => item.modelRaw).filter(Boolean);
+    const locationIds = new Set(devices.map((item) => item.locationId).filter(Boolean));
+    const locations = state.locations.filter((item) => locationIds.has(item.id)).sort((a, b) => String(a.name).localeCompare(String(b.name), "ru"));
+    return `<section class="card dashboard-filters"><div class="section-heading"><div><p class="eyebrow">Глобальный scope</p><h2>Фильтры Dashboard</h2></div><button class="button secondary" type="button" data-clear-dashboard-filters>Сбросить</button></div><form class="filter-grid dashboard-filter-grid" data-dashboard-filters>
+      <div class="field"><label>Период событий</label><select name="period"><option value="latest_run"${filters.period === "latest_run" || !filters.period ? " selected" : ""}>Последний запуск</option><option value="today"${filters.period === "today" ? " selected" : ""}>Сегодня</option><option value="7d"${filters.period === "7d" ? " selected" : ""}>7 дней</option><option value="30d"${filters.period === "30d" ? " selected" : ""}>30 дней</option><option value="custom"${filters.period === "custom" ? " selected" : ""}>Произвольный</option><option value="all"${filters.period === "all" ? " selected" : ""}>Вся история</option></select></div>
+      <div class="field"><label>Дата от</label><input type="date" name="dateFrom" value="${escapeHtml(filters.dateFrom || "")}"></div><div class="field"><label>Дата до</label><input type="date" name="dateTo" value="${escapeHtml(filters.dateTo || "")}"></div>
+      <div class="field"><label>Категория</label><select name="category"><option value="">Все</option><option value="vcs"${filters.category === "vcs" ? " selected" : ""}>ВКС</option><option value="controller"${filters.category === "controller" ? " selected" : ""}>Контроллеры</option><option value="panel"${filters.category === "panel" ? " selected" : ""}>Панели</option></select></div>
+      <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(manufacturers, filters.manufacturer)}</select></div><div class="field"><label>Модель</label><select name="model">${filterOptions(models, filters.model)}</select></div>
+      <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${locations.map((item) => `<option value="${escapeHtml(item.id)}"${filters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
+      <div class="field"><label>VIP</label><select name="vip"><option value="">Все</option><option value="true"${filters.vip === "true" ? " selected" : ""}>VIP</option><option value="false"${filters.vip === "false" ? " selected" : ""}>Не VIP</option></select></div>
+      <div class="field"><label>Текущий статус</label><select name="pollStatus"><option value="">Все</option><option value="success"${filters.pollStatus === "success" ? " selected" : ""}>SUCCESS</option><option value="failed"${filters.pollStatus === "failed" ? " selected" : ""}>FAILED</option><option value="not_polled"${filters.pollStatus === "not_polled" ? " selected" : ""}>NOT_POLLED</option><option value="unsupported"${filters.pollStatus === "unsupported" ? " selected" : ""}>UNSUPPORTED</option><option value="unknown"${filters.pollStatus === "unknown" ? " selected" : ""}>UNKNOWN</option></select></div>
+      <div class="button-row"><button class="button primary" type="submit">Применить</button></div>
+    </form></section>`;
+  }
+
+  function dashboardRouteKpi(title, value, note, route) {
+    return `<article class="dashboard-kpi"><span>${escapeHtml(title)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small>${route ? `<button class="text-button" type="button" data-dashboard-route="${route}">Открыть список</button>` : ""}</article>`;
+  }
+
+  function dashboardMetricKpi(title, value, note, tone, summary, metric) {
+    const config = { success: ["pollStatus", "success"], failed: ["pollStatus", "error"], pingFailures: ["ping", "failed"], notPolled: ["pollStatus", "never", "support", "supported"], unsupported: ["support", "unsupported"] }[metric] || [];
+    const routeNames = { vcs: "vcs", controller: "controllers", panel: "panels" };
+    const buttons = Object.entries(summary.drilldown.byCategory).filter(([, counts]) => counts[metric] > 0).map(([category, counts]) => {
+      const attrs = [`data-dashboard-route="${routeNames[category]}"`];
+      for (let index = 0; index < config.length; index += 2) attrs.push(`data-filter-${config[index].replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${config[index + 1]}"`);
+      return `<button type="button" class="metric-link" ${attrs.join(" ")}>${category === "vcs" ? "ВКС" : category === "controller" ? "Контроллеры" : "Панели"}: ${counts[metric]}</button>`;
+    }).join("");
+    return `<article class="dashboard-kpi ${tone}"><span>${escapeHtml(title)}</span><strong>${value}</strong><small>${escapeHtml(note)}</small>${buttons ? `<div class="metric-drilldowns">${buttons}</div>` : ""}</article>`;
+  }
+
+  function renderLatestRun(summary) {
+    const run = summary.context.latestRun;
+    if (!run) return `<section class="card"><p class="eyebrow">Последний опрос</p><h2>Запусков пока нет</h2><p class="muted">Импортируйте результаты или сформируйте план опроса.</p><button class="button secondary" type="button" data-route="upload">Открыть загрузку</button></section>`;
+    return `<section class="card"><p class="eyebrow">Последний опрос</p><h2>${escapeHtml(dashboardRunLabel(run))}</h2><p class="muted">${escapeHtml(formatDateTime(run.capturedAt))} · статус ${escapeHtml(run.status)}</p><ul class="data-list"><li><span>Устройств / файлов</span><strong>${run.deviceCount}</strong></li><li><span>Успешно</span><strong>${run.successCount}</strong></li><li><span>Ошибки</span><strong>${run.errorCount}</strong></li><li><span>Нет ping сейчас</span><strong>${summary.problems.currentPingFailures}</strong></li></ul><button class="button secondary" type="button" data-route="upload">Новый запуск</button></section>`;
+  }
+
+  function renderVipSummary(summary) {
+    return `<section class="card vip-card"><p class="eyebrow">VIP monitoring</p><h2>Приоритетная инфраструктура</h2><ul class="data-list"><li><span>VIP-локации</span><strong>${summary.vip.locations}</strong></li><li><span>VIP-оборудование</span><strong>${summary.vip.devices}</strong></li><li><span>С текущими проблемами</span><strong>${summary.vip.problems}</strong></li><li><span>Нет данных / unsupported</span><strong>${summary.vip.noData}</strong></li></ul>${summary.vip.problems ? `<div class="metric-drilldowns">${Object.entries(summary.drilldown.byCategory).filter(([, row]) => row.vipProblems).map(([category, row]) => `<button class="metric-link" type="button" data-dashboard-route="${category === "vcs" ? "vcs" : category === "controller" ? "controllers" : "panels"}" data-filter-vip="true" data-filter-poll-status="error">${category === "vcs" ? "ВКС" : category === "controller" ? "Контроллеры" : "Панели"}: ${row.vipProblems}</button>`).join("")}</div>` : `<p class="success-text">Известных VIP-проблем нет.</p>`}</section>`;
+  }
+
+  function renderDashboardProblems(summary) {
+    return `<section class="card"><div class="section-heading"><div><p class="eyebrow">Latest state / import</p><h2>Последние проблемы</h2></div><span class="badge ${summary.latestProblems.length ? "warning" : "success"}">${summary.latestProblems.length}</span></div>${summary.latestProblems.length ? `<div class="activity-list">${summary.latestProblems.map((item) => `<article><div><span class="badge ${item.scope === "equipment" ? "critical" : "warning"}">${item.scope === "equipment" ? "Оборудование" : "Данные"}</span><time>${escapeHtml(formatDateTime(item.timestamp))}</time></div><strong>${escapeHtml(item.location)} · ${escapeHtml(item.device)}</strong><p>${escapeHtml(item.description)}</p><small class="mono">${escapeHtml(item.ip)}</small>${item.deviceId && item.category ? `<button class="text-button" type="button" data-dashboard-device="${escapeHtml(item.deviceId)}" data-dashboard-category="${escapeHtml(item.category)}">Карточка устройства</button>` : ""}</article>`).join("")}</div>` : `<p class="muted">Последних проблем в текущем scope нет.</p>`}</section>`;
+  }
+
+  function renderDashboardChanges(summary) {
+    return `<section class="card"><div class="section-heading"><div><p class="eyebrow">Latest detected</p><h2>Изменения</h2></div><span class="badge info">${summary.changes.changedDevices} устройств · ${summary.changes.total} записей</span></div>${summary.recentChanges.length ? `<div class="activity-list">${summary.recentChanges.map((item) => `<article><div><time>${escapeHtml(formatDateTime(item.timestamp))}</time><span class="badge info">${escapeHtml(item.path)}</span></div><strong>${escapeHtml(item.location)} · ${escapeHtml(item.device)}</strong><p><del>${escapeHtml(item.oldValue)}</del> → <ins>${escapeHtml(item.newValue)}</ins></p><small>${escapeHtml(item.manufacturer)} · ${escapeHtml(item.model)}</small><button class="text-button" type="button" data-dashboard-device="${escapeHtml(item.deviceId)}" data-dashboard-category="${escapeHtml(item.category)}">Карточка устройства</button></article>`).join("")}</div>` : `<p class="muted">Значимых изменений в текущем scope нет.</p>`}<div class="data-list compact-list"><div><span>Новые в актуальной SR</span><strong>${summary.changes.newInLatestSr}</strong></div><div><span>Отсутствуют в актуальной SR</span><strong>${summary.changes.missingFromLatestSr}</strong></div></div></section>`;
+  }
+
+  function renderAttentionLocations(summary) {
+    if (!summary.locations.length) return `<p class="muted">Локаций с проблемами, изменениями или отсутствующими данными нет.</p>`;
+    return `<div class="table-wrap"><table><thead><tr><th>Локация</th><th>Всего</th><th>Проблемы</th><th>Нет ping</th><th>Изменения</th><th>Нет данных</th></tr></thead><tbody>${summary.locations.map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.vip ? ` <span class="badge warning">VIP</span>` : ""}<br><small>${escapeHtml(item.address)}</small></td><td>${item.totalDevices}</td><td>${item.problemDevices}</td><td>${item.pingFailures}</td><td>${item.changedDevices}</td><td>${item.noData}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  function renderDistribution(title, rows, total) {
+    return `<section class="card"><h2>${escapeHtml(title)}</h2>${rows.length ? `<div class="distribution-list">${rows.map((item) => `<div><div><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong></div><progress max="${Math.max(1, total)}" value="${item.count}">${item.count}</progress></div>`).join("")}</div>` : `<p class="muted">Нет данных.</p>`}</section>`;
+  }
+
+  const INVENTORY_ROUTE = Object.freeze({ vcs: { category: "vcs", title: "ВКС-терминалы" }, controllers: { category: "controller", title: "Контроллеры" }, panels: { category: "panel", title: "Панели управления" } });
+
+  function latestPollingResult(deviceId) {
+    return state.pollingResults.filter((item) => item.deviceId === deviceId).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))[0] || null;
+  }
+
+  function filteredInventory(category) {
+    return filterInventoryDevices(state, category, ui.inventoryFilters);
+  }
+
+  function renderInventoryRoute(route) {
+    const config = INVENTORY_ROUTE[route];
+    if (ui.selectedInventoryDeviceId) {
+      const selected = state.inventoryDevices.find((item) => item.id === ui.selectedInventoryDeviceId && item.category === config.category);
+      if (selected) return renderInventoryDetail(selected, route);
+      ui.selectedInventoryDeviceId = null;
+    }
+    const devices = filteredInventory(config.category);
+    const manufacturers = state.inventoryDevices.filter((item) => item.category === config.category).map((item) => item.manufacturerNormalized);
+    const models = state.inventoryDevices.filter((item) => item.category === config.category).map((item) => item.modelRaw).filter(Boolean);
+    const categoryLocationIds = new Set(state.inventoryDevices.filter((item) => item.category === config.category).map((item) => item.locationId).filter(Boolean));
+    const categoryLocations = state.locations.filter((item) => categoryLocationIds.has(item.id)).sort((a, b) => String(a.name).localeCompare(String(b.name), "ru"));
+    const analytics = getInventoryAnalytics(state, config.category);
+    return `<header class="page-header"><div><h1>${config.title}</h1><p class="page-subtitle">Одна строка — устройство SR; результаты опросов открываются как история устройства.</p></div><span class="badge info">${devices.length}</span></header>
+      <section class="stats-grid">${statCard("Всего", analytics.total)}${statCard("Опрошено / нет", `${analytics.polled} / ${analytics.unpolled}`)}${statCard("Успех / ошибки", `${analytics.success} / ${analytics.errors}`)}${statCard("Изменения", `${analytics.changedDevices} устройств / ${analytics.changes}`)}</section>
+      <section class="card"><form class="filter-grid inventory-filter-grid" data-inventory-filters>
+        <input type="hidden" name="route" value="${route}"><div class="field"><label>Поиск</label><input name="search" value="${escapeHtml(ui.inventoryFilters.search || "")}" placeholder="IP, модель, комната…"></div>
+        <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(manufacturers, ui.inventoryFilters.manufacturer)}</select></div>
+        <div class="field"><label>Модель</label><select name="model">${filterOptions(models, ui.inventoryFilters.model)}</select></div>
+        <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${categoryLocations.map((item) => `<option value="${escapeHtml(item.id)}"${ui.inventoryFilters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
+        <div class="field"><label>Актуальность SR</label><select name="current"><option value="">Все</option><option value="yes"${ui.inventoryFilters.current === "yes" ? " selected" : ""}>В актуальной SR</option><option value="no"${ui.inventoryFilters.current === "no" ? " selected" : ""}>Исторические</option></select></div>
+        <div class="field"><label>Последний опрос</label><select name="pollStatus">${filterOptions(["success", "error", "unknown", "never"], ui.inventoryFilters.pollStatus, { success: "Успешно", error: "Ошибка", unknown: "Неизвестно", never: "Не опрашивалось" })}</select></div>
+        <div class="field"><label>Ping</label><select name="ping">${filterOptions(["ok", "failed", "unknown"], ui.inventoryFilters.ping, { ok: "Доступен", failed: "Нет ping", unknown: "Неизвестно" })}</select></div>
+        <div class="field"><label>Изменения</label><select name="changed"><option value="">Все</option><option value="true"${ui.inventoryFilters.changed === "true" ? " selected" : ""}>Есть</option><option value="false"${ui.inventoryFilters.changed === "false" ? " selected" : ""}>Нет</option></select></div>
+        <div class="field"><label>Поддержка polling</label><select name="support"><option value="">Все</option><option value="supported"${ui.inventoryFilters.support === "supported" ? " selected" : ""}>Поддерживается</option><option value="unsupported"${ui.inventoryFilters.support === "unsupported" ? " selected" : ""}>Не поддерживается</option><option value="unknown"${ui.inventoryFilters.support === "unknown" ? " selected" : ""}>Неизвестно</option></select></div>
+        <div class="field"><label>VIP</label><select name="vip"><option value="">Все</option><option value="true"${ui.inventoryFilters.vip === "true" ? " selected" : ""}>Да</option><option value="false"${ui.inventoryFilters.vip === "false" ? " selected" : ""}>Нет</option></select></div>
+        <div class="button-row"><button class="button primary" type="submit">Применить</button><button class="button secondary" type="button" data-clear-inventory-filters>Сбросить</button></div>
+      </form></section>
+      <section class="card section-gap">${renderInventoryTable(devices)}</section>`;
+  }
+
+  function renderInventoryTable(devices) {
+    if (!devices.length) return `<div class="empty-state compact"><p>Устройства по выбранным фильтрам не найдены.</p></div>`;
+    return `<div class="table-wrap"><table><thead><tr><th>Локация</th><th>Устройство</th><th>Производитель / модель</th><th>IP</th><th>SR</th><th>Последний опрос</th><th></th></tr></thead><tbody>${devices.map((device) => {
+      const location = state.locations.find((item) => item.id === device.locationId);
+      const latest = latestPollingResult(device.id);
+      return `<tr><td><strong>${escapeHtml(location?.name || "—")}</strong><br><span class="muted">${escapeHtml(location?.address || "")}</span></td><td>${escapeHtml(device.nameRaw || device.modelTypeRaw || "—")}<br><span class="muted">${device.deviceVip ? "VIP · " : ""}${escapeHtml(device.inventoryNumber || device.serialNumber || "")}</span></td><td>${escapeHtml(device.manufacturerRaw || "—")}<br><span class="muted">${escapeHtml(device.modelRaw || "—")}</span></td><td class="mono">${escapeHtml(device.ipNormalized || device.ipRaw || "—")}</td><td><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "История" : "Актуально"}</span></td><td><span class="badge ${latest?.pollStatus === "success" ? "success" : latest?.pollStatus === "error" ? "critical" : "info"}">${escapeHtml(latest?.pollStatus || "Не было")}</span><br><span class="muted">${escapeHtml(formatDateTime(latest?.capturedAt))}</span></td><td><button class="button secondary compact-button" type="button" data-view-inventory="${escapeHtml(device.id)}">Открыть</button></td></tr>`;
+    }).join("")}</tbody></table></div>`;
+  }
+
+  function renderInventoryDetail(device, route) {
+    const location = state.locations.find((item) => item.id === device.locationId);
+    const results = state.pollingResults.filter((item) => item.deviceId === device.id).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt));
+    const changes = state.deviceChanges.filter((item) => item.deviceId === device.id && item.status === "active").sort((a, b) => new Date(b.detectedAt) - new Date(a.detectedAt));
+    const capability = resolvePollingCapability(device);
+    return `<header class="page-header"><div><button class="text-button" type="button" data-back-inventory="${route}">← К списку</button><h1>${escapeHtml(device.nameRaw || device.modelRaw || "Устройство")}</h1><p class="page-subtitle">${escapeHtml(location?.name || "Без локации")} · ${escapeHtml(device.ipNormalized || "IP не задан")}</p></div><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Не в актуальной SR" : "В актуальной SR"}</span></header>
+      <div class="detail-grid"><section class="card"><h2>Карточка SR</h2><dl class="definition-list">
+        <div><dt>Производитель / модель</dt><dd>${escapeHtml(device.manufacturerRaw || "—")} / ${escapeHtml(device.modelRaw || "—")}</dd></div><div><dt>IP / MAC</dt><dd>${escapeHtml(device.ipNormalized || "—")} / ${escapeHtml(device.macNormalized || device.macRaw || "—")}</dd></div><div><dt>SIP URI / домен</dt><dd>${escapeHtml(device.sipUri || "—")} / ${escapeHtml(device.domain || location?.domain || "—")}</dd></div><div><dt>Инвентарный / серийный</dt><dd>${escapeHtml(device.inventoryNumber || "—")} / ${escapeHtml(device.serialNumber || "—")}</dd></div>
+      </dl></section><section class="card"><h2>Поддержка опроса</h2><span class="badge warning">${escapeHtml(capability.support)}</span><p>Адаптер: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">Transport отсутствует; запуск реального сетевого опроса заблокирован. Credentials не хранятся.</p><button class="button secondary" type="button" disabled>Запустить опрос</button></section></div>
+      <section class="card section-gap"><h2>История результатов (${results.length})</h2><ul class="result-list">${results.map((result) => `<li><div><strong>${escapeHtml(formatDateTime(result.capturedAt))}</strong><br><span class="muted">${escapeHtml(result.filename)} · ${escapeHtml(result.detectedCategory)} · ping ${escapeHtml(result.pingStatus)}</span></div><span class="badge ${result.pollStatus === "success" ? "success" : "critical"}">${escapeHtml(result.pollStatus)}</span></li>`).join("") || "<li>Результатов пока нет</li>"}</ul></section>
+      <section class="card section-gap"><h2>Выявленные изменения (${changes.length})</h2><ul class="result-list">${changes.slice(0, 200).map((change) => `<li><div><strong class="mono">${escapeHtml(change.path)}</strong><br><span class="muted">${escapeHtml(displayValue(change.oldValue))} → ${escapeHtml(displayValue(change.newValue))}</span></div><span class="badge info">change</span></li>`).join("") || "<li>Изменений не выявлено</li>"}</ul></section>`;
   }
 
   function statCard(label, value) {
@@ -2521,37 +3446,32 @@
     return `
       <header class="page-header">
         <div>
-          <h1>Загрузка снимков</h1>
-          <p class="page-subtitle">Каждый файл обрабатывается независимо. Порядок сравнения определяется по capturedAt, а не по имени файла.</p>
+          <h1>Импорт данных</h1>
+          <p class="page-subtitle">Загрузите реестр SR и результаты уже выполненных опросов. Все операции локальны.</p>
         </div>
       </header>
       <div class="warning-panel">
-        Raw JSON сохраняется в localStorage и попадает в backup. Используйте только synthetic/sanitized данные без действующих паролей, токенов и ключей.
+        SR, raw JSON и аналитика сохраняются только в зашифрованном локальном хранилище. Credentials принимаются отдельным write-only vault и не попадают в backup.
       </div>
-      <section class="card upload-card">
-        <form class="form-grid" data-upload-form aria-busy="${ui.uploadBusy ? "true" : "false"}">
-          <div class="field">
-            <label for="snapshot-files">Extron JSON-файлы</label>
-            <input id="snapshot-files" name="snapshots" type="file" accept="application/json,.json" multiple required>
-          </div>
-          <label class="checkbox-row">
-            <input name="sanitized" type="checkbox" required>
-            <span>Подтверждаю, что файлы synthetic/sanitized и не содержат действующих секретов.</span>
-          </label>
-          <button class="button primary" type="submit"${ui.uploadBusy ? " disabled" : ""}>${ui.uploadBusy ? "Обработка…" : "Импортировать"}</button>
-        </form>
+      <div class="card-grid section-gap">
+        <section class="card upload-card"><h2>1. Выгрузка SR (.xlsx)</h2><p class="muted">Первый непустой лист; «Домен» необязателен. Повторный импорт обновляет устройства без потери истории.</p>
+          <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file">Файл SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать SR</button></form>
+          ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(item.label)}</span></li>`).join("")}</ul>` : ""}
+        </section>
+        <section class="card upload-card"><h2>2. Папка результатов опроса</h2><p class="muted">Имя папки: YYYY-MM-DD_HH-MM-SS; JSON-файлы именуются по IP. При недоступности folder timestamp укажите дату вручную.</p>
+          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Папка / JSON-файлы</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required></div><div class="field"><label for="polling-date">Дата запуска (fallback)</label><input id="polling-date" name="capturedAt" type="datetime-local"></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать результаты</button></form>
+          ${ui.pollingImportResults.length ? `<ul class="result-list section-gap">${ui.pollingImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(item.label)}</span></li>`).join("")}</ul>` : ""}
+        </section>
+      </div>
+      <section class="card section-gap"><h2>3. План будущего опроса</h2><p class="muted">План сохраняет только выборку и время. Автоматическое/фоновое выполнение заблокировано, пока нет реального transport adapter.</p>
+        <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required><option value="vcs">ВКС</option><option value="controller">Контроллеры</option><option value="panel">Панели</option></select></div><div class="field"><label>Производитель (optional)</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Сформировать план</button><button class="button secondary" type="button" disabled>Сетевой запуск недоступен</button></form>
+        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(ui.pollingPlanResult.category)}, устройств ${ui.pollingPlanResult.total}; transport adapters ${ui.pollingPlanResult.implemented}; без реализации ${ui.pollingPlanResult.notImplemented}. Credentials не сохранялись.</div>` : ""}
       </section>
-      ${ui.uploadResults.length ? `
-        <section class="card section-gap">
-          <h2>Результаты текущей загрузки</h2>
-          <ul class="result-list">
-            ${ui.uploadResults.map((result) => `
-              <li>
-                <div><strong>${escapeHtml(result.name)}</strong><br><span class="muted">${escapeHtml(result.detail || "")}</span></div>
-                <span class="badge ${result.ok ? "success" : "critical"}">${escapeHtml(result.label)}</span>
-              </li>`).join("")}
-          </ul>
-        </section>` : ""}`;
+      <section class="card section-gap"><h2>4. Учётные данные для polling</h2><p class="muted">JSON или CSV: IP, login/username, password. Файл передаётся только локальному runtime, атомарно помещается в OS-bound encrypted vault и не включается в state, аналитику или backup.</p>
+        <div class="warning-panel">Исходный plaintext-файл остаётся под вашей ответственностью. После успешного импорта защитите или удалите его согласно внутренней политике.</div>
+        <div class="button-row section-gap"><label class="button primary" for="credential-file">Импортировать credentials</label><input class="screen-reader-only" id="credential-file" type="file" accept=".json,.csv,application/json,text/csv" data-import-credentials></div>
+        <div id="credential-summary" class="info-panel section-gap">Vault summary загружается локально; secret values никогда не возвращаются в UI.</div>
+      </section>`;
   }
 
   function renderSnapshotRows(snapshots) {
@@ -2798,6 +3718,17 @@
       <div class="info-panel">Текущий пользователь: ${escapeHtml(user.name)}. ${escapeHtml(SECURITY_NOTICE)}</div>`;
   }
 
+  function renderSecureStorage(user) {
+    const stateBytes = measureStateBytes(state);
+    return `<header class="page-header"><div><h1>Локальное хранилище</h1><p class="page-subtitle">Зашифрованные данные текущего Windows-пользователя.</p></div></header>
+      <div class="detail-grid"><section class="card"><h2>Состояние</h2><ul class="data-list"><li><span>Размер state</span><strong>${formatBytes(stateBytes)}</strong></li><li><span>Application quota</span><strong>Не установлена</strong></li><li><span>Фактический предел</span><strong>Свободное место на диске</strong></li><li><span>State schema</span><strong>v${state.version}</strong></li></ul></section>
+      <section class="card"><h2>Защита</h2><ul class="data-list"><li><span>Runtime</span><strong>Loopback only</strong></li><li><span>Данные на диске</span><strong>AES-256-GCM</strong></li><li><span>Master key</span><strong>Windows DPAPI CurrentUser</strong></li><li><span>Роль</span><strong>${escapeHtml(ROLE_NAMES[user.role])}</strong></li></ul></section></div>
+      <div class="warning-panel section-gap">Plaintext backup из UI отключён. Credentials хранятся отдельно и никогда не входят в state или read API.</div>
+      <section class="card section-gap"><h2>Сброс аналитического state</h2><p class="muted">Credential vault этим действием не экспортируется и не отображается.</p><button class="button danger" type="button" data-reset-demo>Сбросить state</button></section>`;
+  }
+
+  renderSettings = renderSecureStorage;
+
   function handleClick(event) {
     const fill = event.target.closest("[data-fill-login]");
     if (fill) {
@@ -2811,6 +3742,36 @@
       return;
     }
 
+    const dashboardDevice = event.target.closest("[data-dashboard-device]");
+    if (dashboardDevice) {
+      ui.route = { vcs: "vcs", controller: "controllers", panel: "panels" }[dashboardDevice.dataset.dashboardCategory] || "dashboard";
+      ui.selectedInventoryDeviceId = dashboardDevice.dataset.dashboardDevice;
+      setMessage(null);
+      render();
+      return;
+    }
+
+    const dashboardRoute = event.target.closest("[data-dashboard-route]");
+    if (dashboardRoute) {
+      ui.route = dashboardRoute.dataset.dashboardRoute;
+      ui.selectedInventoryDeviceId = null;
+      ui.inventoryFilters = {};
+      Object.entries(dashboardRoute.dataset).forEach(([key, value]) => {
+        if (!key.startsWith("filter") || !value) return;
+        const filterKey = key.slice(6);
+        ui.inventoryFilters[filterKey.charAt(0).toLowerCase() + filterKey.slice(1)] = value;
+      });
+      setMessage(null);
+      render();
+      return;
+    }
+
+    if (event.target.closest("[data-clear-dashboard-filters]")) {
+      ui.dashboardFilters = { period: "latest_run" };
+      render();
+      return;
+    }
+
     const routeButton = event.target.closest("[data-route]");
     if (routeButton) {
       ui.route = routeButton.dataset.route;
@@ -2818,7 +3779,31 @@
       ui.selectedSnapshotId = null;
       ui.selectedChangeSetId = null;
       ui.selectedEventId = null;
+      ui.selectedInventoryDeviceId = null;
       setMessage(null);
+      render();
+      return;
+    }
+
+    const inventoryButton = event.target.closest("[data-view-inventory]");
+    if (inventoryButton) {
+      ui.selectedInventoryDeviceId = inventoryButton.dataset.viewInventory;
+      setMessage(null);
+      render();
+      return;
+    }
+
+    const backInventory = event.target.closest("[data-back-inventory]");
+    if (backInventory) {
+      ui.selectedInventoryDeviceId = null;
+      ui.route = backInventory.dataset.backInventory;
+      setMessage(null);
+      render();
+      return;
+    }
+
+    if (event.target.closest("[data-clear-inventory-filters]")) {
+      ui.inventoryFilters = {};
       render();
       return;
     }
@@ -2971,6 +3956,50 @@
   }
 
   async function handleSubmit(event) {
+    const dashboardFilterForm = event.target.closest("[data-dashboard-filters]");
+    if (dashboardFilterForm) {
+      event.preventDefault();
+      const formData = new FormData(dashboardFilterForm);
+      ui.dashboardFilters = Object.fromEntries(["period", "dateFrom", "dateTo", "category", "manufacturer", "model", "locationId", "vip", "pollStatus"].map((key) => [key, String(formData.get(key) || "")]));
+      render();
+      return;
+    }
+
+    const inventoryFilterForm = event.target.closest("[data-inventory-filters]");
+    if (inventoryFilterForm) {
+      event.preventDefault();
+      const formData = new FormData(inventoryFilterForm);
+      ui.inventoryFilters = Object.fromEntries(["search", "manufacturer", "model", "locationId", "current", "pollStatus", "ping", "changed", "support", "vip"].map((key) => [key, String(formData.get(key) || "")]));
+      ui.route = String(formData.get("route") || ui.route);
+      render();
+      return;
+    }
+
+    const srImportForm = event.target.closest("[data-sr-import-form]");
+    if (srImportForm) {
+      event.preventDefault();
+      await handleSrImport(srImportForm);
+      return;
+    }
+
+    const pollingImportForm = event.target.closest("[data-polling-import-form]");
+    if (pollingImportForm) {
+      event.preventDefault();
+      await handlePollingImport(pollingImportForm);
+      return;
+    }
+
+    const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
+    if (pollingPlanForm) {
+      event.preventDefault();
+      const formData = new FormData(pollingPlanForm);
+      const result = createPollingPlan(state, { category: String(formData.get("category") || ""), manufacturer: String(formData.get("manufacturer") || ""), scheduledAt: String(formData.get("scheduledAt") || ""), actorId: currentUser()?.id || "system" });
+      if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
+      ui.pollingPlanResult = result.plan.selectionSummary;
+      commitState(result.state, `План сохранён: ${result.plan.selectionSummary.total} устройств; сетевое выполнение заблокировано.`);
+      return;
+    }
+
     const retentionForm = event.target.closest("[data-retention-form]");
     if (retentionForm) {
       event.preventDefault();
@@ -3234,6 +4263,88 @@
     });
   }
 
+  function readFileArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => resolve(reader.result));
+      reader.addEventListener("error", () => reject(reader.error || new Error("Не удалось прочитать файл")));
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  async function refreshCredentialSummary() {
+    const target = document.getElementById("credential-summary");
+    if (!target) return;
+    try {
+      const response = await fetch("/api/credentials/summary", { credentials: "same-origin", cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error("summary unavailable");
+      const summary = payload.summary;
+      target.textContent = summary.recordCount
+        ? `Vault: ${summary.recordCount} записей; импорт ${formatDateTime(summary.importedAt)}; IP: ${summary.maskedIps.join(", ")}`
+        : "Credential vault пуст.";
+    } catch {
+      target.textContent = "Vault summary недоступен.";
+    }
+  }
+
+  async function handleSrImport(form) {
+    const file = form.elements.srFile?.files?.[0];
+    if (!file) return;
+    ui.inventoryBusy = true;
+    ui.srImportResults = [];
+    render();
+    try {
+      const result = await importSrWorkbook(state, { filename: file.name, arrayBuffer: await readFileArrayBuffer(file), actorId: currentUser()?.id || "system" });
+      if (result.ok && result.outcome !== "duplicate") {
+        const saved = saveState(result.state, persistenceStorage);
+        if (!saved.ok) throw new Error(saved.errors.join("; "));
+        state = deepClone(result.state);
+      }
+      ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
+      setMessage(result.ok ? "Выгрузка SR обработана." : "Выгрузка SR не импортирована.", result.ok ? "success" : "error");
+    } catch (error) {
+      ui.srImportResults.push({ name: file.name, ok: false, label: "Ошибка", detail: error.message || String(error) });
+      setMessage("Импорт SR завершился ошибкой; прежнее состояние сохранено.", "error");
+    }
+    ui.inventoryBusy = false;
+    render();
+  }
+
+  async function handlePollingImport(form) {
+    const files = Array.from(form.elements.pollingFiles?.files || []).filter((file) => /\.json$/i.test(file.name));
+    if (!files.length) {
+      setMessage("Выберите папку с JSON-файлами.", "error"); render(); return;
+    }
+    const relative = files[0].webkitRelativePath || "";
+    const folderName = relative.split("/").filter(Boolean)[0] || "";
+    const manualValue = String(new FormData(form).get("capturedAt") || "");
+    const folderParsed = parseRunFolderTimestamp(folderName);
+    const capturedAt = folderParsed.ok ? null : normalizeDate(manualValue);
+    if (!folderParsed.ok && !capturedAt) {
+      setMessage("Имя папки не соответствует YYYY-MM-DD_HH-MM-SS. Укажите дату запуска вручную.", "error"); render(); return;
+    }
+    ui.inventoryBusy = true;
+    ui.pollingImportResults = [];
+    render();
+    try {
+      const descriptors = [];
+      for (const file of files) descriptors.push({ name: file.name, text: await readFileText(file) });
+      const result = await ingestPollingRunFiles(state, { folderName, capturedAt, actorId: currentUser()?.id || "system", files: descriptors });
+      if (!result.ok) throw new Error(result.errors.join("; "));
+      const saved = saveState(result.state, persistenceStorage);
+      if (!saved.ok) throw new Error(saved.errors.join("; "));
+      state = deepClone(result.state);
+      ui.pollingImportResults = result.results.map((item) => ({ name: item.name, ok: !["failed"].includes(item.outcome), label: item.outcome, detail: (item.errors || []).join("; ") }));
+      setMessage(`Импортирован запуск: ${files.length} файлов.`, result.outcome === "partial" ? "warning" : "success");
+    } catch (error) {
+      ui.pollingImportResults.push({ name: folderName || "run", ok: false, label: "Ошибка", detail: error.message || String(error) });
+      setMessage("Импорт результатов не завершён; прежнее сохранённое состояние не повреждено.", "error");
+    }
+    ui.inventoryBusy = false;
+    render();
+  }
+
   function uploadOutcomeLabel(outcome) {
     return {
       processed: "Обработан",
@@ -3269,7 +4380,7 @@
         const shouldPersist = result.outcome !== "duplicate" && result.outcome !== "quota_rejected";
         let persisted = true;
         if (shouldPersist) {
-          const saved = saveState(result.state, global.localStorage);
+          const saved = saveState(result.state, persistenceStorage);
           persisted = saved.ok;
           if (persisted) state = deepClone(result.state);
         }
@@ -3291,11 +4402,32 @@
   }
 
   function handleChange(event) {
+    if (event.target.matches("[data-import-credentials]") && event.target.files?.[0]) {
+      const input = event.target;
+      const file = input.files[0];
+      const reader = new FileReader();
+      reader.addEventListener("load", async () => {
+        try {
+          const format = /\.csv$/i.test(file.name) ? "csv" : "json";
+          const response = await fetch(`/api/credentials/import?format=${format}`, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "Content-Type": "text/plain; charset=utf-8", "X-MVP-CSRF": String(global.__MVP_CSRF__ || "") }, body: String(reader.result || "") });
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) throw new Error(payload.error || "credential_import_failed");
+          setMessage(`Credential vault обновлён: ${payload.summary.recordCount} записей. Секреты не возвращены в UI.`, "success");
+        } catch (error) {
+          setMessage(`Credentials не импортированы: ${error.message || "безопасная ошибка"}`, "error");
+        }
+        input.value = "";
+        render();
+      });
+      reader.addEventListener("error", () => { setMessage("Credential file не прочитан.", "error"); input.value = ""; render(); });
+      reader.readAsText(file);
+      return;
+    }
     if (!event.target.matches("[data-import-backup]") || !event.target.files?.[0]) return;
     const file = event.target.files[0];
     const reader = new FileReader();
     reader.addEventListener("load", () => {
-      const result = importBackupText(String(reader.result || ""), global.localStorage, {
+      const result = importBackupText(String(reader.result || ""), persistenceStorage, {
         transformState(importedState) {
           return appendHistory(importedState, {
             actorId: "system",

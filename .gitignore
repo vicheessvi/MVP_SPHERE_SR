@@ -11,3 +11,34 @@ Thumbs.db
 .env*
 *.local.json
 mvp-sphere-sr-backup-*.json
+
+# Local SR inventory and polling data
+*.xlsx
+*.xls
+sr-imports/
+polling-runs/
+local-data/
+data/
+exports/
+*.db
+*.sqlite
+*.sqlite3
+
+# Device credentials and local secret material
+secrets/
+credentials*.json
+*.key
+*.pem
+
+# Secure local runtime data (never commit)
+runtime-data/
+secure-data/
+objects/
+*.dpapi
+*.enc
+*.vault
+polling-output/
+credentials*.csv
+credentials*.xlsx
+node_modules/
+coverage/

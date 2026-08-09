@@ -2,83 +2,67 @@
 
 ## Текущий статус
 
-Принята архитектура автономного browser-only MVP, запускаемого прямым открытием `index.html`. Основание: `docs/decisions/ADR-0003-browser-only-demo-stack.md`.
+Принят однопользовательский защищённый локальный runtime для Windows. Решение описано в `docs/decisions/ADR-0005-secure-local-runtime.md`; прежний browser-only ADR-0003 больше не определяет рабочий режим.
 
-## Технологический стек
+## Компоненты
 
-- HTML5;
-- CSS3;
-- Vanilla JavaScript;
-- browser `localStorage`;
-- browser `sessionStorage` только для текущей demo-сессии;
-- JSON import/export для полного backup;
-- встроенные browser APIs: File API, Blob URL и при доступности Web Crypto.
+- `start.ps1` находит Node.js 20+ и запускает runtime.
+- `server.js` слушает случайный порт только на `127.0.0.1`, создаёт одноразовую launch-сессию и обслуживает UI/API.
+- `app.js` содержит state v3, импорт SR/результатов, чистую Dashboard-проекцию, аналитику и UI единственной роли.
+- `runtime/secure-store.js` атомарно хранит зашифрованные объекты без прикладной квоты.
+- `runtime/security.js` реализует AES-256-GCM и защиту мастер-ключа Windows DPAPI CurrentUser.
+- `runtime/credential-vault.js` импортирует JSON/CSV и предоставляет секреты только внутреннему polling-коду.
+- `runtime/model-catalog.js` маршрутизирует переданные производители/модели.
+- `runtime/polling.js` проверяет explicit allowlist, выполняет bounded ping и fail-closed останавливается без подтверждённого протокола.
+- `scripts/poll-devices.js` — CLI, формирующий безопасные per-IP результаты.
+- `vendor/xlsx.full.min.js` — локально vendored SheetJS без CDN.
 
-Backend, база данных, package manager, build step, frontend framework и внешние runtime-библиотеки отсутствуют.
+## Security boundary
 
-## Структура приложения
+```text
+Browser tab (same origin)
+        |
+        | HttpOnly session + SameSite=Strict + Origin/CSRF
+        v
+127.0.0.1 random port (server.js)
+        |                         |
+        v                         v
+encrypted state objects     separate credential vault
+        \_________________________/
+                    |
+              AES-256-GCM key
+                    |
+          DPAPI CurrentUser envelope
+```
 
-- `index.html` — единственная точка входа и корневой контейнер UI;
-- `styles.css` — адаптивная верстка, компоненты и состояния;
-- `app.js` — versioned state, import, normalization, matching, diff, retention, rendering и event handlers;
-- `tests.html` и `tests.js` — dependency-free browser regression harness;
-- `tests/fixtures/` — синтетические Extron v1 и sanitized legacy snapshots.
+Runtime не слушает LAN-интерфейсы, не включает CORS, CDN, telemetry или cloud API. CSP запрещает внешние script/connect источники. Launch token одноразовый, cookie недоступна JavaScript. Мутации требуют same-origin `Origin` и непредсказуемый CSRF token.
 
-Реализованы US1–US4 и cross-cutting требования: intake/validation/normalization, Project/Asset identity, previous/selected/baseline comparison, timeline/late reflow, event filters, append-only ReviewDecision и MatchDecision, startup/manual retention, quota-safe persistence и доступные текстовые состояния. Automated и подтверждённый пользователем ручной `file://` acceptance завершены.
+## Данные
 
-## Модель данных
+State schema v3 мигрирует v1/v2, оставляет единственного пользователя `administrator` и хранится как encrypted object `mvpSphereSrState.v3`. Credential vault является отдельным encrypted object и не доступен через универсальный storage API.
 
-Единый versioned state хранится под ключом `mvpSphereSrState.v1`. Он содержит локальных demo users, projects, immutable-at-application-level snapshots, normalized observations, match decisions, change sets/events, baselines, reviews, retention audit и history.
+Искусственного лимита 4 МиБ больше нет. Запись создаётся во временном файле, синхронизируется и атомарно заменяет предыдущий объект. Реальные границы — свободный диск, память процесса и ограничения файловой системы/ОС.
 
-Текущий demo-пользователь не является частью persistent state: `currentUserId` поддерживается только как legacy schema field и сохраняется со значением `null`. Идентификатор активной вкладки хранится под ключом `mvpSphereSrSession.v1` в `sessionStorage`, поэтому закрытие вкладки завершает demo-сессию.
+## UI
 
-Полная модель описана в `specs/001-project-change-analysis/data-model.md`.
+Рабочие маршруты: Dashboard, VCS, Controllers, Panels, Upload, Secure local storage. Legacy-модули аудита остались только как совместимая внутренняя предметная логика и fixtures; маршруты и навигация «Проекты аудита», «События», «Сопоставления», «Снимки» отсутствуют.
 
-Retention выполняется только при запуске страницы и по явному действию администратора. Обычный expired snapshot удаляется атомарно с зависимыми ChangeSet/ReviewDecision/MatchDecision/BaselineAssignment и получает минимальный `RetentionAudit`; ChangeEvent для очистки не создаётся. Активный baseline защищён и переводится в `expiration_pending`.
+### Dashboard projection
 
-## Контракты
+`getDashboardSummary(state, filters, options)` — чистый селектор между persisted state и представлением. Он:
 
-- Extron v1 и legacy-профиль остаются входными контрактами.
-- Внешнего API нет.
-- Snapshot выбирается через `<input type="file">` и обрабатывается внутри browser process.
-- Полный state экспортируется и импортируется как versioned JSON backup.
+- выбирает детерминированный последний результат каждого устройства по `capturedAt` и `id`;
+- вычисляет взаимоисключающий текущий polling-статус и не смешивает его с метриками выбранного периода;
+- применяет единый scope категории, производителя, модели, локации, VIP и статуса;
+- возвращает инвентарь, coverage, health, проблемы, VIP/локации, события, распределения и drill-down параметры;
+- оставляет недоказанные authorization/reboot/GCPlus/freshness метрики равными `null`.
 
-## UI-принципы
+UI только форматирует эту проекцию. Переход из KPI передаёт фильтры в существующие списки VCS/Controllers/Panels; данные повторно не агрегируются в обработчиках представления. Презентационные списки ограничены, тогда как числовые итоги считаются по полному scope.
 
-- Один `index.html` и client-side screen state без URL router.
-- Светлая desktop-first компоновка с боковой навигацией, карточками, таблицами, фильтрами и detail panels.
-- Статусы, важность и confidence передаются текстом и цветом.
-- Все действия доступны с клавиатуры и имеют empty/error states.
-- В интерфейсе постоянно видна маркировка «локальный демонстрационный режим».
+## Polling boundary
 
-## Безопасность и приватность
+Ping — единственная подтверждённая реальная сетевая операция. Любой target должен быть валидным unicast IPv4 и присутствовать в явном плане. Модельный каталог не считается доказательством протокола: пока не получены vendor contracts, adapter возвращает `protocol_required` и не читает credentials.
 
-Browser-only MVP не является защищённой системой:
+## Ограничения защиты
 
-- Demo-вход и UI-роли не обеспечивают защищённую авторизацию;
-- `sessionStorage` и `localStorage` доступны пользователю browser profile и DevTools;
-- данные могут быть потеряны при очистке storage;
-- raw snapshot и history не имеют tamper-resistant защиты;
-- использовать можно только synthetic/sanitized или явно разрешённые локальные данные.
-
-Приложение не делает сетевых запросов, обнаруживает признаки секретов, скрывает их из обычного UI и предупреждает пользователя перед сохранением snapshot.
-
-## Стратегия тестирования
-
-- dependency-free unit/contract/regression tests в `tests.html` + `tests.js`;
-- синтетические pair fixtures с ожидаемыми событиями;
-- ручные сценарии из `specs/001-project-change-analysis/quickstart.md`;
-- проверка прямого запуска `index.html` в согласованном desktop browser;
-- проверка backup/restore, quota failure и поведения после reload.
-
-Текущий automated набор: 61/61 PASS, включая lifecycle demo-сессии и контроль 10 snapshots × 100 devices с суммарным raw input не более 3 МиБ и пределом обработки 10 секунд. Пользователь подтвердил фактический `file://` launch базовой версии; после изменения session lifecycle требуется целевая проверка закрытия и повторного открытия вкладки.
-
-## Деплой
-
-Установка не требуется. Пользователь получает папку со статическими файлами и открывает `index.html` двойным кликом. Static hosting возможен отдельно, но не является обязательным режимом MVP.
-
-## Ограничение эксплуатации
-
-Перед использованием реальных чувствительных данных, совместной работой или production-запуском требуется новый ADR с защищённым backend либо packaged desktop runtime.
-
-Временные исключения из принципов I и VI constitution, владелец, компенсации и exit condition описаны в `docs/decisions/ADR-0003-browser-only-demo-stack.md` и остаются действующими только для локального demo.
+Шифрование at rest и loopback boundary не защищают от компрометации текущего Windows-профиля, администратора ОС, malware в пользовательской сессии, чтения памяти процесса или самостоятельно сохранённого исходного plaintext credentials-файла.

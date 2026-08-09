@@ -1,0 +1,40 @@
+"use strict";
+
+const CATALOG = Object.freeze([
+  { key: "vcs/huawei", category: "vcs", manufacturer: "huawei", aliases: ["huawey"], models: ["TE20","TE40","CloudLinc Bar 310","TE50","TE30","CloudLinc Bar 300","CloudLinc Box 310","CloudLinc Box 300","CloudLinc Box 610","CloudLinc Box 600","TE60"] },
+  { key: "vcs/polycom", category: "vcs", manufacturer: "polycom", aliases: [], models: ["RealPresence Group 310","HDX 7000","RealPresence Group 500","HDX 4002","HDX 6000","HDX 8000","HDX 9000","RealPresence Group 700","RealPresence Group 300","HDX 4500"] },
+  { key: "vcs/cisco", category: "vcs", manufacturer: "cisco", aliases: [], models: ["Webex DX80","Webex Room Kit","Webex Room Kit Plus","Webex Room Kit Mini CS-KIT-MINI-K7","Webex Codec Plus","Webex Board 55S","Webex Board 85S","Webex Codec Pro","Webex Board 70S"] },
+  { key: "vcs/yealink", category: "vcs", manufacturer: "yealink", aliases: [], models: ["VC120"] },
+  { key: "controller/extron", category: "controller", manufacturer: "extron", aliases: [], models: ["IPCP Pro 355M","IPCP Pro 255","HCR 102","IPCP Pro 250","IPCP Pro 360","IPCP Pro 350","IPL Pro S1","IPCP Pro 555Q xi","IPCP Pro 555","IPCP 250 xi","IPCP Pro 350M","IPCP Pro 550","IPCP Pro 255Q xi","IPCP Pro S1 xi","IPL PRO S6","IPL Pro S3","IPCP Pro 355MQ xi","IPCP Pro 360Q xi"] },
+  { key: "controller/aten", category: "controller", manufacturer: "aten", aliases: [], models: ["VK2200","VK2100A","VK1200"] },
+  { key: "controller/crestron", category: "controller", manufacturer: "crestron", aliases: [], models: ["RMC3","RMC4","PRO2","DMPS3-300-C","CP2E","CP3","DMPS3-200-C","CP4","PRO3","CP4N","AV3","VC4","CP3N","MC2E"] },
+  { key: "controller/amx", category: "controller", manufacturer: "amx", aliases: [], models: ["DGX1600-ENC"] },
+  { key: "controller/videon", category: "controller", manufacturer: "videon", aliases: [], models: ["OptiPlex 3080"] },
+  { key: "controller/iridi", category: "controller", manufacturer: "iridi", aliases: ["iRidi"], models: ["PX-VP100-Advanced-off"] },
+  { key: "controller/hp", category: "controller", manufacturer: "hp", aliases: [], models: ["H8TN6-2120"] },
+  { key: "controller/t-labs", category: "controller", manufacturer: "t-labs", aliases: ["t labs"], models: ["Synapse TLS-C1"] },
+  { key: "controller/intel", category: "controller", manufacturer: "intel", aliases: [], models: ["BOXNUC7I5BNHXF"] },
+  { key: "panel/extron", category: "panel", manufacturer: "extron", aliases: [], models: ["TLP Pro 725T","TLP Pro 725C","TLP Pro 520M","TLP Pro 1025T","TLP Pro 1725TG","TLP Pro 720C","TLP Pro 1720TG","TLP Pro 1520TG","TLP Pro 1022T","TLP Pro 1725MG","TLP Pro 725M","TLP Pro 1025M","TLP Pro 1520MG","TLP Pro 1225TG","TLP Pro 525M","TLP Pro 1720MG","TLP Pro 1525TG","TLP Pro 1230WTG","TLP Pro 720T","TLP Pro 300M","TLP Pro 1220TG","TLP Pro 1020T"] },
+  { key: "panel/aten", category: "panel", manufacturer: "aten", aliases: [], models: ["VK330"] },
+  { key: "panel/crestron", category: "panel", manufacturer: "crestron", aliases: [], models: ["TSW-760","TS-1070","TSW-560","TS-770","TSW-752","TSWC-730","TSW-1060","TS-1542","TSW-770","TPMC-9","TSW-750","TPS-6X","TSW-1052","TSW-1050","TPMC-V15","TSW-1070-B-S","TPS-15","TST-902","TPS-4000","TPMC-V12"] },
+  { key: "panel/elo", category: "panel", manufacturer: "elo touchsystems", aliases: ["elo"], models: ["2200L"] },
+  { key: "panel/amx", category: "panel", manufacturer: "amx", aliases: [], models: ["MT-1002"] },
+  { key: "panel/iridi", category: "panel", manufacturer: "iridi", aliases: ["iRidi"], models: ["P10-T"] }
+].map((item) => Object.freeze({ ...item, protocolStatus: "protocol_required", transport: null, credentialMode: "vault_by_ip" })));
+
+function normalize(value) { return String(value || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " "); }
+
+function resolveManifest(device) {
+  const category = normalize(device && device.category);
+  const manufacturer = normalize(device && (device.manufacturerNormalized || device.manufacturerRaw || device.manufacturer));
+  const model = normalize(device && (device.modelNormalized || device.modelRaw || device.model));
+  const manifest = CATALOG.find((item) => item.category === category && [item.manufacturer, ...item.aliases].map(normalize).includes(manufacturer));
+  if (!manifest) return { key: `${category || "unknown"}/${manufacturer || "unknown"}`, category, manufacturer, model, knownModel: false, protocolStatus: "unsupported", transport: null, credentialMode: "none" };
+  return { ...manifest, model, knownModel: itemHasModel(manifest, model) };
+}
+
+function itemHasModel(manifest, normalizedModel) {
+  return manifest.models.some((model) => normalize(model) === normalizedModel);
+}
+
+module.exports = { CATALOG, normalize, resolveManifest };

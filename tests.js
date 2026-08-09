@@ -1,6 +1,9 @@
 (function (global) {
   "use strict";
 
+  if (typeof require === "function" && !global.XLSX) {
+    global.XLSX = require("./vendor/xlsx.full.min.js");
+  }
   if (typeof require === "function" && !global.MvpSphereSR) {
     require("./app.js");
   }
@@ -92,8 +95,9 @@
 
   test("API и state schema доступны", () => {
     assert(api, "MvpSphereSR API отсутствует");
-    assertEqual(api.STATE_VERSION, 1);
-    assertEqual(api.STORAGE_KEY, "mvpSphereSrState.v1");
+    assertEqual(api.STATE_VERSION, 3);
+    assertEqual(api.STORAGE_KEY, "mvpSphereSrState.v3");
+    assertEqual(api.LEGACY_STORAGE_KEY, "mvpSphereSrState.v2");
     assertEqual(api.SESSION_KEY, "mvpSphereSrSession.v1");
   });
 
@@ -103,19 +107,88 @@
     assert(api.validateState(state).ok, "Demo state должен проходить validation");
   });
 
-  test("Demo state содержит две ожидаемые UI-роли", () => {
-    const roles = api.createDemoState().users.map((user) => user.role).sort();
-    assertEqual(roles.join(","), "administrator,av_engineer");
+  test("State содержит только роль Администратор МЦТП", () => {
+    const state = api.createDemoState();
+    const roles = state.users.map((user) => user.role).sort();
+    assertEqual(roles.join(","), "administrator");
+    assertEqual(state.users.find((user) => user.role === "administrator").name, "Администратор МЦТП");
+    assertEqual(state.users.filter((user) => user.active).length, 1);
   });
 
   test("Migration принимает v1 и отклоняет неизвестную будущую версию", () => {
     const current = api.migrateState(api.createDemoState());
     assert(current.ok);
+    assert(!current.migrated);
+    const legacy = api.deepClone(api.createDemoState());
+    legacy.version = 1;
+    ["srImports", "locations", "inventoryDevices", "pollingRuns", "pollingResults", "deviceChanges", "inventoryIssues"].forEach((key) => delete legacy[key]);
+    delete legacy.settings.ignoredPollingPaths;
+    legacy.users.push({ id: "user-av-engineer", name: "AV-инженер", login: "engineer", password: "engineer", role: "av_engineer", active: true });
+    const migrated = api.migrateState(legacy);
+    assert(migrated.ok, migrated.errors?.join("; "));
+    assert(migrated.migrated);
+    assertEqual(migrated.state.version, 3);
+    assertEqual(migrated.state.users.length, 1);
+    assertEqual(migrated.state.users[0].role, "administrator");
     const future = api.createDemoState();
     future.version = 99;
     const rejected = api.migrateState(future);
     assert(!rejected.ok);
     assert(rejected.errors.some((item) => item.includes("Неподдерживаемая версия")));
+  });
+
+  test("Load мигрирует legacy storage key в v3 atomically", () => {
+    const legacy = api.deepClone(api.createDemoState());
+    legacy.version = 1;
+    ["srImports", "locations", "inventoryDevices", "pollingRuns", "pollingResults", "deviceChanges", "inventoryIssues"].forEach((key) => delete legacy[key]);
+    delete legacy.settings.ignoredPollingPaths;
+    const storage = new MemoryStorage({ [api.LEGACY_STORAGE_KEY]: JSON.stringify(legacy) });
+    const loaded = api.loadState(storage);
+    assertEqual(loaded.state.version, 3);
+    assert(storage.getItem(api.STORAGE_KEY), "v3 state должен быть сохранён");
+    assert(storage.getItem(api.LEGACY_STORAGE_KEY), "legacy evidence не удаляется автоматически");
+  });
+
+  test("SR normalization сохраняет raw и классифицирует три категории", () => {
+    assertEqual(api.normalizeSrHeader("  Тип Модели "), "тип модели");
+    assertEqual(api.normalizeManufacturer("Huawey"), "huawei");
+    assertEqual(api.classifySrDevice({ "Тип модели": " Video Conference " }), "vcs");
+    assertEqual(api.classifySrDevice({ "Тип оборудования": " CONTROLLER " }), "controller");
+    assertEqual(api.classifySrDevice({ "Тип модели": "Панель управления" }), "panel");
+  });
+
+  test("Folder timestamp parser использует YYYY-MM-DD_HH-MM-SS", () => {
+    const parsed = api.parseRunFolderTimestamp("2026-06-01_09-41-28");
+    assert(parsed.ok, parsed.error);
+    const date = new Date(parsed.capturedAt);
+    assertEqual(date.getFullYear(), 2026);
+    assertEqual(date.getMonth(), 5);
+    assertEqual(date.getDate(), 1);
+    assert(!api.parseRunFolderTimestamp("2026-02-30_09-41-28").ok);
+  });
+
+  test("Polling filename parser нормализует IPv4 и не падает на invalid", () => {
+    assertEqual(api.parsePollingFilenameIp(" 10.10.20.30.json ").ip, "10.10.20.30");
+    assert(!api.parsePollingFilenameIp("controller.json").ok);
+    assert(!api.parsePollingFilenameIp("999.1.1.1.json").ok);
+  });
+
+  test("Extron type и ping status определяются только по надёжным признакам", () => {
+    const primary = { failedStage: "ping", Ping: { ok: false }, webBlocks: { "Project Info": { "Controller Type": "Primary Controller" } } };
+    const panel = { webBlocks: { "Project Info": { "Controller Type": "TLP" } } };
+    assertEqual(api.detectExtronJsonDeviceType(primary), "controller");
+    assertEqual(api.detectExtronJsonDeviceType(panel), "panel");
+    assertEqual(api.derivePollingStatus(primary).pingStatus, "failed");
+    assertEqual(api.derivePollingStatus({ failedStage: "ping" }).pingStatus, "unknown");
+  });
+
+  test("Polling registry не содержит фиктивных transports", () => {
+    const controller = api.resolvePollingCapability({ category: "controller", manufacturerNormalized: "extron" });
+    const panel = api.resolvePollingCapability({ category: "panel", manufacturerNormalized: "extron" });
+    assertEqual(controller.support, "not_implemented");
+    assertEqual(panel.support, "not_implemented");
+    assertEqual(controller.poll, undefined);
+    assertEqual(panel.transport, null);
   });
 
   test("Первый load создаёт и сохраняет demo state", () => {
@@ -474,15 +547,14 @@
     assertEqual(restored.changeSets[0].events[0].eventType, "ip_changed");
   });
 
-  test("Raw input guard не изменяет state при превышении 3 MiB", async () => {
+  test("Raw input больше прежних 3 MiB не отклоняется quota guard", async () => {
     const state = api.createDemoState();
     const result = await api.ingestSnapshotText(state, {
       name: "too-large.json",
-      text: "x".repeat(api.DEFAULT_MAX_RAW_INPUT_BYTES + 1),
+      text: "x".repeat(4 * 1024 * 1024),
       uploadedById: "user-av-engineer"
     });
-    assertEqual(result.outcome, "quota_rejected");
-    assertEqual(result.state.snapshots.length, 0);
+    assert(result.outcome !== "quota_rejected");
   });
 
   test("Timeline сортируется по capturedAt, сохраняя отдельный uploadedAt", async () => {
@@ -658,16 +730,16 @@
     assertEqual(JSON.stringify(second.state.snapshots), originalState);
   });
 
-  test("Demo role matrix ограничивает admin actions и публикует явное security notice", () => {
+  test("Single role разрешает admin actions и публикует secure-runtime notice", () => {
     const state = api.createDemoState();
-    assert(api.canPerformAction(state, "user-av-engineer", "review_event"));
-    assert(api.canPerformAction(state, "user-av-engineer", "export_backup"));
+    assert(!api.canPerformAction(state, "user-av-engineer", "review_event"));
+    assert(!api.canPerformAction(state, "user-av-engineer", "export_backup"));
     assert(!api.canPerformAction(state, "user-av-engineer", "reset_state"));
     assert(!api.canPerformAction(state, "user-av-engineer", "manage_users"));
     assert(api.canPerformAction(state, "user-administrator", "reset_state"));
-    assert(api.SECURITY_NOTICE.includes("не являются защищённой авторизацией"));
-    assert(api.SECURITY_NOTICE.includes("sessionStorage"));
-    assert(api.SECURITY_NOTICE.includes("localStorage"));
+    assertEqual(state.users.length, 1);
+    assert(api.SECURITY_NOTICE.includes("зашифрованном runtime-хранилище"));
+    assert(api.SECURITY_NOTICE.includes("OS-bound vault"));
   });
 
   test("MatchDecision choose пересчитывает зависимый diff и сохраняет старый ChangeSet", async () => {
@@ -823,6 +895,282 @@
     assertEqual(storage.getItem(api.STORAGE_KEY), corrupt);
     assertEqual(loaded.state.snapshots.length, 0);
     assertEqual(loaded.state.retentionAudits.length, 0);
+  });
+
+  function srHeaders() {
+    return [...api.SR_REQUIRED_HEADERS];
+  }
+
+  function srRow(overrides) {
+    return {
+      "Название комнаты": "Переговорная 101", "Адрес комнаты": "Москва", "VIP комната": "Да",
+      "Тип оборудования": "endpoint", "Наименование": "ВКС", "Модель": "Room Kit",
+      "Тип модели": "Video Conference", "Производитель": "Cisco", "IP": " 10.10.20.30 ",
+      "MAC": "00-11-22-33-44-55", "SIP URI": "room@example.test", "Инвентарный номер": "INV-1",
+      "Серийный номер": "SER-1", "VIP оборудование": "Нет", ...(overrides || {})
+    };
+  }
+
+  test("SR import принимает optional Домен, классифицирует категории и сохраняет raw", () => {
+    const result = api.importSrRows(api.createDemoState(), {
+      filename: "sr.xlsx", headers: srHeaders(), rawSha256: "sr-1",
+      rows: [srRow(), srRow({ "Инвентарный номер": "INV-2", "Серийный номер": "SER-2", "MAC": "00-11-22-33-44-56", "IP": "10.10.20.31", "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron" }), srRow({ "Инвентарный номер": "INV-3", "Серийный номер": "SER-3", "MAC": "00-11-22-33-44-57", "IP": "10.10.20.32", "Тип модели": "Панель управления", "Производитель": "Extron" })]
+    });
+    assert(result.ok, result.errors?.join("; "));
+    assertEqual(result.state.inventoryDevices.length, 3);
+    assertEqual(result.state.inventoryDevices.map((item) => item.category).sort().join(","), "controller,panel,vcs");
+    assertEqual(result.state.inventoryDevices[0].domain, null);
+    assertEqual(result.state.inventoryDevices[0].rawRow.IP, " 10.10.20.30 ");
+  });
+
+  test("Повторная SR сохраняет Device identity, IP history и флаг актуальности", () => {
+    let result = api.importSrRows(api.createDemoState(), { filename: "one.xlsx", headers: srHeaders(), rawSha256: "one", rows: [srRow(), srRow({ "Инвентарный номер": "INV-OLD", "Серийный номер": "SER-OLD", "MAC": "00-11-22-33-44-99", "IP": "10.10.20.99" })] });
+    const stableId = result.state.inventoryDevices.find((item) => item.inventoryNumber === "INV-1").id;
+    result = api.importSrRows(result.state, { filename: "two.xlsx", headers: srHeaders(), rawSha256: "two", rows: [srRow({ IP: "10.10.20.40" })] });
+    const current = result.state.inventoryDevices.find((item) => item.id === stableId);
+    assertEqual(current.ipNormalized, "10.10.20.40");
+    assert(current.ipHistory.includes("10.10.20.30"));
+    assertEqual(result.state.inventoryDevices.find((item) => item.inventoryNumber === "INV-OLD").inCurrentSr, false);
+  });
+
+  test("XLSX parser читает локальный workbook без CDN", async () => {
+    const sheet = global.XLSX.utils.aoa_to_sheet([srHeaders(), srHeaders().map((header) => srRow()[header])]);
+    const workbook = global.XLSX.utils.book_new();
+    global.XLSX.utils.book_append_sheet(workbook, sheet, "SR");
+    const bytes = global.XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+    const result = await api.importSrWorkbook(api.createDemoState(), { filename: "local.xlsx", arrayBuffer: bytes, actorId: "user-administrator" });
+    assert(result.ok, result.errors?.join("; "));
+    assertEqual(result.state.inventoryDevices.length, 1);
+  });
+
+  test("Polling run связывает filename IP, классифицирует Extron и считает изменения", async () => {
+    let sr = api.importSrRows(api.createDemoState(), { filename: "sr.xlsx", headers: srHeaders(), rawSha256: "poll-sr", rows: [srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron" })] });
+    const first = { ok: true, ping: { ok: true }, webBlocks: { "Project Info": { "Controller Type": "Primary Controller", Version: "1" }, Firmware: { version: "1.0" } } };
+    let imported = await api.ingestPollingRunFiles(sr.state, { folderName: "2026-06-01_09-41-28", files: [{ name: "10.10.20.30.json", text: JSON.stringify(first) }] });
+    const second = api.deepClone(first); second.webBlocks.Firmware.version = "1.1";
+    imported = await api.ingestPollingRunFiles(imported.state, { folderName: "2026-06-02_09-41-28", files: [{ name: "10.10.20.30.json", text: JSON.stringify(second) }] });
+    assertEqual(imported.state.pollingResults.length, 2);
+    assertEqual(imported.state.pollingResults[0].matchStatus, "matched");
+    assertEqual(imported.state.pollingResults[0].detectedCategory, "controller");
+    assert(imported.state.deviceChanges.some((item) => item.path.includes("Firmware.version")));
+  });
+
+  test("Polling сохраняет malformed и unmatched как отдельные file-scoped issues", async () => {
+    const result = await api.ingestPollingRunFiles(api.createDemoState(), { folderName: "2026-06-01_09-41-28", files: [{ name: "bad-name.json", text: "{" }, { name: "10.20.30.40.json", text: JSON.stringify({ ok: false, failedStage: "ping", ping: { ok: false } }) }] });
+    assertEqual(result.state.pollingResults.length, 2);
+    assertEqual(result.state.pollingResults[0].parseStatus, "malformed");
+    assertEqual(result.state.pollingResults[1].pingStatus, "failed");
+    assert(result.state.inventoryIssues.some((item) => item.kind === "malformed_json"));
+    assert(result.state.inventoryIssues.some((item) => item.kind === "unmatched_ip"));
+  });
+
+  test("Polling adapter registry честно блокирует реальный опрос", () => {
+    const capability = api.resolvePollingCapability({ category: "controller", manufacturerRaw: "Extron" });
+    assertEqual(capability.support, "not_implemented");
+    assertEqual(capability.transport, null);
+    assert(!Object.prototype.hasOwnProperty.call(capability, "poll"));
+  });
+
+  test("SR import отклоняет файл без обязательной колонки атомарно", () => {
+    const before = api.createDemoState();
+    const result = api.importSrRows(before, { filename: "broken.xlsx", headers: srHeaders().filter((item) => item !== "IP"), rows: [srRow()] });
+    assert(!result.ok);
+    assertEqual(result.state.srImports.length, 0);
+    assert(result.errors[0].includes("IP"));
+  });
+
+  test("Некорректный IP не блокирует строку с inventory identity", () => {
+    const result = api.importSrRows(api.createDemoState(), { filename: "bad-ip.xlsx", headers: srHeaders(), rows: [srRow({ IP: "999.10.1.1" })] });
+    assert(result.ok);
+    assertEqual(result.state.inventoryDevices.length, 1);
+    assertEqual(result.state.inventoryDevices[0].ipNormalized, null);
+    assert(result.state.inventoryIssues.some((item) => item.kind === "invalid_ip"));
+  });
+
+  test("Одинаковый IP с разными strong IDs не сливает устройства", () => {
+    const result = api.importSrRows(api.createDemoState(), { filename: "duplicate-ip.xlsx", headers: srHeaders(), rows: [srRow(), srRow({ "Инвентарный номер": "INV-2", "Серийный номер": "SER-2", "MAC": "00-11-22-33-44-66" })] });
+    assertEqual(result.state.inventoryDevices.length, 2);
+  });
+
+  test("Повтор polling файла в одном run идемпотентен", async () => {
+    const first = await api.ingestPollingRunFiles(api.createDemoState(), { folderName: "2026-06-01_09-41-28", files: [{ name: "10.10.20.30.json", text: "{}" }] });
+    const runId = first.runId;
+    const repeated = await api.ingestPollingResultText(first.state, { runId, capturedAt: "2026-06-01T06:41:28.000Z", name: "10.10.20.30.json", text: "{}" });
+    assertEqual(repeated.outcome, "duplicate");
+    assertEqual(repeated.state.pollingResults.length, 1);
+  });
+
+  test("Extron classification conflict фиксируется отдельно", async () => {
+    const sr = api.importSrRows(api.createDemoState(), { filename: "sr.xlsx", headers: srHeaders(), rows: [srRow({ "Тип модели": "Панель управления", "Производитель": "Extron" })] });
+    const payload = { ok: true, ping: { ok: true }, webBlocks: { "Project Info": { "Controller Type": "Primary Controller" } } };
+    const result = await api.ingestPollingRunFiles(sr.state, { folderName: "2026-06-01_09-41-28", files: [{ name: "10.10.20.30.json", text: JSON.stringify(payload) }] });
+    assertEqual(result.state.pollingResults[0].classificationConflict, true);
+    assert(result.state.inventoryIssues.some((item) => item.kind === "classification_conflict"));
+  });
+
+  test("Polling plan сохраняет выборку и блокирует execution без credentials", () => {
+    const sr = api.importSrRows(api.createDemoState(), { filename: "plan.xlsx", headers: srHeaders(), rows: [srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron" }), srRow({ "Инвентарный номер": "INV-2", "Серийный номер": "SER-2", "MAC": "00-11-22-33-44-77", "IP": "10.10.20.77", "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Crestron" })] });
+    const result = api.createPollingPlan(sr.state, { category: "controller", scheduledAt: "2026-06-10T10:00:00", actorId: "user-administrator" });
+    assert(result.ok, result.errors?.join("; "));
+    assertEqual(result.plan.selectionSummary.total, 2);
+    assertEqual(result.plan.selectionSummary.implemented, 0);
+    assertEqual(result.plan.status, "blocked_no_adapter");
+    assert(!JSON.stringify(result.plan).toLowerCase().includes("password"));
+  });
+
+  function dashboardFixture() {
+    const imported = api.importSrRows(api.createDemoState(), {
+      filename: "dashboard-sr.xlsx", importedAt: "2026-08-10T08:00:00.000Z", headers: srHeaders(), rawSha256: "dashboard-sr",
+      rows: [
+        srRow({ "Название комнаты": "VIP Зал", "VIP комната": "Да", "VIP оборудование": "Да", "Инвентарный номер": "D-1", "Серийный номер": "DS-1", MAC: "02-00-00-00-00-01", IP: "10.20.0.1", "Производитель": "Cisco", "Модель": "Webex Room Kit" }),
+        srRow({ "Название комнаты": "VIP Зал", "VIP комната": "Да", "Инвентарный номер": "D-2", "Серийный номер": "DS-2", MAC: "02-00-00-00-00-02", IP: "10.20.0.2", "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron", "Модель": "IPCP Pro 255" }),
+        srRow({ "Название комнаты": "Обычный зал", "Адрес комнаты": "Казань", "VIP комната": "Нет", "Инвентарный номер": "D-3", "Серийный номер": "DS-3", MAC: "02-00-00-00-00-03", IP: "10.20.0.3", "Тип модели": "Панель управления", "Производитель": "Crestron", "Модель": "TS-1070" })
+      ]
+    });
+    const state = imported.state;
+    const [vcs, controller, panel] = state.inventoryDevices;
+    vcs.pollingCapability = { support: "implemented", transport: "synthetic-test" };
+    controller.pollingCapability = { support: "implemented", transport: "synthetic-test" };
+    panel.pollingCapability = { support: "not_implemented", transport: null };
+    state.pollingRuns.push({ id: "run-old", kind: "import", capturedAt: "2026-08-08T10:00:00.000Z", importedAt: "2026-08-08T10:05:00.000Z", deviceIds: [vcs.id], fileCount: 1, successCount: 1, errorCount: 0 });
+    state.pollingRuns.push({ id: "run-latest", kind: "import", capturedAt: "2026-08-10T10:00:00.000Z", importedAt: "2026-08-10T10:05:00.000Z", deviceIds: [vcs.id, controller.id], fileCount: 3, successCount: 1, errorCount: 2 });
+    state.pollingResults.push(
+      { id: "r-old", runId: "run-old", deviceId: vcs.id, filename: "10.20.0.1.json", capturedAt: "2026-08-08T10:00:00.000Z", importedAt: "2026-08-08T10:05:00.000Z", pollStatus: "error", pingStatus: "failed", matchStatus: "matched", parseStatus: "parsed" },
+      { id: "r-vcs", runId: "run-latest", deviceId: vcs.id, filename: "10.20.0.1.json", capturedAt: "2026-08-10T10:00:00.000Z", importedAt: "2026-08-10T10:05:00.000Z", pollStatus: "success", pingStatus: "ok", matchStatus: "matched", parseStatus: "parsed" },
+      { id: "r-controller", runId: "run-latest", deviceId: controller.id, filename: "10.20.0.2.json", capturedAt: "2026-08-10T10:00:00.000Z", importedAt: "2026-08-10T10:05:00.000Z", pollStatus: "error", pingStatus: "failed", matchStatus: "matched", parseStatus: "parsed" },
+      { id: "r-unmatched", runId: "run-latest", deviceId: null, filename: "10.20.9.9.json", filenameIp: "10.20.9.9", capturedAt: "2026-08-10T10:00:00.000Z", importedAt: "2026-08-10T10:05:00.000Z", pollStatus: "error", pingStatus: "unknown", matchStatus: "unmatched", parseStatus: "parsed" }
+    );
+    state.deviceChanges.push({ id: "change-1", deviceId: controller.id, fromPollingResultId: "r-old-controller", toPollingResultId: "r-controller", detectedAt: "2026-08-10T10:01:00.000Z", status: "active", path: "$.Firmware.version", oldValue: "1", newValue: "2" });
+    state.inventoryIssues.push({ id: "issue-1", kind: "unmatched_ip", sourceType: "polling_result", sourceId: "r-unmatched", timestamp: "2026-08-10T10:02:00.000Z", createdAt: "2026-08-10T10:02:00.000Z", status: "open", message: "IP не сопоставлен" });
+    return { state, vcs, controller, panel };
+  }
+
+  test("Dashboard summary корректно обрабатывает пустой inventory", () => {
+    const summary = api.getDashboardSummary(api.createDemoState(), {}, { now: "2026-08-10T12:00:00.000Z" });
+    assert(summary.valid);
+    assertEqual(summary.inventory.total, 0);
+    assertEqual(summary.context.sr, null);
+    assertEqual(summary.emptyState, "no_sr");
+  });
+
+  test("Dashboard current state не дублирует device из-за нескольких snapshots", () => {
+    const { state } = dashboardFixture();
+    const summary = api.getDashboardSummary(state, { period: "7d" }, { now: "2026-08-10T12:00:00.000Z" });
+    assertEqual(summary.inventory.total, 3);
+    assertEqual(summary.coverage.everPolled, 2);
+    assertEqual(summary.coverage.success, 1);
+    assertEqual(summary.coverage.failed, 1);
+    assertEqual(summary.problems.currentPingFailures, 1);
+    assertEqual(summary.periodMetrics.pingFailures, 2, "period включает старый и текущий ping failure");
+  });
+
+  test("Dashboard отличает unsupported от supported not-polled и failed", () => {
+    const { state, vcs } = dashboardFixture();
+    state.pollingResults = state.pollingResults.filter((result) => result.deviceId !== vcs.id);
+    const summary = api.getDashboardSummary(state, {}, { now: "2026-08-10T12:00:00.000Z" });
+    assertEqual(summary.coverage.notPolled, 1);
+    assertEqual(summary.coverage.unsupported, 1);
+    assertEqual(summary.coverage.failed, 1);
+  });
+
+  test("Dashboard latest-state использует новый успешный snapshot, period сохраняет старую ошибку", () => {
+    const { state } = dashboardFixture();
+    const summary = api.getDashboardSummary(state, { period: "7d" }, { now: "2026-08-10T12:00:00.000Z" });
+    assertEqual(summary.coverage.success, 1);
+    assertEqual(summary.problems.currentPingFailures, 1);
+    assertEqual(summary.periodMetrics.failedResults, 3);
+  });
+
+  test("Dashboard фильтрует category, manufacturer, model, location, VIP и status", () => {
+    const { state, controller } = dashboardFixture();
+    const summary = api.getDashboardSummary(state, { category: "controller", manufacturer: "Extron", model: "IPCP Pro 255", locationId: controller.locationId, vip: "true", pollStatus: "failed" }, { now: "2026-08-10T12:00:00.000Z" });
+    assertEqual(summary.inventory.total, 1);
+    assertEqual(summary.coverage.failed, 1);
+  });
+
+  test("Dashboard invalid custom range возвращает safe validation result", () => {
+    const summary = api.getDashboardSummary(dashboardFixture().state, { period: "custom", dateFrom: "2026-08-11", dateTo: "2026-08-10" });
+    assert(!summary.valid);
+    assert(summary.errors[0].includes("диапазон"));
+  });
+
+  test("Dashboard агрегирует VIP и проблемные локации без двойного счёта", () => {
+    const { state } = dashboardFixture();
+    const summary = api.getDashboardSummary(state, {}, { now: "2026-08-10T12:00:00.000Z" });
+    assertEqual(summary.vip.locations, 1);
+    assertEqual(summary.vip.devices, 2);
+    assertEqual(summary.vip.problems, 1);
+    assertEqual(summary.locations[0].name, "VIP Зал");
+    assertEqual(summary.locations[0].problemDevices, 1);
+  });
+
+  test("Dashboard разделяет unmatched/data issues и equipment failures", () => {
+    const summary = api.getDashboardSummary(dashboardFixture().state, {}, { now: "2026-08-10T12:00:00.000Z" });
+    assertEqual(summary.problems.currentFailures, 1);
+    assertEqual(summary.problems.unmatched, 1);
+    assert(summary.problems.dataErrors >= 1);
+    assert(summary.latestProblems.some((item) => item.scope === "data"));
+    assert(summary.latestProblems.some((item) => item.scope === "equipment"));
+  });
+
+  test("Dashboard changes различает устройства и записи", () => {
+    const { state, controller } = dashboardFixture();
+    state.deviceChanges.push({ id: "change-2", deviceId: controller.id, fromPollingResultId: "r-old-controller", toPollingResultId: "r-controller", detectedAt: "2026-08-10T10:03:00.000Z", status: "active", path: "$.Name", oldValue: "A", newValue: "B" });
+    const summary = api.getDashboardSummary(state, {}, { limit: 1, now: "2026-08-10T12:00:00.000Z" });
+    assertEqual(summary.changes.changedDevices, 1);
+    assertEqual(summary.changes.total, 2);
+    assertEqual(summary.recentChanges.length, 1);
+  });
+
+  test("Dashboard blocked analytics не подменяются нулями", () => {
+    const blocked = api.getDashboardSummary(dashboardFixture().state, {}).blockedAnalytics;
+    assertEqual(blocked.authorization, null);
+    assertEqual(blocked.reboots, null);
+    assertEqual(blocked.gcPlus, null);
+    assertEqual(blocked.freshnessThreshold, null);
+  });
+
+  test("Inventory drill-down filters поддерживают ping/change/support/model/location", () => {
+    const { state, controller, panel } = dashboardFixture();
+    assertEqual(api.filterInventoryDevices(state, "controller", { ping: "failed", changed: "true", model: "IPCP Pro 255", locationId: controller.locationId }).length, 1);
+    assertEqual(api.filterInventoryDevices(state, "panel", { support: "unsupported" }).length, 1);
+    assertEqual(api.filterInventoryDevices(state, "panel", { support: "supported" }).length, 0);
+    assert(panel);
+  });
+
+  test("Dashboard selector обрабатывает 5000 devices и 25000 results быстрее 2 секунд", () => {
+    const state = api.createDemoState();
+    state.srImports.push({ id: "large-sr", importedAt: "2026-08-10T00:00:00.000Z", filename: "synthetic-large.xlsx" });
+    state.locations.push({ id: "large-location", name: "Synthetic", address: "Test", vip: false, inCurrentSr: true });
+    for (let index = 0; index < 5000; index += 1) {
+      state.inventoryDevices.push({ id: `large-device-${index}`, category: ["vcs", "controller", "panel"][index % 3], manufacturerNormalized: `maker-${index % 20}`, manufacturerRaw: `Maker ${index % 20}`, modelRaw: `Model ${index % 100}`, locationId: "large-location", inCurrentSr: true, deviceVip: false, pollingCapability: { support: "implemented", transport: "synthetic-test" } });
+      for (let resultIndex = 0; resultIndex < 5; resultIndex += 1) state.pollingResults.push({ id: `large-result-${index}-${resultIndex}`, runId: "large-run", deviceId: `large-device-${index}`, capturedAt: `2026-08-0${resultIndex + 1}T00:00:00.000Z`, pollStatus: resultIndex === 4 ? "success" : "error", pingStatus: resultIndex === 4 ? "ok" : "failed", matchStatus: "matched", parseStatus: "parsed" });
+    }
+    state.pollingRuns.push({ id: "large-run", kind: "import", capturedAt: "2026-08-05T00:00:00.000Z", fileCount: 25000, successCount: 5000, errorCount: 20000 });
+    const started = Date.now();
+    const summary = api.getDashboardSummary(state, { period: "30d" }, { now: "2026-08-10T00:00:00.000Z" });
+    const elapsed = Date.now() - started;
+    assertEqual(summary.inventory.total, 5000);
+    assertEqual(summary.coverage.success, 5000);
+    assert(elapsed < 2000, `Dashboard summary занял ${elapsed} ms`);
+  });
+
+  test("Dashboard analytics считает latest-result метрики без догадок", async () => {
+    const sr = api.importSrRows(api.createDemoState(), { filename: "analytics.xlsx", headers: srHeaders(), rows: [srRow(), srRow({ "Инвентарный номер": "INV-2", "Серийный номер": "SER-2", "MAC": "00-11-22-33-44-88", "IP": "10.10.20.88" })] });
+    const polled = await api.ingestPollingRunFiles(sr.state, { folderName: "2026-06-01_09-41-28", files: [{ name: "10.10.20.30.json", text: JSON.stringify({ ok: false, failedStage: "ping", ping: { ok: false } }) }] });
+    const metrics = api.getInventoryAnalytics(polled.state, "vcs");
+    assertEqual(metrics.total, 2);
+    assertEqual(metrics.polled, 1);
+    assertEqual(metrics.unpolled, 1);
+    assertEqual(metrics.errors, 1);
+    assertEqual(metrics.pingFailures, 1);
+    assertEqual(metrics.authorizationFailures, null);
+  });
+
+  test("Inventory selector фильтрует SR context и не скрывает неопрошенные устройства", () => {
+    const imported = api.importSrRows(api.createDemoState(), { filename: "filters.xlsx", headers: srHeaders(), rows: [srRow(), srRow({ "Название комнаты": "Зал 202", "Адрес комнаты": "Санкт-Петербург", "Инвентарный номер": "INV-2", "Серийный номер": "SER-2", "MAC": "00-11-22-33-44-89", "IP": "10.10.20.89", "Производитель": "Huawei" })] });
+    assertEqual(api.filterInventoryDevices(imported.state, "vcs", {}).length, 2);
+    assertEqual(api.filterInventoryDevices(imported.state, "vcs", { search: "Зал 202", manufacturer: "Huawei", pollStatus: "never" }).length, 1);
   });
 
   test("Performance control: 10 snapshots по 100 devices обрабатываются быстрее 10 секунд", async () => {

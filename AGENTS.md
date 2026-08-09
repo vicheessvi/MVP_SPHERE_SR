@@ -2,41 +2,40 @@
 
 ## Статус проекта
 
-Новый проект, подготовленный для работы через ИИ-агент + GitHub SpecKit.
+Проект подготовлен к дальнейшему редактированию через ИИ-агента и GitHub SpecKit.
 
-- Видение продукта: сформировано в `docs/project-vision.md`
-- Технологический стек: HTML5, CSS3, Vanilla JavaScript, `localStorage`
-- Архитектура приложения: автономный browser-only MVP, прямой запуск `index.html`
-- Constitution: версия 1.0.0 в `.specify/memory/constitution.md`
-- Текущий этап: MVP и acceptance завершены; задачи `T001`–`T060` закрыты
-- Demo-login session: только `sessionStorage`; persistent state и backup всегда имеют `currentUserId: null`
+- Видение: `docs/project-vision.md`.
+- Стек: Windows, Node.js 20+, встроенный HTTP, HTML5, CSS3, Vanilla JavaScript, vendored SheetJS CE 0.20.3.
+- Runtime: только `127.0.0.1`, запуск через `start.ps1`; direct-open запрещён для рабочих данных.
+- Хранение: AES-256-GCM, мастер-ключ под Windows DPAPI CurrentUser, отдельный credential vault, без искусственной квоты.
+- Роль: только «Администратор МЦТП».
+- Constitution: версия 2.0.0 в `.specify/memory/constitution.md`.
+- Текущая feature: `specs/004-analytics-dashboard/`.
 
-## Как должен работать ИИ-агент
+## Правила работы агента
 
-- Сначала прочитать этот файл.
-- Использовать `docs/context-map.md`, чтобы найти нужный контекст.
-- Не загружать весь репозиторий без необходимости.
-- Не выдумывать продуктовые или архитектурные факты.
-- Для неизвестных деталей использовать `TBD`.
-- Не делать нерелевантный рефакторинг.
-- Не менять несвязанные файлы.
-- Предпочитать минимальные безопасные изменения.
+- Сначала прочитать этот файл и использовать `docs/context-map.md`.
+- Не загружать весь репозиторий без необходимости и не менять несвязанные файлы.
+- Не выдумывать vendor API, команды, transport или схемы ответов; неизвестное отмечать `TBD`/`protocol_required`.
+- Никогда не помещать реальные логины, пароли, токены, ключи, IP-выгрузки или runtime data в Git, fixtures, логи, state, аналитику и ответы API.
+- Не добавлять внешнюю передачу, CDN, телеметрию или non-loopback bind без нового явного решения пользователя и security review.
 - Не делать commit/push без явного указания пользователя.
-- Значимые решения фиксировать в `docs/decisions`.
-- Значимые этапы реализации фиксировать в `docs/implementation-log.md`.
-- Обновлять документацию, если меняется архитектура, workflow, продуктовое поведение или важные соглашения.
+- Значимые решения фиксировать в `docs/decisions`, этапы — в `docs/implementation-log.md`.
+- При изменении архитектуры, workflow или поведения обновлять документацию и тесты.
 
-## Режим workflow
+## Workflow
 
-Подробные правила находятся в `docs/development-workflow.md`.
+Подробности находятся в `docs/development-workflow.md`.
 
-Кратко:
-- Full SpecKit — для крупных, рискованных или неоднозначных задач.
-- SpecKit-lite — для средних задач.
-- Короткий prompt — для маленьких локальных правок.
+- Full SpecKit — крупные, рискованные или неоднозначные задачи.
+- SpecKit-lite — средние задачи.
+- Короткий prompt — небольшие локальные правки.
 
 ## Проверки
 
-- Для логических/regression проверок запускать `tests.html` прямым открытием или bundled Node.js: `node tests.js`.
-- Для синтаксиса запускать `node --check app.js` и `node --check tests.js`, если Node доступен.
-- Direct-open acceptance выполнять двойным кликом по `index.html`; отсутствие browser-проверки обозначать явно.
+- Логика и регрессия: `node tests.js`.
+- Криптография, vault, каталог и polling: `node runtime-tests.js` из реального Windows-профиля, так как DPAPI CurrentUser не работает внутри изолированного профиля.
+- Loopback API, CSRF и encrypted persistence: `node server-tests.js`.
+- Синтаксис: `node --check` для изменённых `.js`.
+- Secret/artifact scan обязателен перед commit.
+- Рабочая acceptance выполняется запуском `start.ps1`, а не открытием `index.html`.

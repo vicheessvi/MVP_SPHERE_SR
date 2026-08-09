@@ -1,49 +1,35 @@
 # Карта контекста
 
-Этот файл помогает ИИ-агент находить нужный контекст без загрузки всего репозитория.
-
 ## Постоянные инструкции
 
 - `AGENTS.md`
+- `.specify/memory/constitution.md`
 
-## SpecKit / skills/инструкции агента
-
-- `.agents/skills`
-- `.specify`
-
-## Продуктовый и архитектурный контекст
+## Актуальная архитектура и продукт
 
 - `docs/project-vision.md`
 - `docs/architecture.md`
-- `docs/decisions/`
+- `docs/decisions/ADR-0005-secure-local-runtime.md`
+- `specs/003-secure-local-polling/`
+- `specs/004-analytics-dashboard/`
 
-## Workflow разработки
+## Код по зонам
+
+- UI/state/analytics/Dashboard projection: `index.html`, `styles.css`, `app.js`.
+- Loopback API/startup: `server.js`, `start.ps1`, `runtime-config.js`.
+- Encryption/storage: `runtime/security.js`, `runtime/secure-store.js`.
+- Credentials: `runtime/credential-vault.js`.
+- Catalog/polling: `runtime/model-catalog.js`, `runtime/polling.js`, `scripts/poll-devices.js`.
+- XLSX runtime: `vendor/xlsx.full.min.js`, `vendor/LICENSE.sheetjs.txt`.
+- Regression: `tests.js`, `tests.html`, `tests/fixtures/`.
+- Security/runtime integration: `runtime-tests.js`, `server-tests.js`.
+
+## История и workflow
 
 - `docs/development-workflow.md`
 - `docs/implementation-log.md`
+- `docs/decisions/`
+- `specs/001-project-change-analysis/` и `specs/002-sr-inventory-analytics/` — исторические features; их legacy UI-модули не входят в текущую навигацию.
+- `specs/003-secure-local-polling/` и `specs/004-analytics-dashboard/` — текущие security/polling и Dashboard contracts.
 
-## Спецификации фич
-
-- `specs/`
-
-## Будущие зоны приложения
-
-Фактические зоны browser-only приложения:
-
-- UI и точка входа: `index.html`.
-- Состояние, аналитика, retention и client-side navigation: `app.js`.
-- Стили: `styles.css`.
-- Dependency-free browser/Node regression и performance tests: `tests.html` и `tests.js`.
-- Synthetic fixture builders/expectations: `tests/fixtures/expectations.js`, `tests/fixtures/timeline-expectations.js` и `tests/fixtures/baseline-expectations.js`.
-- Синтетические входные snapshots: `tests/fixtures/extron-v1/` и `tests/fixtures/legacy/`.
-- Внешнего API, backend, build/config и package manager нет.
-
-Source paths созданы в Phase 1–2 согласно `specs/001-project-change-analysis/plan.md`. Архитектурный эталон: `drthalas/MVP_DEMO`.
-
-Acceptance `T001`–`T060` завершён; результаты direct-open проверки записаны в `specs/001-project-change-analysis/quickstart.md`.
-
-## Монорепозиторий
-
-Если репозиторий станет монорепозиторием, явно указать зоны вроде `frontend`, `backend`, `admin`, `mobile` и правила поиска контекста для каждой зоны.
-
-Обновлять этот файл, когда фактическая структура проекта становится понятнее.
+Внешнего API, package manager, CDN или telemetry нет. Реальные vendor adapters остаются `protocol_required` до получения подтверждённых контрактов.

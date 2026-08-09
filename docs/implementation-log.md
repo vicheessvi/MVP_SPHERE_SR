@@ -524,3 +524,88 @@ UI получил skip-link, расширенный keyboard focus, тексто
 
 - `sessionStorage` и demo credentials доступны пользователю browser profile; это остаётся UI-механизмом, а не security boundary.
 - Для настоящей авторизации требуется новый Full SpecKit cycle и изменение архитектуры согласно exit condition ADR-0003.
+
+## 2026-08-09 — SR inventory и история результатов опроса
+
+### Итог
+
+Выполнен Full SpecKit feature `002-sr-inventory-analytics`. State обновлён до v2 с автоматической миграцией; добавлены локальный XLSX parser, синхронизация SR, категории ВКС/контроллеров/панелей, folder-based polling import, история устройства, change detection, общий dashboard и фильтры.
+
+Реальный сетевой опрос намеренно не имитируется: registry содержит только capability descriptors `not_implemented`, credentials отсутствуют в модели. Legacy-аудит проектных Extron snapshots сохранён.
+
+### Проверки
+
+- `node --check app.js`: PASS.
+- `node --check tests.js`: PASS.
+- Полный regression/contract/performance suite: 81/81 PASS.
+- Локальный synthetic XLSX разобран vendored SheetJS без CDN.
+- Проверены migration, optional «Домен», invalid/duplicate IP, identity/IP history, Primary Controller/TLP, ping failure, malformed/unmatched/conflict и duplicate polling.
+- Встроенный browser-control не разрешает `file://`; повторный visual/direct-open acceptance изменённого UI остаётся ручным.
+
+### Изменённые зоны
+
+- `app.js`, `styles.css`, `index.html`, `tests.html`, `tests.js`;
+- `vendor/`, `.gitignore`;
+- `specs/002-sr-inventory-analytics/`;
+- `README.md`, architecture/product/context docs и ADR-0004.
+
+## 2026-08-10 — Защищённый локальный runtime и подготовка polling
+
+### Итог
+
+Выполнен Full SpecKit feature `003-secure-local-polling`. Browser-only режим заменён Windows loopback runtime: UI доступен только через одноразовую локальную сессию, state v3 хранится зашифрованным, мастер-ключ защищён DPAPI CurrentUser. Искусственный лимит 4 МиБ удалён.
+
+Оставлена единственная роль «Администратор МЦТП». Из навигации и маршрутизации удалены «Проекты аудита», «События», «Сопоставления», «Снимки». Добавлен экран защищённого локального хранилища и импорт JSON/CSV credentials в отдельный write-only vault.
+
+Переданный каталог моделей/производителей закодирован в model catalog. Реализованы explicit IP allowlist, unicast validation, bounded ping, безопасные per-IP JSON и fail-closed статус `protocol_required`. Vendor-команды намеренно не выдуманы: для реального опроса нужны подтверждённые протоколы и read-only контракты.
+
+### Security controls
+
+- AES-256-GCM для каждого persisted object, случайные nonce и authenticated metadata;
+- мастер-ключ под Windows DPAPI CurrentUser;
+- atomic temp/fsync/replace;
+- bind только `127.0.0.1`, random port, one-time launch token;
+- HttpOnly/SameSite session, Host/Origin/CSRF, CSP, no CORS, no-store;
+- credential vault исключён из generic storage API, state, UI, аналитики, backup и polling output;
+- runtime data, key envelopes, vaults и polling output исключены из Git.
+
+### Проверки
+
+- JavaScript syntax: PASS для всех новых и изменённых runtime-файлов.
+- Legacy regression/contract/performance: 81/81 PASS.
+- DPAPI, encrypted store, vault, catalog и polling: 9/9 PASS из реального Windows-профиля.
+- Loopback session, CSRF, encrypted state >5 МиБ и write-only vault: 1/1 PASS.
+- Secret/artifact scan: реальные секреты и persisted runtime artifacts не найдены; в тестах используются только явно synthetic значения.
+
+### Изменённые зоны
+
+- `server.js`, `start.ps1`, `runtime-config.js`;
+- `runtime/`, `scripts/poll-devices.js`;
+- `app.js`, `index.html`, `tests.js`, `runtime-tests.js`, `server-tests.js`;
+- `.gitignore`, `.specify/memory/constitution.md`;
+- `specs/003-secure-local-polling/`;
+- README, architecture/product/context docs и ADR-0005.
+
+## 2026-08-10 — Операционный главный Dashboard
+
+### Итог
+
+Выполнен Full SpecKit feature `004-analytics-dashboard`. Минимальный обзор заменён операционным главным экраном единственной роли «Администратор МЦТП». Все значения вычисляются из актуальной SR и polling history; mock/random данные отсутствуют.
+
+Current-state KPI используют один детерминированный последний результат на устройство. Метрики выбранного периода вынесены в отдельный блок и не меняют смысл текущего состояния. Добавлены глобальные фильтры, drill-down в списки оборудования, последний запуск, VIP/локации, проблемы и изменения, распределения и явные empty/unsupported/insufficient-data состояния.
+
+Authorization, reboot, GCPlus и freshness не рассчитываются без достоверных исходных сигналов или настроенного порога. Презентационные списки ограничены, но итоговые числа всегда считаются по полной выборке.
+
+### Проверки
+
+- JavaScript syntax: PASS.
+- Regression/contract/performance: 93/93 PASS, включая 5 000 устройств и 25 000 результатов менее чем за 2 секунды.
+- Secure runtime: 9/9 PASS; loopback server integration: 1/1 PASS.
+- Локальная browser acceptance: empty state, импорт synthetic XLSX и папки polling JSON, заполненный Dashboard, отсутствие горизонтального переполнения и KPI drill-down — PASS.
+- Secret/artifact scan: PASS; для acceptance использовались только synthetic данные во временном каталоге.
+
+### Изменённые зоны
+
+- `app.js`, `styles.css`, `tests.js`;
+- `specs/004-analytics-dashboard/`;
+- README, architecture/product/context docs и этот журнал.
