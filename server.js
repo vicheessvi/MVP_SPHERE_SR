@@ -73,6 +73,7 @@ function readBody(request) {
 
 const PUBLIC_FILES = new Map([
   ["/app.js", [path.join(__dirname, "app.js"), "text/javascript; charset=utf-8"]],
+  ["/product-catalog.js", [path.join(__dirname, "product-catalog.js"), "text/javascript; charset=utf-8"]],
   ["/styles.css", [path.join(__dirname, "styles.css"), "text/css; charset=utf-8"]],
   ["/vendor/xlsx.full.min.js", [path.join(__dirname, "vendor", "xlsx.full.min.js"), "text/javascript; charset=utf-8"]]
 ]);

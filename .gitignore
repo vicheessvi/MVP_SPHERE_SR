@@ -42,3 +42,6 @@ credentials*.csv
 credentials*.xlsx
 node_modules/
 coverage/
+
+# Verified portable runtime and bootstrap staging (never commit)
+.runtime/

@@ -29,6 +29,9 @@ async function main() {
     const sessionResponse = await fetch(`${base}/api/session`, { headers: { Cookie: cookie } });
     const session = await sessionResponse.json();
     if (!session.secureRuntime || !session.csrfToken) throw new Error("Secure session missing");
+    const catalogResponse = await fetch(`${base}/product-catalog.js`, { headers: { Cookie: cookie } });
+    const catalogSource = await catalogResponse.text();
+    if (!catalogResponse.ok || !catalogSource.includes("MODULE_CATALOG") || !catalogSource.includes("validateProductCatalog")) throw new Error("Product catalog was not served from authenticated loopback origin");
     const state = JSON.stringify({ version: 3, synthetic: "x".repeat(5 * 1024 * 1024) });
     const put = await fetch(`${base}/api/storage/integration-state`, { method: "PUT", headers: { Cookie: cookie, Origin: base, "X-MVP-CSRF": session.csrfToken, "Content-Type": "application/json" }, body: state });
     if (!put.ok) throw new Error(`Storage PUT ${put.status}`);

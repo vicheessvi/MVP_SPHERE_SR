@@ -609,3 +609,56 @@ Authorization, reboot, GCPlus и freshness не рассчитываются б�
 - `app.js`, `styles.css`, `tests.js`;
 - `specs/004-analytics-dashboard/`;
 - README, architecture/product/context docs и этот журнал.
+
+## 2026-08-10 — Русская терминология и Справочник
+
+### Итог
+
+Выполнен Full SpecKit feature `005-russian-ui-reference`. Доступные пользователю маршруты переведены на единый русский словарь без изменения исходных значений SR/JSON и внутренних enum-кодов. Обязательные категории отображаются как «Терминалы ВКС», «Контроллеры» и «Панели управления»; отсутствие ответа по ping — как «Нет ответа по сети».
+
+Добавлен локальный модуль «Справочник» с десятью разделами, поиском по названию, сокращениям, определению и ключевым словам. Главный экран и три категории оборудования получили переходы «О модуле», а показатели отсутствия сети, изменений и отсутствия опроса — централизованные подсказки. Значения SR и GCPlus не интерпретируются без подтверждения и помечены как требующие уточнения; метрика перезагрузок помечена как находящаяся в разработке.
+
+### Проверки
+
+- JavaScript syntax: PASS.
+- Regression/contract/performance: 99/99 PASS.
+- Secure runtime: 9/9 PASS; loopback server integration: 1/1 PASS.
+- Локальная browser acceptance: семь маршрутов, десять разделов, поиск `ping`, контекстный переход, отсутствие необработанных кодов и горизонтального переполнения — PASS.
+- Исходные тестовые значения SR/JSON остаются неизменными; внешние запросы и сохранение поисковых запросов не добавлены.
+
+### Изменённые зоны
+
+- `app.js`, `styles.css`, `index.html`, `tests.js`, `runtime-tests.js`;
+- `specs/005-russian-ui-reference/`;
+- README, architecture/product/context docs, `AGENTS.md` и этот журнал.
+
+Commit, push и deploy для этого этапа не выполнялись.
+
+## 2026-08-10 — Переносимый запуск и автоматический Справочник
+
+### Итог
+
+Выполнен Full SpecKit feature `006-portable-reference-sync`. Чистая GitHub-копия теперь может однократно подготовить официальный закреплённый Node.js 24 LTS для Windows x64/ARM64 без прав администратора. Версия и SHA-256 находятся в `portable-runtime.json`; загрузка выполняется только при отсутствии совместимой среды, архив проверяется до исполнения и атомарно распаковывается в исключённый из Git `.runtime/`.
+
+Каждый новый ПК/Windows-профиль сохраняет собственные DPAPI-ключ, encrypted state и credential vault. Перенос рабочих данных через GitHub не добавлен. Bootstrap изолирован от SR, polling results, аналитики и секретов и выполняет только официальный HTTPS GET до запуска приложения.
+
+Модули, presentation dictionary, status descriptors и tooltips вынесены в `product-catalog.js`. Из каталога автоматически строятся навигация, модульные и статусные карточки Справочника, контекстная помощь и inventory route metadata. Добавление, переименование или удаление зарегистрированного модуля не требует второй ручной правки. Неизвестный смысл по-прежнему не выдумывается; отсутствие метаданных блокирует validation.
+
+### Проверки
+
+- Spec quality checklist: 16/16 PASS.
+- Product catalog validation: 7 модулей, 7 модульных и 8 статусных карточек — PASS.
+- Regression/contract/performance: 101/101 PASS.
+- Secure runtime/bootstrap: 12/12 PASS; loopback server integration: 1/1 PASS.
+- Fresh-PC bootstrap verified against the official Node.js v24.19.0 x64 archive: first download and SHA-256 verification passed, cached restart completed without network, and a deliberately altered archive was rejected before extraction or execution.
+- PowerShell 5.1 parser и `-NoDownload` resolution: PASS.
+- GitHub Windows quality workflow добавлен без operational data/secrets.
+
+### Изменённые зоны
+
+- `portable-runtime.json`, `start.ps1`, `scripts/ensure-node.ps1`;
+- `product-catalog.js`, `scripts/validate-reference.js`, `app.js`, `index.html`, `server.js`;
+- `.github/workflows/quality.yml`, `.gitignore`, тестовые suites;
+- `specs/006-portable-reference-sync/`, ADR-0006 и основная документация.
+
+Commit, push и deploy не выполнялись.

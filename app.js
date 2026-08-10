@@ -14,7 +14,7 @@
   const DEFAULT_MAX_STATE_BYTES = Number.MAX_SAFE_INTEGER;
   const DEFAULT_MAX_RAW_INPUT_BYTES = Number.MAX_SAFE_INTEGER;
   const DASHBOARD_LIST_LIMIT = 8;
-  const SECURITY_NOTICE = "Данные хранятся локально в зашифрованном runtime-хранилище. Сетевые обращения разрешены только к явно выбранным IP оборудования. Credentials изолированы в OS-bound vault и не входят в аналитику или backup.";
+  const SECURITY_NOTICE = "Данные хранятся только на этом компьютере в зашифрованном хранилище. Сетевые обращения разрешены только к явно выбранным IP-адресам оборудования. Учётные данные изолированы и не входят в аналитику или резервные копии.";
 
   const COMMON_ACTIONS = Object.freeze([
     "view",
@@ -49,6 +49,152 @@
   ]);
 
   const ROLE_NAMES = Object.freeze({ administrator: "Администратор МЦТП" });
+
+  const PRODUCT_CATALOG = global.MVP_PRODUCT_CATALOG || (typeof module === "object" && module.exports ? require("./product-catalog") : null);
+  if (!PRODUCT_CATALOG) throw new Error("Каталог продукта не загружен");
+  const { MODULE_CATALOG, UI_TERMS } = PRODUCT_CATALOG;
+  const catalogValidation = PRODUCT_CATALOG.validateProductCatalog();
+  if (!catalogValidation.ok) throw new Error(`Каталог продукта содержит ошибки: ${catalogValidation.errors.join("; ")}`);
+  const HELP_TOPIC_BY_ROUTE = PRODUCT_CATALOG.buildHelpTopicByRoute();
+
+  const HELP_SECTIONS = Object.freeze([
+    {
+      id: "about", title: "1. Об инструменте", description: "Назначение и границы безопасной работы.", entries: [
+        { id: "about-tool", title: "MVP_SPHERE_SR", summary: "Инструмент предназначен для учёта, опроса и анализа состояния оборудования мультимедийной инфраструктуры.", details: "Перечень оборудования формируется по выгрузке SR, а состояние — по результатам опросов Терминалов ВКС, Контроллеров и Панелей управления.", keywords: ["назначение", "оборудование"] },
+        { id: "about-local", title: "Локальная работа и защита данных", summary: "Выгрузка SR, результаты опросов и аналитика хранятся только на компьютере, где запущен инструмент.", details: "Учётные данные используются только для выполнения опроса, хранятся отдельно в зашифрованном виде и не должны попадать в GitHub.", keywords: ["безопасность", "локально", "github", "учётные данные"] }
+      ]
+    },
+    PRODUCT_CATALOG.buildModuleHelpSection(),
+    {
+      id: "terms", title: "3. Термины и определения", description: "Основные пользовательские понятия.", entries: [
+        { id: "term-sr-export", title: "Выгрузка SR", summary: "Файл XLSX с актуальным перечнем помещений и оборудования — основной источник инвентарных данных.", keywords: ["xlsx", "реестр"] },
+        { id: "term-sr", title: "SR", summary: "Используемое в проекте обозначение системы или выгрузки-источника данных.", details: "Точная расшифровка аббревиатуры требует уточнения.", keywords: ["источник", "выгрузка"], status: "needs_clarification" },
+        { id: "term-polling", title: "Опрос оборудования", summary: "Автоматическое подключение инструмента к устройству для получения технической информации о его текущем состоянии.", keywords: ["polling", "опрос"] },
+        { id: "term-run", title: "Запуск опроса", summary: "Одна операция опроса выбранной группы устройств с датой, временем, результатами и ошибками.", keywords: ["polling run", "запуск"] },
+        { id: "term-result", title: "Результат опроса", summary: "Набор данных, полученный от одного устройства в ходе конкретного запуска опроса.", keywords: ["polling result", "json"] },
+        { id: "term-history", title: "История опросов", summary: "Сохранённые результаты предыдущих опросов устройства.", keywords: ["polling history", "история"] },
+        { id: "term-latest", title: "Последние данные", summary: "Самый новый доступный результат опроса конкретного устройства.", keywords: ["latest snapshot", "последнее состояние"] },
+        { id: "term-change", title: "Изменение", summary: "Различие между данными устройства, полученными в двух последовательных опросах.", keywords: ["change", "изменения", "сравнение"] },
+        { id: "term-location", title: "Локация", summary: "Помещение или место установки оборудования; основное название берётся из поля SR «Название комнаты».", keywords: ["комната", "помещение"] },
+        { id: "term-vip-location", title: "VIP-локация", summary: "Локация, отмеченная в SR как VIP.", keywords: ["vip"] },
+        { id: "term-vip-device", title: "VIP-оборудование", summary: "Оборудование, отмеченное в SR как VIP.", keywords: ["vip"] },
+        { id: "term-manufacturer", title: "Производитель", summary: "Компания-производитель оборудования.", keywords: ["vendor"] },
+        { id: "term-model", title: "Модель", summary: "Официальное обозначение модели конкретного устройства.", keywords: ["model"] },
+        { id: "term-ip", title: "IP-адрес", summary: "Сетевой адрес устройства, используемый также для связи результата опроса с SR.", keywords: ["ip"] },
+        { id: "term-mac", title: "MAC-адрес", summary: "Уникальный аппаратный адрес сетевого интерфейса устройства.", keywords: ["mac"] },
+        { id: "term-sip-uri", title: "SIP URI", summary: "Адрес устройства в системе SIP, используемой для установления сеансов связи.", keywords: ["sip", "uri"] },
+        { id: "term-domain", title: "Домен", summary: "Доменное значение устройства или инфраструктуры, если оно присутствует в SR.", keywords: ["domain"] },
+        { id: "term-inventory", title: "Инвентарный номер", summary: "Учётный номер оборудования.", keywords: ["инвентаризация"] },
+        { id: "term-serial", title: "Серийный номер", summary: "Уникальный заводской номер экземпляра оборудования.", keywords: ["serial"] }
+      ]
+    },
+    {
+      id: "abbreviations", title: "4. Сокращения", description: "Расшифровки и понятные пояснения сокращений.", entries: [
+        { id: "abbr-vks", title: "ВКС", summary: "Видеоконференцсвязь. Категория оборудования в интерфейсе называется «Терминалы ВКС».", keywords: ["терминалы вкс"] },
+        { id: "abbr-ip", title: "IP", summary: "Internet Protocol. IP-адрес — сетевой адрес устройства.", keywords: ["сетевой адрес"] },
+        { id: "abbr-mac", title: "MAC", summary: "Media Access Control. MAC-адрес — аппаратный адрес сетевого интерфейса.", keywords: ["аппаратный адрес"] },
+        { id: "abbr-sip", title: "SIP", summary: "Session Initiation Protocol — протокол установления сеансов связи.", keywords: ["сеанс связи"] },
+        { id: "abbr-uri", title: "URI", summary: "Uniform Resource Identifier. В интерфейсе используется понятие «SIP URI — адрес устройства в системе SIP».", keywords: ["адрес"] },
+        { id: "abbr-api", title: "API", summary: "Application Programming Interface — программный интерфейс получения данных от оборудования.", keywords: ["программный интерфейс"] },
+        { id: "abbr-json", title: "JSON", summary: "JavaScript Object Notation — формат файлов результатов опроса оборудования.", keywords: ["файл", "результат опроса"] },
+        { id: "abbr-xlsx", title: "XLSX", summary: "Формат файла электронной таблицы Microsoft Excel.", keywords: ["excel", "sr"] },
+        { id: "abbr-gcplus", title: "GCPlus", summary: "Используемое в инфраструктуре обозначение типа или платформы проекта.", details: "Точное техническое определение требует уточнения.", keywords: ["gc plus"], status: "needs_clarification" },
+        { id: "abbr-tlp", title: "TLP", summary: "В текущих данных — обозначение Панелей управления Extron.", details: "В пользовательских категориях всегда используется название «Панели управления».", keywords: ["extron", "панель"] }
+      ]
+    },
+    PRODUCT_CATALOG.buildStatusHelpSection(),
+    {
+      id: "metrics", title: "6. Показатели и аналитика", description: "Что считается и к какому контексту относится показатель.", entries: [
+        { id: "metric-total", title: "Всего оборудования", summary: "Количество устройств выбранных категорий в актуальной выгрузке SR.", keywords: ["инвентарь"] },
+        { id: "metric-polled", title: "Опрошено", summary: "Количество устройств, для которых есть результаты опроса в соответствующем контексте.", keywords: ["опрос"] },
+        { id: "metric-no-network", title: "Нет ответа по сети", summary: UI_TERMS.tooltips.noNetwork, keywords: ["ping"] },
+        { id: "metric-changed-devices", title: "Устройства с изменениями", summary: "Количество уникальных устройств, у которых в выбранном периоде обнаружены изменения.", keywords: ["изменения"] },
+        { id: "metric-changes", title: "Обнаруженные изменения", summary: "Общее количество отдельных изменений параметров; у одного устройства может быть несколько изменений.", keywords: ["записи изменений"] },
+        { id: "metric-latest", title: "Последнее состояние", summary: "Показатель рассчитывается по одному самому новому результату каждого устройства.", keywords: ["latest state"] },
+        { id: "metric-period", title: "Выбранный период", summary: "Показатель учитывает события и результаты внутри выбранного диапазона времени и не заменяет последнее состояние.", keywords: ["selected period"] }
+      ]
+    },
+    {
+      id: "sources", title: "7. Источники данных", description: "Происхождение сведений в интерфейсе.", entries: [
+        { id: "source-sr", title: "Инвентарные данные", summary: "Названия помещений, категории и реквизиты оборудования поступают из актуальной выгрузки SR.", keywords: ["xlsx"] },
+        { id: "source-polling", title: "Техническое состояние", summary: "Состояние и история формируются из локально импортированных или выполненных результатов опроса.", keywords: ["json", "опрос"] },
+        { id: "source-credentials", title: "Учётные данные", summary: "Используются только модулем опроса и не являются источником аналитики.", details: "Они хранятся отдельно, не отображаются и не входят в резервные копии.", keywords: ["логин", "пароль"] }
+      ]
+    },
+    {
+      id: "polling", title: "8. Опрос оборудования", description: "Как формируется и выполняется опрос.", entries: [
+        { id: "logic-matching", title: "Сопоставление с SR", summary: "IP-адрес из имени файла результата сравнивается с IP-адресами выгрузки SR.", details: "При единственном совпадении результат связывается с оборудованием и локацией; иначе сохраняется как требующий проверки.", keywords: ["matching", "unmatched"] },
+        { id: "logic-no-network", title: "Как определяется отсутствие ответа", summary: "Перед получением данных инструмент может проверить сетевую доступность; отсутствие ответа отмечается статусом «Нет ответа по сети».", keywords: ["failedStage", "Ping.ok", "ping"] },
+        { id: "logic-auth", title: "Как определяется ошибка авторизации", summary: "Устройство доступно, но проверка предоставленных учётных данных завершилась ошибкой.", details: "Причиной могут быть неверные данные или изменившиеся права, но конкретная причина не утверждается без ответа оборудования.", keywords: ["authorization"] },
+        { id: "logic-support", title: "Поддержка автоматического опроса", summary: "Наличие устройства в SR не означает наличие подтверждённого механизма его автоматического опроса.", keywords: ["adapter", "supported", "unsupported"] },
+        { id: "logic-reboots", title: "Анализ перезагрузок", summary: "Функция находится в разработке.", details: "Показатели появятся только после подтверждения достоверного технического правила определения перезагрузки.", keywords: ["reboot", "перезагрузка"], status: "in_development" }
+      ]
+    },
+    {
+      id: "history", title: "9. История и изменения", description: "Как сохраняются результаты и обнаруживаются различия.", entries: [
+        { id: "logic-history", title: "Сохранение истории", summary: "Каждый новый результат добавляется к истории устройства и не заменяет предыдущие результаты.", keywords: ["история опросов"] },
+        { id: "logic-changes", title: "Определение изменений", summary: "Инструмент сравнивает последовательные результаты одного устройства и сохраняет предыдущее и новое значения изменившегося параметра.", keywords: ["было", "стало", "change detection"] },
+        { id: "logic-data-errors", title: "Ошибки данных", summary: "Необработанный файл или результат без однозначного устройства сохраняется отдельно и не превращается в ошибку оборудования.", keywords: ["malformed", "unmatched", "качество данных"] }
+      ]
+    },
+    {
+      id: "technical", title: "10. Часто используемые технические понятия", description: "Технические детали простым эксплуатационным языком.", entries: [
+        { id: "tech-raw", title: "Исходные и отображаемые значения", summary: "SR и JSON сохраняются без перевода; пользовательские подписи формируются отдельно.", details: "Например, исходное Video Conference отображается как категория «Терминалы ВКС».", keywords: ["raw", "video conference"] },
+        { id: "tech-encryption", title: "Шифрование локальных данных", summary: "Рабочие данные на диске защищены шифрованием и привязаны к текущему пользователю Windows.", keywords: ["aes", "dpapi"] },
+        { id: "tech-loopback", title: "Локальный доступ", summary: "Интерфейс принимает подключения только с этого компьютера и не публикуется в локальную сеть.", keywords: ["loopback", "127.0.0.1"] },
+        { id: "tech-json-original", title: "Просмотр исходного JSON", summary: "При необходимости технические поля могут изучаться в исходном файле, но не используются как пользовательские статусы без преобразования.", keywords: ["json", "технические поля"] }
+      ]
+    }
+  ]);
+
+  function userLabel(dictionary, value, fallback) {
+    return dictionary[String(value ?? "")] || fallback || "Данные отсутствуют";
+  }
+
+  function formatCategoryLabel(value) { return userLabel(UI_TERMS.categories, value); }
+  function formatPollStatus(value) { return userLabel(UI_TERMS.pollStatuses, value); }
+  function formatPingStatus(value) { return userLabel(UI_TERMS.pingStatuses, value); }
+  function formatCapabilityStatus(value) { return userLabel(UI_TERMS.capabilities, value); }
+  function formatRunStatus(value) { return userLabel(UI_TERMS.runStatuses, value); }
+  function formatImportOutcome(value) { return userLabel(UI_TERMS.importOutcomes, value); }
+
+  function formatInventoryIssue(issue, linkedResult) {
+    const filename = linkedResult?.filename || "файл импорта";
+    const ip = linkedResult?.filenameIp || "неизвестный IP-адрес";
+    return {
+      malformed_json: `Не удалось обработать файл ${filename}. Проверьте корректность структуры JSON.`,
+      invalid_filename_ip: `Не удалось определить IP-адрес по имени файла ${filename}. Переименуйте файл по IP-адресу устройства.`,
+      unmatched_ip: `Устройство с IP-адресом ${ip} не найдено в текущей выгрузке SR.`,
+      ambiguous_ip: `IP-адрес ${ip} соответствует нескольким устройствам. Проверьте актуальную выгрузку SR.`,
+      classification_conflict: "Категория устройства в результате опроса не совпадает с SR. Проверьте карточку оборудования.",
+      invalid_ip: "В выгрузке SR указан некорректный IP-адрес. Проверьте исходную строку.",
+      missing_identity: "В строке SR недостаточно данных для устойчивого определения устройства. Проверьте инвентарный или серийный номер.",
+      ambiguous_identity: "Строка SR может относиться к нескольким устройствам. Требуется проверка идентификаторов.",
+      unknown_category: "Не удалось определить категорию оборудования по данным SR. Проверьте тип оборудования и тип модели."
+    }[issue?.kind] || "Обнаружена ошибка данных. Проверьте исходный файл и повторите импорт.";
+  }
+
+  function formatChangePath(path) {
+    const normalized = String(path || "").toLocaleLowerCase("ru-RU");
+    if (/ip(address)?$/.test(normalized)) return "IP-адрес";
+    if (/mac(address)?$/.test(normalized)) return "MAC-адрес";
+    if (/host(name)?$/.test(normalized)) return "Имя устройства";
+    if (/firmware|version/.test(normalized)) return "Версия программного обеспечения";
+    if (/model|partnum/.test(normalized)) return "Модель оборудования";
+    if (/name/.test(normalized)) return "Название";
+    return "Параметр устройства";
+  }
+
+  function normalizeReferenceSearch(value) {
+    return String(value || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
+  }
+
+  function searchReferenceEntries(query) {
+    const normalized = normalizeReferenceSearch(query);
+    const entries = HELP_SECTIONS.flatMap((section) => section.entries.map((entry) => ({ ...entry, sectionId: section.id, sectionTitle: section.title })));
+    if (!normalized) return entries;
+    return entries.filter((entry) => normalizeReferenceSearch([entry.title, entry.summary, entry.details, ...(entry.keywords || [])].filter(Boolean).join(" ")).includes(normalized));
+  }
 
   const POLLING_ADAPTERS = Object.freeze([
     Object.freeze({
@@ -1179,8 +1325,8 @@
     }
     const locations = [...locationAgg.values()].filter((row) => row.problemDevices || row.changedDevices || row.noData).sort((left, right) => right.problemDevices - left.problemDevices || Number(right.vip) - Number(left.vip) || left.name.localeCompare(right.name, "ru")).slice(0, limit);
     const deviceById = new Map(states.map((item) => [item.device.id, item]));
-    const equipmentProblems = states.filter((item) => item.isProblem).map((item) => ({ timestamp: item.latestResult?.capturedAt, kind: item.hasCurrentPingFailure ? "ping_failure" : "polling_failure", scope: "equipment", severity: "critical", deviceId: item.device.id, category: item.device.category, locationId: item.device.locationId, location: item.location?.name || "—", device: item.device.nameRaw || item.device.modelRaw || "Устройство", ip: item.device.ipNormalized || item.device.ipRaw || "—", description: item.hasCurrentPingFailure ? "Нет ping по последнему опросу" : "Последний опрос завершился ошибкой" }));
-    const dataProblems = openDataIssues.map((issue) => { const linkedResult = candidateState.pollingResults.find((result) => result.id === issue.sourceId); const item = deviceById.get(issue.deviceId || linkedResult?.deviceId); return { timestamp: issueTime(issue), kind: issue.kind, scope: "data", severity: "warning", deviceId: item?.device.id || null, category: item?.device.category || null, locationId: item?.device.locationId || null, location: item?.location?.name || "—", device: item?.device.nameRaw || linkedResult?.filename || "Файл импорта", ip: item?.device.ipNormalized || linkedResult?.filenameIp || "—", description: String(issue.message || "Ошибка данных").slice(0, 240) }; });
+    const equipmentProblems = states.filter((item) => item.isProblem).map((item) => ({ timestamp: item.latestResult?.capturedAt, kind: item.hasCurrentPingFailure ? "ping_failure" : "polling_failure", scope: "equipment", severity: "critical", deviceId: item.device.id, category: item.device.category, locationId: item.device.locationId, location: item.location?.name || "—", device: item.device.nameRaw || item.device.modelRaw || "Устройство", ip: item.device.ipNormalized || item.device.ipRaw || "—", description: item.hasCurrentPingFailure ? "Нет ответа по сети по результатам последнего опроса" : "Последний опрос завершился ошибкой" }));
+    const dataProblems = openDataIssues.map((issue) => { const linkedResult = candidateState.pollingResults.find((result) => result.id === issue.sourceId); const item = deviceById.get(issue.deviceId || linkedResult?.deviceId); return { timestamp: issueTime(issue), kind: issue.kind, scope: "data", severity: "warning", deviceId: item?.device.id || null, category: item?.device.category || null, locationId: item?.device.locationId || null, location: item?.location?.name || "—", device: item?.device.nameRaw || linkedResult?.filename || "Файл импорта", ip: item?.device.ipNormalized || linkedResult?.filenameIp || "—", description: formatInventoryIssue(issue, linkedResult) }; });
     const recentChanges = scopedChanges.map((change) => { const item = deviceById.get(change.deviceId); return { timestamp: change.detectedAt, deviceId: change.deviceId, category: item?.device.category || null, location: item?.location?.name || "—", device: item?.device.nameRaw || item?.device.modelRaw || "Устройство", manufacturer: item?.device.manufacturerRaw || "—", model: item?.device.modelRaw || "—", path: change.path || "—", oldValue: safeDashboardValue(change.oldValue, change.path), newValue: safeDashboardValue(change.newValue, change.path) }; }).sort((left, right) => timeValue(right.timestamp) - timeValue(left.timestamp)).slice(0, limit);
     const latestProblems = [...equipmentProblems, ...dataProblems].sort((left, right) => timeValue(right.timestamp) - timeValue(left.timestamp)).slice(0, limit);
     const latestSr = [...candidateState.srImports].sort((left, right) => compareTimedEntities(right, left, "importedAt"))[0] || null;
@@ -2792,6 +2938,11 @@
     DEFAULT_MAX_RAW_INPUT_BYTES,
     DASHBOARD_LIST_LIMIT,
     SECURITY_NOTICE,
+    PRODUCT_CATALOG,
+    MODULE_CATALOG,
+    UI_TERMS,
+    HELP_SECTIONS,
+    HELP_TOPIC_BY_ROUTE,
     STATE_ARRAY_KEYS,
     ROLE_NAMES,
     POLLING_ADAPTERS,
@@ -2816,6 +2967,12 @@
     endBaseline,
     escapeHtml,
     formatBytes,
+    formatCategoryLabel,
+    formatPollStatus,
+    formatPingStatus,
+    formatCapabilityStatus,
+    formatRunStatus,
+    formatImportOutcome,
     filterInventoryDevices,
     getActivePreviousChangeSets,
     getActiveBaselineAssignment,
@@ -2858,6 +3015,7 @@
     resolveMatchDecision,
     readSessionUserId,
     saveState,
+    searchReferenceEntries,
     sha256Bytes,
     sha256Text,
     validateBackup,
@@ -2877,7 +3035,7 @@
   if (!app) return;
 
   if (!global.__MVP_SECURE_RUNTIME__) {
-    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Требуется защищённый локальный runtime</h1><p>Прямое открытие <code>index.html</code> отключено, поскольку browser storage не обеспечивает требуемую защиту и объём.</p><p class="muted">Запустите <code>powershell -ExecutionPolicy Bypass -File .\\start.ps1</code>.</p></section></main>`;
+    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Требуется защищённый локальный запуск</h1><p>Прямое открытие <code>index.html</code> отключено: хранилище браузера не обеспечивает требуемую защиту и объём данных.</p><p class="muted">Запустите <code>powershell -ExecutionPolicy Bypass -File .\\start.ps1</code>.</p></section></main>`;
     return;
   }
 
@@ -2891,7 +3049,7 @@
       if (method === "PUT") xhr.setRequestHeader("Content-Type", "application/json; charset=utf-8");
       xhr.send(value === undefined ? null : value);
       if (method === "GET" && xhr.status === 404) return null;
-      if (xhr.status < 200 || xhr.status >= 300) throw new Error(`Secure runtime storage error (${xhr.status})`);
+      if (xhr.status < 200 || xhr.status >= 300) throw new Error(`Ошибка защищённого локального хранилища (${xhr.status})`);
       return xhr.responseText;
     }
     return {
@@ -2911,24 +3069,24 @@
     const saved = saveState(cleaned, persistenceStorage);
     state = cleaned;
     if (!saved.ok) {
-      startupMessage = { text: `Legacy login-session не удалена из persistent state: ${saved.errors.join("; ")}`, type: "warning" };
+      startupMessage = { text: `Предыдущая пользовательская сессия не удалена из сохранённых данных: ${saved.errors.join("; ")}`, type: "warning" };
     }
   }
   let sessionUserId = recovery ? null : "user-administrator";
   if (!recovery) {
     const retained = applyRetention(state, { actorId: "system", reason: "Startup retention" });
     if (!retained.ok) {
-      startupMessage = { text: `Startup retention не выполнен: ${retained.errors.join("; ")}`, type: "error" };
+      startupMessage = { text: `Автоматическая проверка срока хранения не выполнена: ${retained.errors.join("; ")}`, type: "error" };
     } else if (retained.changed) {
       const saved = saveState(retained.state, persistenceStorage);
       if (saved.ok) {
         state = retained.state;
         startupMessage = {
-          text: `Startup retention: удалено snapshots ${retained.expiredCount}; baselines ожидают решения ${retained.pendingBaselineCount}.`,
+          text: `Проверка срока хранения: удалено результатов ${retained.expiredCount}; согласованные состояния ожидают решения ${retained.pendingBaselineCount}.`,
           type: retained.pendingBaselineCount ? "warning" : "success"
         };
       } else {
-        startupMessage = { text: `Startup retention рассчитан, но не сохранён: ${saved.errors.join("; ")}`, type: "error" };
+        startupMessage = { text: `Проверка срока хранения выполнена, но результат не сохранён: ${saved.errors.join("; ")}`, type: "error" };
       }
     }
   }
@@ -2948,7 +3106,9 @@
     pollingImportResults: [],
     pollingPlanResult: null,
     inventoryBusy: false,
-    dashboardFilters: { period: "latest_run" }
+    dashboardFilters: { period: "latest_run" },
+    helpQuery: "",
+    helpTopicId: null
   };
 
   document.addEventListener("click", handleClick);
@@ -2998,11 +3158,11 @@
         <section class="login-card" aria-labelledby="recovery-title">
           <div class="brand-mark" aria-hidden="true">SR</div>
           <h1 id="recovery-title">Локальное состояние повреждено</h1>
-          <p class="muted">Приложение не перезаписало исходное значение. Можно скачать его для диагностики либо явно сбросить demo-state.</p>
+          <p class="muted">Приложение не перезаписало исходное значение. Можно скачать его для диагностики либо явно создать чистое локальное состояние.</p>
           <div class="error-panel" role="alert">${escapeHtml(recovery.reason)}</div>
           <div class="button-row">
             <button class="button secondary" type="button" data-download-corrupt>Скачать исходное значение</button>
-            <button class="button danger" type="button" data-reset-corrupt>Сбросить demo-state</button>
+            <button class="button danger" type="button" data-reset-corrupt>Создать чистое состояние</button>
           </div>
         </section>
       </main>`;
@@ -3017,7 +3177,7 @@
           <p class="page-subtitle">Защищённая локальная сессия недоступна</p>
           <div class="warning-panel" role="note">${escapeHtml(SECURITY_NOTICE)}</div>
           ${renderMessage()}
-          <p>Закройте эту вкладку и запустите приложение через <code>start.ps1</code>. Пароль приложения не используется: доступ создаётся локальным runtime для текущего пользователя Windows.</p>
+          <p>Закройте эту вкладку и запустите приложение через <code>start.ps1</code>. Пароль приложения не используется: локальный доступ создаётся для текущего пользователя Windows.</p>
         </section>
       </main>`;
   }
@@ -3028,17 +3188,12 @@
         <aside class="sidebar">
           <div class="sidebar-brand">MVP_SPHERE_SR</div>
           <nav class="nav-list" aria-label="Основная навигация">
-            ${navButton("dashboard", "Главный экран")}
-            ${navButton("vcs", "Терминалы ВКС")}
-            ${navButton("controllers", "Контроллеры")}
-            ${navButton("panels", "Панели управления")}
-            ${navButton("upload", "Загрузка")}
-            ${navButton("settings", "Локальное хранилище")}
+            ${PRODUCT_CATALOG.buildNavigation().map((item) => navButton(item.route, item.title)).join("")}
           </nav>
         </aside>
         <div class="workspace">
           <header class="topbar">
-            <div><strong>Защищённый локальный анализ</strong><br><span class="muted">Зашифрованное дисковое хранилище · loopback runtime</span></div>
+            <div><strong>Защищённый локальный анализ</strong><br><span class="muted">Зашифрованное хранилище · доступ только с этого компьютера</span></div>
             <div class="user-summary">
               <span>${escapeHtml(user.name)}</span>
               <span class="role-chip">${escapeHtml(ROLE_NAMES[user.role])}</span>
@@ -3046,7 +3201,7 @@
           </header>
           <div class="security-notice" role="note">
             <span>${escapeHtml(SECURITY_NOTICE)}</span>
-            <span class="storage-chip">State: ${formatBytes(measureStateBytes(state))} · без application quota</span>
+            <span class="storage-chip">Данные: ${formatBytes(measureStateBytes(state))} · без ограничения приложения</span>
           </div>
           <main id="main-content" class="page" tabindex="-1">
             ${renderMessage()}
@@ -3057,9 +3212,11 @@
   }
 
   function renderRoute(user) {
-    if (ui.route === "settings") return renderSettings(user);
-    if (ui.route === "upload") return renderUpload();
-    if (["vcs", "controllers", "panels"].includes(ui.route)) return renderInventoryRoute(ui.route);
+    const descriptor = MODULE_CATALOG.find((item) => item.route === ui.route) || MODULE_CATALOG.find((item) => item.route === "dashboard");
+    if (descriptor.renderer === "reference") return renderReference();
+    if (descriptor.renderer === "settings") return renderSettings(user);
+    if (descriptor.renderer === "upload") return renderUpload();
+    if (descriptor.renderer === "inventory") return renderInventoryRoute(descriptor.route);
     return renderDashboard();
   }
 
@@ -3076,43 +3233,43 @@
 
   function renderDashboard() {
     const summary = getDashboardSummary(state, ui.dashboardFilters);
-    const header = `<header class="page-header dashboard-header"><div><p class="eyebrow">Оперативное состояние</p><h1>Главный экран</h1><p class="page-subtitle">Фактические данные актуальной SR и polling history без demo-значений.</p></div><div class="button-row"><button class="button primary" type="button" data-route="upload">Запустить опрос</button><button class="button secondary" type="button" data-route="upload">Загрузить SR / результаты</button></div></header>`;
+    const header = `<header class="page-header dashboard-header"><div><p class="eyebrow">Дашборд</p><h1>Главный экран</h1><p class="page-subtitle">Фактические данные актуальной выгрузки SR и истории опросов без демонстрационных значений.</p></div><div class="button-row"><button class="button primary" type="button" data-route="upload">Запустить опрос</button><button class="button secondary" type="button" data-route="upload">Загрузить данные</button><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.dashboard}">О модуле</button></div></header>`;
     const filterPanel = renderDashboardFilters(ui.dashboardFilters);
     if (!summary.valid) return `${header}${filterPanel}<div class="error-panel section-gap" role="alert">${escapeHtml(summary.errors.join("; "))}</div>`;
-    if (summary.emptyState === "no_sr") return `${header}<section class="empty-state dashboard-empty"><h2>Нет данных SR</h2><p>Для начала работы загрузите локальную XLSX-выгрузку SR. Данные не покинут защищённый runtime.</p><button class="button primary" type="button" data-route="upload">Загрузить SR</button></section>`;
+    if (summary.emptyState === "no_sr") return `${header}<section class="empty-state dashboard-empty"><h2>Нет данных SR</h2><p>Для начала работы загрузите локальную выгрузку SR в формате XLSX. Данные останутся на этом компьютере.</p><button class="button primary" type="button" data-route="upload">Загрузить выгрузку SR</button></section>`;
     const sr = summary.context.sr;
     const run = summary.context.latestRun;
-    const noPolling = summary.emptyState === "no_polling" ? `<div class="info-panel section-gap"><strong>Данные опросов пока отсутствуют.</strong> Inventory показан по SR; устройства не считаются ошибочными.</div>` : "";
+    const noPolling = summary.emptyState === "no_polling" ? `<div class="info-panel section-gap"><strong>Данные опросов пока отсутствуют.</strong> Перечень оборудования показан по SR; устройства не считаются ошибочными.</div>` : "";
     return `${header}
       <section class="dashboard-context" aria-label="Контекст данных">
-        <div><span class="eyebrow">Актуальная SR</span><strong>${escapeHtml(formatDateTime(sr?.importedAt))}</strong><small>${escapeHtml(sr?.filename || "Имя недоступно")} · ${Number(sr?.rowCount) || 0} строк</small></div>
-        <div><span class="eyebrow">Последний polling run</span><strong>${run ? escapeHtml(formatDateTime(run.capturedAt)) : "Нет запусков"}</strong><small>${run ? `${escapeHtml(dashboardRunLabel(run))} · ${run.deviceCount} устройств` : "Результаты ещё не импортированы"}</small></div>
-        <div><span class="eyebrow">Последние данные</span><strong>${summary.freshness.latestTimestamp ? escapeHtml(formatDateTime(summary.freshness.latestTimestamp)) : "Нет данных"}</strong><small>${summary.freshness.latestTimestamp ? escapeHtml(formatAge(summary.freshness.latestTimestamp)) : "Возраст snapshot неизвестен"}</small></div>
+        <div><span class="eyebrow">Актуальная выгрузка SR</span><strong>${escapeHtml(formatDateTime(sr?.importedAt))}</strong><small>${escapeHtml(sr?.filename || "Имя недоступно")} · ${Number(sr?.rowCount) || 0} строк</small></div>
+        <div><span class="eyebrow">Последний запуск опроса</span><strong>${run ? escapeHtml(formatDateTime(run.capturedAt)) : "Нет запусков"}</strong><small>${run ? `${escapeHtml(dashboardRunLabel(run))} · ${run.deviceCount} устройств` : "Результаты ещё не импортированы"}</small></div>
+        <div><span class="eyebrow">Последние данные</span><strong>${summary.freshness.latestTimestamp ? escapeHtml(formatDateTime(summary.freshness.latestTimestamp)) : "Нет данных"}</strong><small>${summary.freshness.latestTimestamp ? escapeHtml(formatAge(summary.freshness.latestTimestamp)) : "Возраст данных неизвестен"}</small></div>
       </section>
       ${filterPanel}${noPolling}
-      <section class="dashboard-section" aria-labelledby="inventory-kpi"><div class="section-heading"><div><p class="eyebrow">Latest state</p><h2 id="inventory-kpi">Инвентарь</h2></div><span class="badge info">${summary.inventory.locations} локаций</span></div>
+      <section class="dashboard-section" aria-labelledby="inventory-kpi"><div class="section-heading"><div><p class="eyebrow">Последнее состояние</p><h2 id="inventory-kpi">Инвентарь</h2></div><span class="badge info">${summary.inventory.locations} локаций</span></div>
         <div class="dashboard-kpi-grid">
           ${dashboardRouteKpi("Всего оборудования", summary.inventory.total, "Актуальные контролируемые устройства", null)}
-          ${dashboardRouteKpi("Терминалы ВКС", summary.inventory.byCategory.vcs, "Тип модели: Video Conference", "vcs")}
-          ${dashboardRouteKpi("Контроллеры", summary.inventory.byCategory.controller, "Тип оборудования: controller", "controllers")}
-          ${dashboardRouteKpi("Панели управления", summary.inventory.byCategory.panel, "Тип модели: Панель управления", "panels")}
+          ${dashboardRouteKpi("Терминалы ВКС", summary.inventory.byCategory.vcs, "Оборудование видеоконференцсвязи", "vcs")}
+          ${dashboardRouteKpi("Контроллеры", summary.inventory.byCategory.controller, "Устройства управления мультимедийной системой", "controllers")}
+          ${dashboardRouteKpi("Панели управления", summary.inventory.byCategory.panel, "Пользовательские устройства управления", "panels")}
         </div>
       </section>
-      <section class="dashboard-section" aria-labelledby="coverage-kpi"><div class="section-heading"><div><p class="eyebrow">Latest state</p><h2 id="coverage-kpi">Покрытие опросом</h2></div><span class="muted">Одно устройство учитывается один раз по последнему snapshot</span></div>
+      <section class="dashboard-section" aria-labelledby="coverage-kpi"><div class="section-heading"><div><p class="eyebrow">Последнее состояние</p><h2 id="coverage-kpi">Покрытие опросом</h2></div><span class="muted">Каждое устройство учитывается один раз по последним данным</span></div>
         <div class="dashboard-kpi-grid operational-grid">
           ${dashboardMetricKpi("Успешно", summary.coverage.success, "Последний результат успешен", "success", summary, "success")}
           ${dashboardMetricKpi("Ошибки", summary.coverage.failed, "Последний опрос завершился ошибкой", "critical", summary, "failed")}
-          ${dashboardMetricKpi("Нет ping", summary.problems.currentPingFailures, "Нет ping сейчас", "critical", summary, "pingFailures")}
-          ${dashboardMetricKpi("Не опрошено", summary.coverage.notPolled, "Поддерживается, но history отсутствует", "warning", summary, "notPolled")}
-          ${dashboardMetricKpi("Не поддерживается", summary.coverage.unsupported, "Нет автоматического adapter", "neutral", summary, "unsupported")}
-          ${dashboardRouteKpi("Когда-либо опрошено", summary.coverage.everPolled, `В последнем run: ${summary.coverage.inLatestRun}`, null)}
+          ${dashboardMetricKpi(tooltipLabel("Нет ответа по сети", "noNetwork", "status-no-network"), summary.problems.currentPingFailures, "Нет ответа по последним данным", "critical", summary, "pingFailures", true)}
+          ${dashboardMetricKpi(tooltipLabel("Не опрашивалось", "notPolled", "status-not-polled"), summary.coverage.notPolled, "Устройство есть в SR, но результаты отсутствуют", "warning", summary, "notPolled", true)}
+          ${dashboardMetricKpi("Автоматический опрос не поддерживается", summary.coverage.unsupported, "Нет подтверждённого механизма опроса", "neutral", summary, "unsupported")}
+          ${dashboardRouteKpi("Опрошено", summary.coverage.everPolled, `В последнем запуске: ${summary.coverage.inLatestRun}`, null)}
         </div>
       </section>
       <section class="attention-panel dashboard-section" aria-labelledby="attention-kpi"><div class="section-heading"><div><p class="eyebrow">Требует внимания</p><h2 id="attention-kpi">Текущие проблемы</h2></div><span class="badge ${summary.problems.currentFailures ? "critical" : "success"}">${summary.problems.currentFailures ? `${summary.problems.currentFailures} устройств` : "Известных ошибок нет"}</span></div>
-        <div class="attention-grid"><div><strong>${summary.problems.currentPingFailures}</strong><span>Нет ping сейчас</span></div><div><strong>${summary.problems.currentFailures}</strong><span>Ошибки оборудования</span></div><div><strong>${summary.problems.unmatched}</strong><span>Не сопоставлено с SR</span></div><div><strong>${summary.problems.dataErrors}</strong><span>Ошибки данных</span></div></div>
+        <div class="attention-grid"><div><strong>${summary.problems.currentPingFailures}</strong><span>Нет ответа по сети</span></div><div><strong>${summary.problems.currentFailures}</strong><span>Ошибки оборудования</span></div><div><strong>${summary.problems.unmatched}</strong><span>Не найдено в SR</span></div><div><strong>${summary.problems.dataErrors}</strong><span>Ошибки данных</span></div></div>
       </section>
       <div class="dashboard-main-grid section-gap">
-        <section class="card"><div class="section-heading"><div><p class="eyebrow">Selected period</p><h2>Активность: ${escapeHtml(summary.period.label)}</h2></div></div><ul class="data-list"><li><span>Результаты</span><strong>${summary.periodMetrics.results}</strong></li><li><span>Неуспешные results</span><strong>${summary.periodMetrics.failedResults}</strong></li><li><span>Устройства с ping failures</span><strong>${summary.periodMetrics.pingFailures}</strong></li><li><span>Устройства с изменениями</span><strong>${summary.periodMetrics.changedDevices}</strong></li><li><span>Change records</span><strong>${summary.periodMetrics.changes}</strong></li><li><span>Ошибки данных</span><strong>${summary.periodMetrics.dataErrors}</strong></li></ul><p class="muted">Эти показатели относятся к периоду и не заменяют current-state KPI выше.</p></section>
+        <section class="card"><div class="section-heading"><div><p class="eyebrow">Выбранный период</p><h2>Активность: ${escapeHtml(summary.period.label)}</h2></div></div><ul class="data-list"><li><span>Результаты опроса</span><strong>${summary.periodMetrics.results}</strong></li><li><span>Неуспешные результаты</span><strong>${summary.periodMetrics.failedResults}</strong></li><li><span>Устройства без ответа по сети</span><strong>${summary.periodMetrics.pingFailures}</strong></li><li><span>${tooltipLabel("Устройства с изменениями", "changedDevices", "metric-changed-devices")}</span><strong>${summary.periodMetrics.changedDevices}</strong></li><li><span>Обнаруженные изменения</span><strong>${summary.periodMetrics.changes}</strong></li><li><span>Ошибки данных</span><strong>${summary.periodMetrics.dataErrors}</strong></li></ul><p class="muted">Эти показатели относятся к выбранному периоду и не заменяют показатели последнего состояния.</p></section>
         ${renderLatestRun(summary)}
         ${renderVipSummary(summary)}
       </div>
@@ -3126,12 +3283,11 @@
         ${renderDistribution("По моделям", summary.distributions.models, summary.inventory.total)}
         ${renderDistribution("По категориям", summary.distributions.categories, summary.inventory.total)}
       </div>
-      <section class="card section-gap blocked-analytics"><h2>Показатели, ожидающие достоверных данных</h2><div class="blocked-grid"><div><strong>Авторизация</strong><span>Недостаточно данных</span></div><div><strong>Перезагрузки</strong><span>Недостаточно данных</span></div><div><strong>GCPlus</strong><span>Недостаточно данных</span></div><div><strong>Устаревшие данные</strong><span>Порог не настроен</span></div></div></section>`;
+      <section class="card section-gap blocked-analytics"><h2>Показатели, ожидающие достоверных данных</h2><div class="blocked-grid"><div><strong>Авторизация</strong><span>Недостаточно данных</span></div><div><strong>Перезагрузки</strong><span>Функция находится в разработке</span></div><div><strong>GCPlus</strong><span>Требует уточнения</span></div><div><strong>Актуальность данных</strong><span>Порог не настроен</span></div></div></section>`;
   }
 
   function dashboardRunLabel(run) {
-    const categoryLabels = { vcs: "ВКС", controller: "Контроллеры", panel: "Панели" };
-    const categories = (run.categories || []).map((item) => categoryLabels[item] || item).join(", ");
+    const categories = (run.categories || []).map(formatCategoryLabel).join(", ");
     return [categories || (run.kind === "plan" ? "План опроса" : "Импорт результатов"), run.manufacturer].filter(Boolean).join(" / ");
   }
 
@@ -3150,15 +3306,15 @@
     const models = devices.map((item) => item.modelRaw).filter(Boolean);
     const locationIds = new Set(devices.map((item) => item.locationId).filter(Boolean));
     const locations = state.locations.filter((item) => locationIds.has(item.id)).sort((a, b) => String(a.name).localeCompare(String(b.name), "ru"));
-    return `<section class="card dashboard-filters"><div class="section-heading"><div><p class="eyebrow">Глобальный scope</p><h2>Фильтры Dashboard</h2></div><button class="button secondary" type="button" data-clear-dashboard-filters>Сбросить</button></div><form class="filter-grid dashboard-filter-grid" data-dashboard-filters>
+    return `<section class="card dashboard-filters"><div class="section-heading"><div><p class="eyebrow">Область анализа</p><h2>Фильтры Дашборда</h2></div><button class="button secondary" type="button" data-clear-dashboard-filters>Сбросить фильтры</button></div><form class="filter-grid dashboard-filter-grid" data-dashboard-filters>
       <div class="field"><label>Период событий</label><select name="period"><option value="latest_run"${filters.period === "latest_run" || !filters.period ? " selected" : ""}>Последний запуск</option><option value="today"${filters.period === "today" ? " selected" : ""}>Сегодня</option><option value="7d"${filters.period === "7d" ? " selected" : ""}>7 дней</option><option value="30d"${filters.period === "30d" ? " selected" : ""}>30 дней</option><option value="custom"${filters.period === "custom" ? " selected" : ""}>Произвольный</option><option value="all"${filters.period === "all" ? " selected" : ""}>Вся история</option></select></div>
       <div class="field"><label>Дата от</label><input type="date" name="dateFrom" value="${escapeHtml(filters.dateFrom || "")}"></div><div class="field"><label>Дата до</label><input type="date" name="dateTo" value="${escapeHtml(filters.dateTo || "")}"></div>
-      <div class="field"><label>Категория</label><select name="category"><option value="">Все</option><option value="vcs"${filters.category === "vcs" ? " selected" : ""}>ВКС</option><option value="controller"${filters.category === "controller" ? " selected" : ""}>Контроллеры</option><option value="panel"${filters.category === "panel" ? " selected" : ""}>Панели</option></select></div>
+      <div class="field"><label>Категория</label><select name="category"><option value="">Все</option><option value="vcs"${filters.category === "vcs" ? " selected" : ""}>${UI_TERMS.categories.vcs}</option><option value="controller"${filters.category === "controller" ? " selected" : ""}>${UI_TERMS.categories.controller}</option><option value="panel"${filters.category === "panel" ? " selected" : ""}>${UI_TERMS.categories.panel}</option></select></div>
       <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(manufacturers, filters.manufacturer)}</select></div><div class="field"><label>Модель</label><select name="model">${filterOptions(models, filters.model)}</select></div>
       <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${locations.map((item) => `<option value="${escapeHtml(item.id)}"${filters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
       <div class="field"><label>VIP</label><select name="vip"><option value="">Все</option><option value="true"${filters.vip === "true" ? " selected" : ""}>VIP</option><option value="false"${filters.vip === "false" ? " selected" : ""}>Не VIP</option></select></div>
-      <div class="field"><label>Текущий статус</label><select name="pollStatus"><option value="">Все</option><option value="success"${filters.pollStatus === "success" ? " selected" : ""}>SUCCESS</option><option value="failed"${filters.pollStatus === "failed" ? " selected" : ""}>FAILED</option><option value="not_polled"${filters.pollStatus === "not_polled" ? " selected" : ""}>NOT_POLLED</option><option value="unsupported"${filters.pollStatus === "unsupported" ? " selected" : ""}>UNSUPPORTED</option><option value="unknown"${filters.pollStatus === "unknown" ? " selected" : ""}>UNKNOWN</option></select></div>
-      <div class="button-row"><button class="button primary" type="submit">Применить</button></div>
+      <div class="field"><label>Статус опроса</label><select name="pollStatus"><option value="">Все</option><option value="success"${filters.pollStatus === "success" ? " selected" : ""}>${formatPollStatus("success")}</option><option value="failed"${filters.pollStatus === "failed" ? " selected" : ""}>${formatPollStatus("failed")}</option><option value="not_polled"${filters.pollStatus === "not_polled" ? " selected" : ""}>${formatPollStatus("not_polled")}</option><option value="unsupported"${filters.pollStatus === "unsupported" ? " selected" : ""}>${formatPollStatus("unsupported")}</option><option value="unknown"${filters.pollStatus === "unknown" ? " selected" : ""}>${formatPollStatus("unknown")}</option></select></div>
+      <div class="button-row"><button class="button primary" type="submit">Применить фильтры</button></div>
     </form></section>`;
   }
 
@@ -3166,45 +3322,74 @@
     return `<article class="dashboard-kpi"><span>${escapeHtml(title)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small>${route ? `<button class="text-button" type="button" data-dashboard-route="${route}">Открыть список</button>` : ""}</article>`;
   }
 
-  function dashboardMetricKpi(title, value, note, tone, summary, metric) {
+  function tooltipLabel(label, tooltipKey, topicId) {
+    const help = UI_TERMS.tooltips[tooltipKey] || "Подробное описание доступно в Справочнике.";
+    return `<span class="label-with-help">${escapeHtml(label)} <button class="help-tip" type="button" data-help-topic="${escapeHtml(topicId)}" aria-label="Справка: ${escapeHtml(label)}" title="${escapeHtml(help)}">?</button></span>`;
+  }
+
+  function dashboardMetricKpi(title, value, note, tone, summary, metric, titleIsHtml) {
     const config = { success: ["pollStatus", "success"], failed: ["pollStatus", "error"], pingFailures: ["ping", "failed"], notPolled: ["pollStatus", "never", "support", "supported"], unsupported: ["support", "unsupported"] }[metric] || [];
     const routeNames = { vcs: "vcs", controller: "controllers", panel: "panels" };
     const buttons = Object.entries(summary.drilldown.byCategory).filter(([, counts]) => counts[metric] > 0).map(([category, counts]) => {
       const attrs = [`data-dashboard-route="${routeNames[category]}"`];
       for (let index = 0; index < config.length; index += 2) attrs.push(`data-filter-${config[index].replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${config[index + 1]}"`);
-      return `<button type="button" class="metric-link" ${attrs.join(" ")}>${category === "vcs" ? "ВКС" : category === "controller" ? "Контроллеры" : "Панели"}: ${counts[metric]}</button>`;
+      return `<button type="button" class="metric-link" ${attrs.join(" ")}>${escapeHtml(formatCategoryLabel(category))}: ${counts[metric]}</button>`;
     }).join("");
-    return `<article class="dashboard-kpi ${tone}"><span>${escapeHtml(title)}</span><strong>${value}</strong><small>${escapeHtml(note)}</small>${buttons ? `<div class="metric-drilldowns">${buttons}</div>` : ""}</article>`;
+    return `<article class="dashboard-kpi ${tone}"><span>${titleIsHtml ? title : escapeHtml(title)}</span><strong>${value}</strong><small>${escapeHtml(note)}</small>${buttons ? `<div class="metric-drilldowns">${buttons}</div>` : ""}</article>`;
   }
 
   function renderLatestRun(summary) {
     const run = summary.context.latestRun;
     if (!run) return `<section class="card"><p class="eyebrow">Последний опрос</p><h2>Запусков пока нет</h2><p class="muted">Импортируйте результаты или сформируйте план опроса.</p><button class="button secondary" type="button" data-route="upload">Открыть загрузку</button></section>`;
-    return `<section class="card"><p class="eyebrow">Последний опрос</p><h2>${escapeHtml(dashboardRunLabel(run))}</h2><p class="muted">${escapeHtml(formatDateTime(run.capturedAt))} · статус ${escapeHtml(run.status)}</p><ul class="data-list"><li><span>Устройств / файлов</span><strong>${run.deviceCount}</strong></li><li><span>Успешно</span><strong>${run.successCount}</strong></li><li><span>Ошибки</span><strong>${run.errorCount}</strong></li><li><span>Нет ping сейчас</span><strong>${summary.problems.currentPingFailures}</strong></li></ul><button class="button secondary" type="button" data-route="upload">Новый запуск</button></section>`;
+    return `<section class="card"><p class="eyebrow">Последний опрос</p><h2>${escapeHtml(dashboardRunLabel(run))}</h2><p class="muted">${escapeHtml(formatDateTime(run.capturedAt))} · ${escapeHtml(formatRunStatus(run.status))}</p><ul class="data-list"><li><span>Устройств или файлов</span><strong>${run.deviceCount}</strong></li><li><span>Успешно</span><strong>${run.successCount}</strong></li><li><span>Ошибки</span><strong>${run.errorCount}</strong></li><li><span>Нет ответа по сети</span><strong>${summary.problems.currentPingFailures}</strong></li></ul><button class="button secondary" type="button" data-route="upload">Новый запуск опроса</button></section>`;
   }
 
   function renderVipSummary(summary) {
-    return `<section class="card vip-card"><p class="eyebrow">VIP monitoring</p><h2>Приоритетная инфраструктура</h2><ul class="data-list"><li><span>VIP-локации</span><strong>${summary.vip.locations}</strong></li><li><span>VIP-оборудование</span><strong>${summary.vip.devices}</strong></li><li><span>С текущими проблемами</span><strong>${summary.vip.problems}</strong></li><li><span>Нет данных / unsupported</span><strong>${summary.vip.noData}</strong></li></ul>${summary.vip.problems ? `<div class="metric-drilldowns">${Object.entries(summary.drilldown.byCategory).filter(([, row]) => row.vipProblems).map(([category, row]) => `<button class="metric-link" type="button" data-dashboard-route="${category === "vcs" ? "vcs" : category === "controller" ? "controllers" : "panels"}" data-filter-vip="true" data-filter-poll-status="error">${category === "vcs" ? "ВКС" : category === "controller" ? "Контроллеры" : "Панели"}: ${row.vipProblems}</button>`).join("")}</div>` : `<p class="success-text">Известных VIP-проблем нет.</p>`}</section>`;
+    return `<section class="card vip-card"><p class="eyebrow">Приоритет</p><h2>Приоритетная инфраструктура</h2><ul class="data-list"><li><span>VIP-локации</span><strong>${summary.vip.locations}</strong></li><li><span>VIP-оборудование</span><strong>${summary.vip.devices}</strong></li><li><span>С текущими проблемами</span><strong>${summary.vip.problems}</strong></li><li><span>Нет данных или опрос не поддерживается</span><strong>${summary.vip.noData}</strong></li></ul>${summary.vip.problems ? `<div class="metric-drilldowns">${Object.entries(summary.drilldown.byCategory).filter(([, row]) => row.vipProblems).map(([category, row]) => `<button class="metric-link" type="button" data-dashboard-route="${category === "vcs" ? "vcs" : category === "controller" ? "controllers" : "panels"}" data-filter-vip="true" data-filter-poll-status="error">${escapeHtml(formatCategoryLabel(category))}: ${row.vipProblems}</button>`).join("")}</div>` : `<p class="success-text">Известных VIP-проблем нет.</p>`}</section>`;
   }
 
   function renderDashboardProblems(summary) {
-    return `<section class="card"><div class="section-heading"><div><p class="eyebrow">Latest state / import</p><h2>Последние проблемы</h2></div><span class="badge ${summary.latestProblems.length ? "warning" : "success"}">${summary.latestProblems.length}</span></div>${summary.latestProblems.length ? `<div class="activity-list">${summary.latestProblems.map((item) => `<article><div><span class="badge ${item.scope === "equipment" ? "critical" : "warning"}">${item.scope === "equipment" ? "Оборудование" : "Данные"}</span><time>${escapeHtml(formatDateTime(item.timestamp))}</time></div><strong>${escapeHtml(item.location)} · ${escapeHtml(item.device)}</strong><p>${escapeHtml(item.description)}</p><small class="mono">${escapeHtml(item.ip)}</small>${item.deviceId && item.category ? `<button class="text-button" type="button" data-dashboard-device="${escapeHtml(item.deviceId)}" data-dashboard-category="${escapeHtml(item.category)}">Карточка устройства</button>` : ""}</article>`).join("")}</div>` : `<p class="muted">Последних проблем в текущем scope нет.</p>`}</section>`;
+    return `<section class="card"><div class="section-heading"><div><p class="eyebrow">Последнее состояние и импорт</p><h2>Последние проблемы</h2></div><span class="badge ${summary.latestProblems.length ? "warning" : "success"}">${summary.latestProblems.length}</span></div>${summary.latestProblems.length ? `<div class="activity-list">${summary.latestProblems.map((item) => `<article><div><span class="badge ${item.scope === "equipment" ? "critical" : "warning"}">${item.scope === "equipment" ? "Оборудование" : "Данные"}</span><time>${escapeHtml(formatDateTime(item.timestamp))}</time></div><strong>${escapeHtml(item.location)} · ${escapeHtml(item.device)}</strong><p>${escapeHtml(item.description)}</p><small class="mono">${escapeHtml(item.ip)}</small>${item.deviceId && item.category ? `<button class="text-button" type="button" data-dashboard-device="${escapeHtml(item.deviceId)}" data-dashboard-category="${escapeHtml(item.category)}">Открыть устройство</button>` : ""}</article>`).join("")}</div>` : `<p class="muted">Последних проблем в текущей области анализа нет.</p>`}</section>`;
   }
 
   function renderDashboardChanges(summary) {
-    return `<section class="card"><div class="section-heading"><div><p class="eyebrow">Latest detected</p><h2>Изменения</h2></div><span class="badge info">${summary.changes.changedDevices} устройств · ${summary.changes.total} записей</span></div>${summary.recentChanges.length ? `<div class="activity-list">${summary.recentChanges.map((item) => `<article><div><time>${escapeHtml(formatDateTime(item.timestamp))}</time><span class="badge info">${escapeHtml(item.path)}</span></div><strong>${escapeHtml(item.location)} · ${escapeHtml(item.device)}</strong><p><del>${escapeHtml(item.oldValue)}</del> → <ins>${escapeHtml(item.newValue)}</ins></p><small>${escapeHtml(item.manufacturer)} · ${escapeHtml(item.model)}</small><button class="text-button" type="button" data-dashboard-device="${escapeHtml(item.deviceId)}" data-dashboard-category="${escapeHtml(item.category)}">Карточка устройства</button></article>`).join("")}</div>` : `<p class="muted">Значимых изменений в текущем scope нет.</p>`}<div class="data-list compact-list"><div><span>Новые в актуальной SR</span><strong>${summary.changes.newInLatestSr}</strong></div><div><span>Отсутствуют в актуальной SR</span><strong>${summary.changes.missingFromLatestSr}</strong></div></div></section>`;
+    return `<section class="card"><div class="section-heading"><div><p class="eyebrow">Последние обнаруженные изменения</p><h2>Изменения</h2></div><span class="badge info">${summary.changes.changedDevices} устройств · ${summary.changes.total} изменений</span></div>${summary.recentChanges.length ? `<div class="activity-list">${summary.recentChanges.map((item) => `<article><div><time>${escapeHtml(formatDateTime(item.timestamp))}</time><span class="badge info">${escapeHtml(formatChangePath(item.path))}</span></div><strong>${escapeHtml(item.location)} · ${escapeHtml(item.device)}</strong><p><del>${escapeHtml(item.oldValue)}</del> → <ins>${escapeHtml(item.newValue)}</ins></p><small>${escapeHtml(item.manufacturer)} · ${escapeHtml(item.model)}</small><button class="text-button" type="button" data-dashboard-device="${escapeHtml(item.deviceId)}" data-dashboard-category="${escapeHtml(item.category)}">Открыть устройство</button></article>`).join("")}</div>` : `<p class="muted">Значимых изменений в текущей области анализа нет.</p>`}<div class="data-list compact-list"><div><span>Новые в актуальной SR</span><strong>${summary.changes.newInLatestSr}</strong></div><div><span>Отсутствуют в актуальной SR</span><strong>${summary.changes.missingFromLatestSr}</strong></div></div></section>`;
   }
 
   function renderAttentionLocations(summary) {
     if (!summary.locations.length) return `<p class="muted">Локаций с проблемами, изменениями или отсутствующими данными нет.</p>`;
-    return `<div class="table-wrap"><table><thead><tr><th>Локация</th><th>Всего</th><th>Проблемы</th><th>Нет ping</th><th>Изменения</th><th>Нет данных</th></tr></thead><tbody>${summary.locations.map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.vip ? ` <span class="badge warning">VIP</span>` : ""}<br><small>${escapeHtml(item.address)}</small></td><td>${item.totalDevices}</td><td>${item.problemDevices}</td><td>${item.pingFailures}</td><td>${item.changedDevices}</td><td>${item.noData}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="table-wrap"><table><thead><tr><th>Локация</th><th>Всего</th><th>Проблемы</th><th>Нет ответа по сети</th><th>Изменения</th><th>Данные отсутствуют</th></tr></thead><tbody>${summary.locations.map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.vip ? ` <span class="badge warning">VIP</span>` : ""}<br><small>${escapeHtml(item.address)}</small></td><td>${item.totalDevices}</td><td>${item.problemDevices}</td><td>${item.pingFailures}</td><td>${item.changedDevices}</td><td>${item.noData}</td></tr>`).join("")}</tbody></table></div>`;
   }
 
   function renderDistribution(title, rows, total) {
     return `<section class="card"><h2>${escapeHtml(title)}</h2>${rows.length ? `<div class="distribution-list">${rows.map((item) => `<div><div><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong></div><progress max="${Math.max(1, total)}" value="${item.count}">${item.count}</progress></div>`).join("")}</div>` : `<p class="muted">Нет данных.</p>`}</section>`;
   }
 
-  const INVENTORY_ROUTE = Object.freeze({ vcs: { category: "vcs", title: "ВКС-терминалы" }, controllers: { category: "controller", title: "Контроллеры" }, panels: { category: "panel", title: "Панели управления" } });
+  function russianCountLabel(value, one, few, many) {
+    const absolute = Math.abs(Number(value)) % 100;
+    const last = absolute % 10;
+    if (absolute > 10 && absolute < 20) return many;
+    if (last === 1) return one;
+    if (last >= 2 && last <= 4) return few;
+    return many;
+  }
+
+  function renderReference() {
+    const query = ui.helpQuery || "";
+    const entries = searchReferenceEntries(query);
+    const bySection = new Map(HELP_SECTIONS.map((section) => [section.id, entries.filter((entry) => entry.sectionId === section.id)]));
+    const statusLabel = { needs_clarification: "Требует уточнения", in_development: "Функция находится в разработке" };
+    const sections = HELP_SECTIONS.map((section, index) => {
+      const sectionEntries = bySection.get(section.id) || [];
+      if (!sectionEntries.length) return "";
+      return `<details class="reference-section"${query || index === 0 ? " open" : ""}><summary><span>${escapeHtml(section.title)}</span><small>${sectionEntries.length}</small></summary><p class="reference-description">${escapeHtml(section.description)}</p><div class="reference-grid">${sectionEntries.map((entry) => `<article class="reference-entry${ui.helpTopicId === entry.id ? " selected" : ""}" id="help-${escapeHtml(entry.id)}"><div class="reference-entry-heading"><h3>${escapeHtml(entry.title)}</h3>${statusLabel[entry.status] ? `<span class="badge warning">${escapeHtml(statusLabel[entry.status])}</span>` : ""}</div><p>${escapeHtml(entry.summary)}</p>${entry.details ? `<p class="muted">${escapeHtml(entry.details)}</p>` : ""}</article>`).join("")}</div></details>`;
+    }).join("");
+    return `<header class="page-header"><div><p class="eyebrow">Помощь пользователю</p><h1>Справочник</h1><p class="page-subtitle">Назначение модулей, термины, показатели, источники данных и правила определения состояний оборудования.</p></div><span class="badge info">${entries.length} ${russianCountLabel(entries.length, "материал", "материала", "материалов")}</span></header>
+      <section class="card reference-search-card"><form class="reference-search" data-reference-search><div class="field"><label for="reference-query">Поиск по Справочнику</label><input id="reference-query" name="query" type="search" value="${escapeHtml(query)}" placeholder="Например: ping, ВКС, SR, изменения"></div><div class="button-row"><button class="button primary" type="submit">Найти</button><button class="button secondary" type="button" data-clear-help-search>Сбросить поиск</button></div></form><p class="muted">Поиск проверяет названия, сокращения, определения и технические синонимы. Запрос никуда не отправляется и не сохраняется.</p></section>
+      <div class="reference-sections section-gap">${sections || `<section class="empty-state"><h2>Ничего не найдено</h2><p>Измените запрос или сбросьте поиск, чтобы увидеть все разделы.</p><button class="button secondary" type="button" data-clear-help-search>Показать весь Справочник</button></section>`}</div>`;
+  }
+
+  const INVENTORY_ROUTE = PRODUCT_CATALOG.buildInventoryRoutes();
 
   function latestPollingResult(deviceId) {
     return state.pollingResults.filter((item) => item.deviceId === deviceId).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))[0] || null;
@@ -3227,30 +3412,30 @@
     const categoryLocationIds = new Set(state.inventoryDevices.filter((item) => item.category === config.category).map((item) => item.locationId).filter(Boolean));
     const categoryLocations = state.locations.filter((item) => categoryLocationIds.has(item.id)).sort((a, b) => String(a.name).localeCompare(String(b.name), "ru"));
     const analytics = getInventoryAnalytics(state, config.category);
-    return `<header class="page-header"><div><h1>${config.title}</h1><p class="page-subtitle">Одна строка — устройство SR; результаты опросов открываются как история устройства.</p></div><span class="badge info">${devices.length}</span></header>
-      <section class="stats-grid">${statCard("Всего", analytics.total)}${statCard("Опрошено / нет", `${analytics.polled} / ${analytics.unpolled}`)}${statCard("Успех / ошибки", `${analytics.success} / ${analytics.errors}`)}${statCard("Изменения", `${analytics.changedDevices} устройств / ${analytics.changes}`)}</section>
+    return `<header class="page-header"><div><h1>${config.title}</h1><p class="page-subtitle">Одна строка — устройство из SR; результаты открываются как история опросов устройства.</p></div><div class="button-row"><span class="badge info">${devices.length}</span><button class="button secondary" type="button" data-help-topic="${config.help}">О модуле</button></div></header>
+      <section class="stats-grid">${statCard("Всего", analytics.total)}${statCard("Опрошено / не опрашивалось", `${analytics.polled} / ${analytics.unpolled}`)}${statCard("Успешно / ошибки", `${analytics.success} / ${analytics.errors}`)}${statCard("Устройства с изменениями / обнаруженные изменения", `${analytics.changedDevices} / ${analytics.changes}`)}</section>
       <section class="card"><form class="filter-grid inventory-filter-grid" data-inventory-filters>
         <input type="hidden" name="route" value="${route}"><div class="field"><label>Поиск</label><input name="search" value="${escapeHtml(ui.inventoryFilters.search || "")}" placeholder="IP, модель, комната…"></div>
         <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(manufacturers, ui.inventoryFilters.manufacturer)}</select></div>
         <div class="field"><label>Модель</label><select name="model">${filterOptions(models, ui.inventoryFilters.model)}</select></div>
         <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${categoryLocations.map((item) => `<option value="${escapeHtml(item.id)}"${ui.inventoryFilters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
         <div class="field"><label>Актуальность SR</label><select name="current"><option value="">Все</option><option value="yes"${ui.inventoryFilters.current === "yes" ? " selected" : ""}>В актуальной SR</option><option value="no"${ui.inventoryFilters.current === "no" ? " selected" : ""}>Исторические</option></select></div>
-        <div class="field"><label>Последний опрос</label><select name="pollStatus">${filterOptions(["success", "error", "unknown", "never"], ui.inventoryFilters.pollStatus, { success: "Успешно", error: "Ошибка", unknown: "Неизвестно", never: "Не опрашивалось" })}</select></div>
-        <div class="field"><label>Ping</label><select name="ping">${filterOptions(["ok", "failed", "unknown"], ui.inventoryFilters.ping, { ok: "Доступен", failed: "Нет ping", unknown: "Неизвестно" })}</select></div>
+        <div class="field"><label>Статус последнего опроса</label><select name="pollStatus">${filterOptions(["success", "error", "unknown", "never"], ui.inventoryFilters.pollStatus, { success: formatPollStatus("success"), error: formatPollStatus("error"), unknown: formatPollStatus("unknown"), never: formatPollStatus("never") })}</select></div>
+        <div class="field"><label>Сетевая доступность</label><select name="ping">${filterOptions(["ok", "failed", "unknown"], ui.inventoryFilters.ping, { ok: formatPingStatus("ok"), failed: formatPingStatus("failed"), unknown: formatPingStatus("unknown") })}</select></div>
         <div class="field"><label>Изменения</label><select name="changed"><option value="">Все</option><option value="true"${ui.inventoryFilters.changed === "true" ? " selected" : ""}>Есть</option><option value="false"${ui.inventoryFilters.changed === "false" ? " selected" : ""}>Нет</option></select></div>
-        <div class="field"><label>Поддержка polling</label><select name="support"><option value="">Все</option><option value="supported"${ui.inventoryFilters.support === "supported" ? " selected" : ""}>Поддерживается</option><option value="unsupported"${ui.inventoryFilters.support === "unsupported" ? " selected" : ""}>Не поддерживается</option><option value="unknown"${ui.inventoryFilters.support === "unknown" ? " selected" : ""}>Неизвестно</option></select></div>
+        <div class="field"><label>Поддержка автоматического опроса</label><select name="support"><option value="">Все</option><option value="supported"${ui.inventoryFilters.support === "supported" ? " selected" : ""}>${formatCapabilityStatus("supported")}</option><option value="unsupported"${ui.inventoryFilters.support === "unsupported" ? " selected" : ""}>${formatCapabilityStatus("unsupported")}</option><option value="unknown"${ui.inventoryFilters.support === "unknown" ? " selected" : ""}>${formatCapabilityStatus("unknown")}</option></select></div>
         <div class="field"><label>VIP</label><select name="vip"><option value="">Все</option><option value="true"${ui.inventoryFilters.vip === "true" ? " selected" : ""}>Да</option><option value="false"${ui.inventoryFilters.vip === "false" ? " selected" : ""}>Нет</option></select></div>
-        <div class="button-row"><button class="button primary" type="submit">Применить</button><button class="button secondary" type="button" data-clear-inventory-filters>Сбросить</button></div>
+        <div class="button-row"><button class="button primary" type="submit">Применить фильтры</button><button class="button secondary" type="button" data-clear-inventory-filters>Сбросить фильтры</button></div>
       </form></section>
       <section class="card section-gap">${renderInventoryTable(devices)}</section>`;
   }
 
   function renderInventoryTable(devices) {
     if (!devices.length) return `<div class="empty-state compact"><p>Устройства по выбранным фильтрам не найдены.</p></div>`;
-    return `<div class="table-wrap"><table><thead><tr><th>Локация</th><th>Устройство</th><th>Производитель / модель</th><th>IP</th><th>SR</th><th>Последний опрос</th><th></th></tr></thead><tbody>${devices.map((device) => {
+    return `<div class="table-wrap"><table><thead><tr><th>Локация</th><th>Устройство</th><th>Производитель / модель</th><th>IP-адрес</th><th>Данные SR</th><th>Статус последнего опроса</th><th></th></tr></thead><tbody>${devices.map((device) => {
       const location = state.locations.find((item) => item.id === device.locationId);
       const latest = latestPollingResult(device.id);
-      return `<tr><td><strong>${escapeHtml(location?.name || "—")}</strong><br><span class="muted">${escapeHtml(location?.address || "")}</span></td><td>${escapeHtml(device.nameRaw || device.modelTypeRaw || "—")}<br><span class="muted">${device.deviceVip ? "VIP · " : ""}${escapeHtml(device.inventoryNumber || device.serialNumber || "")}</span></td><td>${escapeHtml(device.manufacturerRaw || "—")}<br><span class="muted">${escapeHtml(device.modelRaw || "—")}</span></td><td class="mono">${escapeHtml(device.ipNormalized || device.ipRaw || "—")}</td><td><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "История" : "Актуально"}</span></td><td><span class="badge ${latest?.pollStatus === "success" ? "success" : latest?.pollStatus === "error" ? "critical" : "info"}">${escapeHtml(latest?.pollStatus || "Не было")}</span><br><span class="muted">${escapeHtml(formatDateTime(latest?.capturedAt))}</span></td><td><button class="button secondary compact-button" type="button" data-view-inventory="${escapeHtml(device.id)}">Открыть</button></td></tr>`;
+      return `<tr><td><strong>${escapeHtml(location?.name || "—")}</strong><br><span class="muted">${escapeHtml(location?.address || "")}</span></td><td>${escapeHtml(device.nameRaw || device.modelTypeRaw || "—")}<br><span class="muted">${device.deviceVip ? "VIP · " : ""}${escapeHtml(device.inventoryNumber || device.serialNumber || "")}</span></td><td>${escapeHtml(device.manufacturerRaw || "—")}<br><span class="muted">${escapeHtml(device.modelRaw || "—")}</span></td><td class="mono">${escapeHtml(device.ipNormalized || device.ipRaw || "—")}</td><td><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Исторические данные" : "Актуально"}</span></td><td><span class="badge ${latest?.pollStatus === "success" ? "success" : latest?.pollStatus === "error" ? "critical" : "info"}">${escapeHtml(latest ? formatPollStatus(latest.pollStatus) : formatPollStatus("never"))}</span><br><span class="muted">${escapeHtml(formatDateTime(latest?.capturedAt))}</span></td><td><button class="button secondary compact-button" type="button" data-view-inventory="${escapeHtml(device.id)}">Открыть устройство</button></td></tr>`;
     }).join("")}</tbody></table></div>`;
   }
 
@@ -3262,9 +3447,9 @@
     return `<header class="page-header"><div><button class="text-button" type="button" data-back-inventory="${route}">← К списку</button><h1>${escapeHtml(device.nameRaw || device.modelRaw || "Устройство")}</h1><p class="page-subtitle">${escapeHtml(location?.name || "Без локации")} · ${escapeHtml(device.ipNormalized || "IP не задан")}</p></div><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Не в актуальной SR" : "В актуальной SR"}</span></header>
       <div class="detail-grid"><section class="card"><h2>Карточка SR</h2><dl class="definition-list">
         <div><dt>Производитель / модель</dt><dd>${escapeHtml(device.manufacturerRaw || "—")} / ${escapeHtml(device.modelRaw || "—")}</dd></div><div><dt>IP / MAC</dt><dd>${escapeHtml(device.ipNormalized || "—")} / ${escapeHtml(device.macNormalized || device.macRaw || "—")}</dd></div><div><dt>SIP URI / домен</dt><dd>${escapeHtml(device.sipUri || "—")} / ${escapeHtml(device.domain || location?.domain || "—")}</dd></div><div><dt>Инвентарный / серийный</dt><dd>${escapeHtml(device.inventoryNumber || "—")} / ${escapeHtml(device.serialNumber || "—")}</dd></div>
-      </dl></section><section class="card"><h2>Поддержка опроса</h2><span class="badge warning">${escapeHtml(capability.support)}</span><p>Адаптер: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">Transport отсутствует; запуск реального сетевого опроса заблокирован. Credentials не хранятся.</p><button class="button secondary" type="button" disabled>Запустить опрос</button></section></div>
-      <section class="card section-gap"><h2>История результатов (${results.length})</h2><ul class="result-list">${results.map((result) => `<li><div><strong>${escapeHtml(formatDateTime(result.capturedAt))}</strong><br><span class="muted">${escapeHtml(result.filename)} · ${escapeHtml(result.detectedCategory)} · ping ${escapeHtml(result.pingStatus)}</span></div><span class="badge ${result.pollStatus === "success" ? "success" : "critical"}">${escapeHtml(result.pollStatus)}</span></li>`).join("") || "<li>Результатов пока нет</li>"}</ul></section>
-      <section class="card section-gap"><h2>Выявленные изменения (${changes.length})</h2><ul class="result-list">${changes.slice(0, 200).map((change) => `<li><div><strong class="mono">${escapeHtml(change.path)}</strong><br><span class="muted">${escapeHtml(displayValue(change.oldValue))} → ${escapeHtml(displayValue(change.newValue))}</span></div><span class="badge info">change</span></li>`).join("") || "<li>Изменений не выявлено</li>"}</ul></section>`;
+      </dl></section><section class="card"><h2>Поддержка автоматического опроса</h2><span class="badge warning">${escapeHtml(formatCapabilityStatus(capability.support))}</span><p>Механизм опроса: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">Подтверждённый протокол подключения отсутствует; реальный сетевой опрос заблокирован. Учётные данные хранятся отдельно.</p><button class="button secondary" type="button" disabled>Запустить опрос</button></section></div>
+      <section class="card section-gap"><h2>История опросов (${results.length})</h2><ul class="result-list">${results.map((result) => `<li><div><strong>${escapeHtml(formatDateTime(result.capturedAt))}</strong><br><span class="muted">${escapeHtml(result.filename)} · ${escapeHtml(formatCategoryLabel(result.detectedCategory))} · ${escapeHtml(formatPingStatus(result.pingStatus))}</span></div><span class="badge ${result.pollStatus === "success" ? "success" : "critical"}">${escapeHtml(formatPollStatus(result.pollStatus))}</span></li>`).join("") || "<li>Результатов пока нет</li>"}</ul></section>
+      <section class="card section-gap"><h2>Обнаруженные изменения (${changes.length})</h2><ul class="result-list">${changes.slice(0, 200).map((change) => `<li><div><strong>${escapeHtml(formatChangePath(change.path))}</strong><br><span class="muted">${escapeHtml(displayValue(change.oldValue))} → ${escapeHtml(displayValue(change.newValue))}</span></div><span class="badge info">Изменение</span></li>`).join("") || "<li>Изменений не выявлено</li>"}</ul></section>`;
   }
 
   function statCard(label, value) {
@@ -3447,30 +3632,30 @@
       <header class="page-header">
         <div>
           <h1>Импорт данных</h1>
-          <p class="page-subtitle">Загрузите реестр SR и результаты уже выполненных опросов. Все операции локальны.</p>
+          <p class="page-subtitle">Загрузите выгрузку SR и результаты уже выполненных опросов. Все операции выполняются локально.</p>
         </div>
       </header>
       <div class="warning-panel">
-        SR, raw JSON и аналитика сохраняются только в зашифрованном локальном хранилище. Credentials принимаются отдельным write-only vault и не попадают в backup.
+        Выгрузка SR, исходные файлы JSON и аналитика сохраняются только в зашифрованном локальном хранилище. Учётные данные помещаются в отдельное защищённое хранилище и не входят в резервные копии.
       </div>
       <div class="card-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR (.xlsx)</h2><p class="muted">Первый непустой лист; «Домен» необязателен. Повторный импорт обновляет устройства без потери истории.</p>
-          <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file">Файл SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать SR</button></form>
-          ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(item.label)}</span></li>`).join("")}</ul>` : ""}
+          <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file">Файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить выгрузку SR</button></form>
+          ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
-        <section class="card upload-card"><h2>2. Папка результатов опроса</h2><p class="muted">Имя папки: YYYY-MM-DD_HH-MM-SS; JSON-файлы именуются по IP. При недоступности folder timestamp укажите дату вручную.</p>
-          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Папка / JSON-файлы</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required></div><div class="field"><label for="polling-date">Дата запуска (fallback)</label><input id="polling-date" name="capturedAt" type="datetime-local"></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать результаты</button></form>
-          ${ui.pollingImportResults.length ? `<ul class="result-list section-gap">${ui.pollingImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(item.label)}</span></li>`).join("")}</ul>` : ""}
+        <section class="card upload-card"><h2>2. Папка результатов опроса</h2><p class="muted">Имя папки: YYYY-MM-DD_HH-MM-SS; JSON-файлы именуются по IP-адресу. Если дату нельзя определить из имени папки, укажите её вручную.</p>
+          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Папка или файлы JSON</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required></div><div class="field"><label for="polling-date">Дата запуска, если не указана в папке</label><input id="polling-date" name="capturedAt" type="datetime-local"></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать результаты опроса</button></form>
+          ${ui.pollingImportResults.length ? `<ul class="result-list section-gap">${ui.pollingImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
       </div>
-      <section class="card section-gap"><h2>3. План будущего опроса</h2><p class="muted">План сохраняет только выборку и время. Автоматическое/фоновое выполнение заблокировано, пока нет реального transport adapter.</p>
-        <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required><option value="vcs">ВКС</option><option value="controller">Контроллеры</option><option value="panel">Панели</option></select></div><div class="field"><label>Производитель (optional)</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Сформировать план</button><button class="button secondary" type="button" disabled>Сетевой запуск недоступен</button></form>
-        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(ui.pollingPlanResult.category)}, устройств ${ui.pollingPlanResult.total}; transport adapters ${ui.pollingPlanResult.implemented}; без реализации ${ui.pollingPlanResult.notImplemented}. Credentials не сохранялись.</div>` : ""}
+      <section class="card section-gap"><h2>3. План будущего опроса</h2><p class="muted">План сохраняет только выбранные устройства и время. Автоматическое фоновое выполнение заблокировано, пока нет подтверждённого механизма подключения.</p>
+        <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required><option value="vcs">${UI_TERMS.categories.vcs}</option><option value="controller">${UI_TERMS.categories.controller}</option><option value="panel">${UI_TERMS.categories.panel}</option></select></div><div class="field"><label>Производитель, необязательно</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Запланировать опрос</button><button class="button secondary" type="button" disabled>Сетевой запуск недоступен</button></form>
+        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(formatCategoryLabel(ui.pollingPlanResult.category))}, устройств ${ui.pollingPlanResult.total}; поддерживаемых механизмов ${ui.pollingPlanResult.implemented}; ожидают реализации ${ui.pollingPlanResult.notImplemented}. Учётные данные не изменялись.</div>` : ""}
       </section>
-      <section class="card section-gap"><h2>4. Учётные данные для polling</h2><p class="muted">JSON или CSV: IP, login/username, password. Файл передаётся только локальному runtime, атомарно помещается в OS-bound encrypted vault и не включается в state, аналитику или backup.</p>
-        <div class="warning-panel">Исходный plaintext-файл остаётся под вашей ответственностью. После успешного импорта защитите или удалите его согласно внутренней политике.</div>
-        <div class="button-row section-gap"><label class="button primary" for="credential-file">Импортировать credentials</label><input class="screen-reader-only" id="credential-file" type="file" accept=".json,.csv,application/json,text/csv" data-import-credentials></div>
-        <div id="credential-summary" class="info-panel section-gap">Vault summary загружается локально; secret values никогда не возвращаются в UI.</div>
+      <section class="card section-gap"><h2>4. Учётные данные для опроса</h2><p class="muted">Файл JSON или CSV должен содержать IP-адрес, логин и пароль. Он обрабатывается только локально, атомарно помещается в отдельное зашифрованное хранилище и не включается в аналитику или резервные копии.</p>
+        <div class="warning-panel">Исходный незашифрованный файл остаётся под вашей ответственностью. После успешного импорта защитите или удалите его согласно внутренней политике.</div>
+        <div class="button-row section-gap"><label class="button primary" for="credential-file">Импортировать учётные данные</label><input class="screen-reader-only" id="credential-file" type="file" accept=".json,.csv,application/json,text/csv" data-import-credentials></div>
+        <div id="credential-summary" class="info-panel section-gap">Сведения о защищённом хранилище загружаются локально; секретные значения никогда не возвращаются в интерфейс.</div>
       </section>`;
   }
 
@@ -3721,10 +3906,10 @@
   function renderSecureStorage(user) {
     const stateBytes = measureStateBytes(state);
     return `<header class="page-header"><div><h1>Локальное хранилище</h1><p class="page-subtitle">Зашифрованные данные текущего Windows-пользователя.</p></div></header>
-      <div class="detail-grid"><section class="card"><h2>Состояние</h2><ul class="data-list"><li><span>Размер state</span><strong>${formatBytes(stateBytes)}</strong></li><li><span>Application quota</span><strong>Не установлена</strong></li><li><span>Фактический предел</span><strong>Свободное место на диске</strong></li><li><span>State schema</span><strong>v${state.version}</strong></li></ul></section>
-      <section class="card"><h2>Защита</h2><ul class="data-list"><li><span>Runtime</span><strong>Loopback only</strong></li><li><span>Данные на диске</span><strong>AES-256-GCM</strong></li><li><span>Master key</span><strong>Windows DPAPI CurrentUser</strong></li><li><span>Роль</span><strong>${escapeHtml(ROLE_NAMES[user.role])}</strong></li></ul></section></div>
-      <div class="warning-panel section-gap">Plaintext backup из UI отключён. Credentials хранятся отдельно и никогда не входят в state или read API.</div>
-      <section class="card section-gap"><h2>Сброс аналитического state</h2><p class="muted">Credential vault этим действием не экспортируется и не отображается.</p><button class="button danger" type="button" data-reset-demo>Сбросить state</button></section>`;
+      <div class="detail-grid"><section class="card"><h2>Состояние</h2><ul class="data-list"><li><span>Размер сохранённых данных</span><strong>${formatBytes(stateBytes)}</strong></li><li><span>Ограничение приложения</span><strong>Не установлено</strong></li><li><span>Фактический предел</span><strong>Свободное место на диске</strong></li><li><span>Версия структуры данных</span><strong>v${state.version}</strong></li></ul></section>
+      <section class="card"><h2>Защита</h2><ul class="data-list"><li><span>Доступ</span><strong>Только с этого компьютера</strong></li><li><span>Данные на диске</span><strong>AES-256-GCM</strong></li><li><span>Защита главного ключа</span><strong>Windows DPAPI, текущий пользователь</strong></li><li><span>Роль</span><strong>${escapeHtml(ROLE_NAMES[user.role])}</strong></li></ul></section></div>
+      <div class="warning-panel section-gap">Незашифрованные резервные копии из интерфейса отключены. Учётные данные хранятся отдельно и никогда не входят в аналитические данные или интерфейс чтения.</div>
+      <section class="card section-gap"><h2>Сброс аналитических данных</h2><p class="muted">Защищённое хранилище учётных данных этим действием не экспортируется и не отображается.</p><button class="button danger" type="button" data-reset-demo>Сбросить аналитические данные</button></section>`;
   }
 
   renderSettings = renderSecureStorage;
@@ -3739,6 +3924,24 @@
         password.value = fill.dataset.fillPassword;
         login.focus();
       }
+      return;
+    }
+
+    const helpTarget = event.target.closest("[data-help-topic]");
+    if (helpTarget) {
+      const entry = HELP_SECTIONS.flatMap((section) => section.entries).find((item) => item.id === helpTarget.dataset.helpTopic);
+      ui.route = "reference";
+      ui.helpTopicId = entry?.id || null;
+      ui.helpQuery = entry?.title || "";
+      setMessage(null);
+      render();
+      return;
+    }
+
+    if (event.target.closest("[data-clear-help-search]")) {
+      ui.helpQuery = "";
+      ui.helpTopicId = null;
+      render();
       return;
     }
 
@@ -3775,6 +3978,10 @@
     const routeButton = event.target.closest("[data-route]");
     if (routeButton) {
       ui.route = routeButton.dataset.route;
+      if (ui.route === "reference") {
+        ui.helpQuery = "";
+        ui.helpTopicId = null;
+      }
       ui.selectedProjectId = null;
       ui.selectedSnapshotId = null;
       ui.selectedChangeSetId = null;
@@ -3927,15 +4134,15 @@
 
     if (event.target.closest("[data-reset-demo]")) {
       if (!canPerformAction(state, currentUser()?.id, "reset_state")) {
-        setMessage("Сброс доступен только demo-администратору; это UI-ограничение, не security boundary.", "error");
+        setMessage("Сброс доступен только Администратору МЦТП.", "error");
         render();
         return;
       }
-      if (global.confirm("Сбросить весь локальный state и вернуть demo-данные? Сначала экспортируйте backup.")) {
+      if (global.confirm("Сбросить все локальные аналитические данные? Действие нельзя отменить.")) {
         const fresh = createDemoState();
         clearSessionUserId(sessionStorageRef);
         sessionUserId = null;
-        commitState(fresh, "Demo-state сброшен.");
+        commitState(fresh, "Локальные аналитические данные сброшены.");
       }
       return;
     }
@@ -3946,16 +4153,25 @@
     }
 
     if (event.target.closest("[data-reset-corrupt]")) {
-      if (global.confirm("Безвозвратно заменить повреждённое значение чистым demo-state?")) {
+      if (global.confirm("Безвозвратно заменить повреждённое значение чистым локальным состоянием?")) {
         const fresh = createDemoState();
         clearSessionUserId(sessionStorageRef);
         sessionUserId = null;
-        if (commitState(fresh, "Повреждённое состояние заменено demo-state.")) recovery = null;
+        if (commitState(fresh, "Повреждённое значение заменено чистым локальным состоянием.")) recovery = null;
       }
     }
   }
 
   async function handleSubmit(event) {
+    const referenceSearchForm = event.target.closest("[data-reference-search]");
+    if (referenceSearchForm) {
+      event.preventDefault();
+      ui.helpQuery = String(new FormData(referenceSearchForm).get("query") || "").trim();
+      ui.helpTopicId = null;
+      render();
+      return;
+    }
+
     const dashboardFilterForm = event.target.closest("[data-dashboard-filters]");
     if (dashboardFilterForm) {
       event.preventDefault();
@@ -4281,10 +4497,10 @@
       if (!response.ok || !payload.ok) throw new Error("summary unavailable");
       const summary = payload.summary;
       target.textContent = summary.recordCount
-        ? `Vault: ${summary.recordCount} записей; импорт ${formatDateTime(summary.importedAt)}; IP: ${summary.maskedIps.join(", ")}`
-        : "Credential vault пуст.";
+        ? `Защищённое хранилище: ${summary.recordCount} записей; импорт ${formatDateTime(summary.importedAt)}; IP-адреса: ${summary.maskedIps.join(", ")}`
+        : "Защищённое хранилище учётных данных пусто.";
     } catch {
-      target.textContent = "Vault summary недоступен.";
+      target.textContent = "Не удалось получить сведения о защищённом хранилище. Перезапустите приложение и повторите попытку.";
     }
   }
 
@@ -4304,8 +4520,8 @@
       ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
       setMessage(result.ok ? "Выгрузка SR обработана." : "Выгрузка SR не импортирована.", result.ok ? "success" : "error");
     } catch (error) {
-      ui.srImportResults.push({ name: file.name, ok: false, label: "Ошибка", detail: error.message || String(error) });
-      setMessage("Импорт SR завершился ошибкой; прежнее состояние сохранено.", "error");
+      ui.srImportResults.push({ name: file.name, ok: false, label: "failed", detail: `Не удалось обработать файл ${file.name}. Проверьте структуру XLSX и обязательные столбцы.` });
+      setMessage(`Не удалось загрузить выгрузку SR ${file.name}. Прежние данные сохранены; проверьте файл и повторите попытку.`, "error");
     }
     ui.inventoryBusy = false;
     render();
@@ -4335,11 +4551,11 @@
       const saved = saveState(result.state, persistenceStorage);
       if (!saved.ok) throw new Error(saved.errors.join("; "));
       state = deepClone(result.state);
-      ui.pollingImportResults = result.results.map((item) => ({ name: item.name, ok: !["failed"].includes(item.outcome), label: item.outcome, detail: (item.errors || []).join("; ") }));
+      ui.pollingImportResults = result.results.map((item) => ({ name: item.name, ok: !["failed"].includes(item.outcome), label: item.outcome, detail: item.outcome === "failed" ? `Не удалось обработать файл ${item.name}. Проверьте корректность структуры JSON.` : "" }));
       setMessage(`Импортирован запуск: ${files.length} файлов.`, result.outcome === "partial" ? "warning" : "success");
     } catch (error) {
-      ui.pollingImportResults.push({ name: folderName || "run", ok: false, label: "Ошибка", detail: error.message || String(error) });
-      setMessage("Импорт результатов не завершён; прежнее сохранённое состояние не повреждено.", "error");
+      ui.pollingImportResults.push({ name: folderName || "папка результатов", ok: false, label: "failed", detail: "Не удалось обработать папку результатов. Проверьте имена файлов, структуру JSON и дату запуска." });
+      setMessage("Импорт результатов опроса не завершён. Прежние данные сохранены; проверьте файлы и повторите попытку.", "error");
     }
     ui.inventoryBusy = false;
     render();
@@ -4412,14 +4628,14 @@
           const response = await fetch(`/api/credentials/import?format=${format}`, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "Content-Type": "text/plain; charset=utf-8", "X-MVP-CSRF": String(global.__MVP_CSRF__ || "") }, body: String(reader.result || "") });
           const payload = await response.json();
           if (!response.ok || !payload.ok) throw new Error(payload.error || "credential_import_failed");
-          setMessage(`Credential vault обновлён: ${payload.summary.recordCount} записей. Секреты не возвращены в UI.`, "success");
+          setMessage(`Защищённое хранилище учётных данных обновлено: ${payload.summary.recordCount} записей. Секретные значения не отображаются.`, "success");
         } catch (error) {
-          setMessage(`Credentials не импортированы: ${error.message || "безопасная ошибка"}`, "error");
+          setMessage(`Учётные данные из файла ${file.name} не импортированы. Проверьте структуру, обязательные поля и отсутствие повторяющихся IP-адресов.`, "error");
         }
         input.value = "";
         render();
       });
-      reader.addEventListener("error", () => { setMessage("Credential file не прочитан.", "error"); input.value = ""; render(); });
+      reader.addEventListener("error", () => { setMessage(`Не удалось прочитать файл учётных данных ${file.name}. Выберите доступный файл JSON или CSV.`, "error"); input.value = ""; render(); });
       reader.readAsText(file);
       return;
     }

@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const { spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -9,6 +10,7 @@ const { CATALOG, resolveManifest } = require("./runtime/model-catalog");
 const { probeDevice, runPlan } = require("./runtime/polling");
 const { decryptBuffer, encryptBuffer, getOrCreateMasterKey } = require("./runtime/security");
 const { SecureStore } = require("./runtime/secure-store");
+const productCatalog = require("./product-catalog");
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -106,12 +108,51 @@ test("Polling success без verified protocol fail-closed и не читает 
 
 test("Target navigation не содержит legacy audit routes", () => {
   const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
-  assert(!source.includes('navButton("projects"'));
-  assert(!source.includes('navButton("events"'));
-  assert(!source.includes('navButton("matches"'));
-  assert(!source.includes('navButton("snapshots"'));
-  assert(source.includes('navButton("vcs"'));
+  const routes = productCatalog.buildNavigation().map((item) => item.route);
+  equal(routes.join(","), "dashboard,vcs,controllers,panels,upload,settings,reference");
+  assert(!routes.some((route) => ["projects", "events", "matches", "snapshots"].includes(route)));
+  assert(source.includes("PRODUCT_CATALOG.buildNavigation()"));
+  assert(source.includes("PRODUCT_CATALOG.buildModuleHelpSection()"));
   assert(source.includes('data-import-credentials'));
+});
+
+test("Portable runtime manifest закрепляет официальный Node.js LTS для x64 и ARM64", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "portable-runtime.json"), "utf8"));
+  equal(manifest.schemaVersion, 1);
+  equal(manifest.runtime, "node");
+  equal(manifest.version, "24.19.0");
+  equal(manifest.minimumMajor, 24);
+  equal(manifest.baseUrl, "https://nodejs.org/download/release/v24.19.0/");
+  equal(manifest.artifacts.x64.sha256, "57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73");
+  equal(manifest.artifacts.arm64.sha256, "8502f4a50b458d4cc38ed8f2001556c2cd239d464920f74017926ccb1e1c157f");
+  Object.values(manifest.artifacts).forEach((artifact) => assert(/^[0-9a-f]{64}$/.test(artifact.sha256)));
+});
+
+test("Bootstrap не читает рабочие данные, использует только GET и локально разрешает Node", () => {
+  const source = fs.readFileSync(path.join(__dirname, "scripts", "ensure-node.ps1"), "utf8");
+  const lower = source.toLowerCase();
+  assert(source.includes("Invoke-WebRequest"));
+  assert(source.includes("-Method Get"));
+  assert(!/\-Method\s+(Post|Put|Patch|Delete)/i.test(source));
+  assert(!lower.includes("localappdata"));
+  assert(!lower.includes("credential-vault"));
+  assert(!lower.includes("secure-store"));
+  assert(fs.readFileSync(path.join(__dirname, ".gitignore"), "utf8").includes(".runtime/"));
+
+  const resolved = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(__dirname, "scripts", "ensure-node.ps1"), "-ProjectRoot", __dirname, "-NoDownload"], { cwd: __dirname, encoding: "utf8", windowsHide: true });
+  equal(resolved.status, 0, resolved.stderr || resolved.stdout);
+  assert(/node\.exe/i.test(resolved.stdout));
+});
+
+test("Bootstrap fail-closed отклоняет неподдерживаемую архитектуру до загрузки", () => {
+  const rejected = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(__dirname, "scripts", "ensure-node.ps1"), "-ProjectRoot", __dirname, "-NoDownload"], {
+    cwd: __dirname,
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, PROCESSOR_ARCHITEW6432: "", PROCESSOR_ARCHITECTURE: "MIPS" }
+  });
+  assert(rejected.status !== 0);
+  assert(fs.readFileSync(path.join(__dirname, "scripts", "ensure-node.ps1"), "utf8").includes("Архитектура компьютера не поддерживается"));
 });
 
 (async () => {

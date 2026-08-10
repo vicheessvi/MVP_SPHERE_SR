@@ -730,7 +730,7 @@
     assertEqual(JSON.stringify(second.state.snapshots), originalState);
   });
 
-  test("Single role разрешает admin actions и публикует secure-runtime notice", () => {
+  test("Единственная роль разрешает действия администратора и публикует русское уведомление о защите", () => {
     const state = api.createDemoState();
     assert(!api.canPerformAction(state, "user-av-engineer", "review_event"));
     assert(!api.canPerformAction(state, "user-av-engineer", "export_backup"));
@@ -738,8 +738,8 @@
     assert(!api.canPerformAction(state, "user-av-engineer", "manage_users"));
     assert(api.canPerformAction(state, "user-administrator", "reset_state"));
     assertEqual(state.users.length, 1);
-    assert(api.SECURITY_NOTICE.includes("зашифрованном runtime-хранилище"));
-    assert(api.SECURITY_NOTICE.includes("OS-bound vault"));
+    assert(api.SECURITY_NOTICE.includes("зашифрованном хранилище"));
+    assert(api.SECURITY_NOTICE.includes("Учётные данные изолированы"));
   });
 
   test("MatchDecision choose пересчитывает зависимый diff и сохраняет старый ChangeSet", async () => {
@@ -1136,6 +1136,105 @@
     assertEqual(api.filterInventoryDevices(state, "panel", { support: "unsupported" }).length, 1);
     assertEqual(api.filterInventoryDevices(state, "panel", { support: "supported" }).length, 0);
     assert(panel);
+  });
+
+  test("Пользовательский словарь закрепляет обязательные названия категорий", () => {
+    assertEqual(api.UI_TERMS.categories.vcs, "Терминалы ВКС");
+    assertEqual(api.UI_TERMS.categories.controller, "Контроллеры");
+    assertEqual(api.UI_TERMS.categories.panel, "Панели управления");
+    assertEqual(api.formatCategoryLabel("vcs"), "Терминалы ВКС");
+    assertEqual(api.formatCategoryLabel("unknown"), "Данные отсутствуют");
+  });
+
+  test("Внутренние статусы опроса преобразуются в русские подписи", () => {
+    assertEqual(api.formatPollStatus("success"), "Успешно");
+    assertEqual(api.formatPollStatus("FAILED"), "Ошибка");
+    assertEqual(api.formatPollStatus("not_polled"), "Не опрашивалось");
+    assertEqual(api.formatPollStatus("unsupported"), "Автоматический опрос не поддерживается");
+    assertEqual(api.formatPollStatus("unexpected_internal_code"), "Данные отсутствуют");
+    assertEqual(api.formatPingStatus("failed"), "Нет ответа по сети");
+    assertEqual(api.formatCapabilityStatus("supported"), "Автоматический опрос поддерживается");
+  });
+
+  test("Справочник содержит десять пользовательских разделов и неопределённые термины", () => {
+    assertEqual(api.HELP_SECTIONS.length, 10);
+    const entries = api.HELP_SECTIONS.flatMap((section) => section.entries);
+    assert(entries.length >= 35, `Ожидалось не менее 35 карточек, получено ${entries.length}`);
+    assertEqual(entries.find((entry) => entry.id === "term-sr")?.status, "needs_clarification");
+    assertEqual(entries.find((entry) => entry.id === "abbr-gcplus")?.status, "needs_clarification");
+    assertEqual(entries.find((entry) => entry.id === "logic-reboots")?.status, "in_development");
+  });
+
+  test("Поиск Справочника находит термины, сокращения, определения и синонимы", () => {
+    const ids = (query) => api.searchReferenceEntries(query).map((item) => item.id);
+    assert(ids("ping").includes("status-no-network"));
+    assert(ids("ВКС").includes("abbr-vks"));
+    assert(ids("SR").includes("term-sr"));
+    assert(ids("изменения").includes("term-change"));
+    assert(ids("GCPlus").includes("abbr-gcplus"));
+    assertEqual(api.searchReferenceEntries("   ").length, api.HELP_SECTIONS.flatMap((section) => section.entries).length);
+    assertEqual(api.searchReferenceEntries("несуществующий-запрос").length, 0);
+  });
+
+  test("Контекстные подсказки используют единый русский источник", () => {
+    assertEqual(api.UI_TERMS.tooltips.noNetwork, "Количество устройств, которые не ответили на проверку сетевой доступности.");
+    assertEqual(api.UI_TERMS.tooltips.notPolled, "Устройство есть в выгрузке SR, но результаты его опросов отсутствуют.");
+    assertEqual(api.UI_TERMS.tooltips.changedDevices, "Количество устройств, данные которых отличаются от предыдущего результата опроса.");
+    assertEqual(api.HELP_TOPIC_BY_ROUTE.dashboard, "module-dashboard");
+    assertEqual(api.HELP_TOPIC_BY_ROUTE.vcs, "module-vcs");
+    assertEqual(api.HELP_TOPIC_BY_ROUTE.controllers, "module-controllers");
+    assertEqual(api.HELP_TOPIC_BY_ROUTE.panels, "module-panels");
+  });
+
+  test("Русификация не изменяет исходные технические значения SR и JSON", async () => {
+    const imported = api.importSrRows(api.createDemoState(), { filename: "raw-compatible.xlsx", headers: srHeaders(), rows: [srRow({ "Тип модели": "Video Conference" })] });
+    assertEqual(imported.state.inventoryDevices[0].modelTypeRaw, "Video Conference");
+    assertEqual(imported.state.inventoryDevices[0].category, "vcs");
+    const polled = await api.ingestPollingResultText(imported.state, { folderName: "2026-08-10_12-00-00", name: "10.10.20.30.json", text: JSON.stringify({ ok: false, failedStage: "ping", ping: { ok: false }, "Controller Type": "TLP" }) });
+    assertEqual(JSON.parse(polled.state.pollingResults[0].rawText)["Controller Type"], "TLP");
+    assertEqual(polled.state.pollingResults[0].pingStatus, "failed");
+  });
+
+  test("Единый каталог синхронно добавляет, переименовывает и удаляет модуль", () => {
+    const catalog = api.PRODUCT_CATALOG;
+    const modules = api.deepClone(api.MODULE_CATALOG);
+    const synthetic = {
+      route: "synthetic-help", renderer: "reference", title: "Тестовый модуль", order: 80,
+      helpId: "module-synthetic-help", contextHelp: false,
+      summary: "Проверяет автоматическое обновление пользовательской навигации.",
+      details: "Используется только как синтетическая запись модульного теста.",
+      keywords: ["синтетический", "проверка"]
+    };
+    const added = [...modules, synthetic];
+    assert(catalog.validateProductCatalog({ modules: added }).ok);
+    assertEqual(catalog.buildNavigation(added).at(-1).title, "Тестовый модуль");
+    assertEqual(catalog.buildModuleHelpSection(added).entries.at(-1).title, "Тестовый модуль");
+
+    const renamed = added.map((item) => item.route === synthetic.route ? { ...item, title: "Обновлённый модуль" } : item);
+    assertEqual(catalog.buildNavigation(renamed).at(-1).title, "Обновлённый модуль");
+    assertEqual(catalog.buildModuleHelpSection(renamed).entries.at(-1).title, "Обновлённый модуль");
+
+    const removed = renamed.filter((item) => item.route !== synthetic.route);
+    assert(!catalog.buildNavigation(removed).some((item) => item.route === synthetic.route));
+    assert(!catalog.buildModuleHelpSection(removed).entries.some((item) => item.id === synthetic.helpId));
+  });
+
+  test("Проверка каталога блокирует рассинхронизацию и статусы следуют словарю", () => {
+    const catalog = api.PRODUCT_CATALOG;
+    const modules = api.deepClone(api.MODULE_CATALOG);
+    const duplicate = [...modules, { ...modules[0], order: 999 }];
+    const missingRussian = modules.map((item, index) => index === 0 ? { ...item, title: "" } : item);
+    const unknownRenderer = modules.map((item, index) => index === 0 ? { ...item, renderer: "missing-renderer" } : item);
+    assert(!catalog.validateProductCatalog({ modules: duplicate }).ok);
+    assert(!catalog.validateProductCatalog({ modules: missingRussian }).ok);
+    assert(!catalog.validateProductCatalog({ modules: unknownRenderer }).ok);
+
+    const terms = api.deepClone(api.UI_TERMS);
+    terms.pingStatuses.failed = "Сеть недоступна";
+    const statuses = catalog.buildStatusHelpSection(terms).entries;
+    assertEqual(statuses.find((item) => item.id === "status-no-network").title, "Сеть недоступна");
+    terms.pollStatuses.success = "";
+    assert(!catalog.validateProductCatalog({ uiTerms: terms }).ok);
   });
 
   test("Dashboard selector обрабатывает 5000 devices и 25000 results быстрее 2 секунд", () => {

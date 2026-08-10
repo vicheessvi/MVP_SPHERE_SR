@@ -5,18 +5,23 @@
 Проект подготовлен к дальнейшему редактированию через ИИ-агента и GitHub SpecKit.
 
 - Видение: `docs/project-vision.md`.
-- Стек: Windows, Node.js 20+, встроенный HTTP, HTML5, CSS3, Vanilla JavaScript, vendored SheetJS CE 0.20.3.
+- Стек: Windows, Node.js 24 LTS portable/system, встроенный HTTP, HTML5, CSS3, Vanilla JavaScript, vendored SheetJS CE 0.20.3.
 - Runtime: только `127.0.0.1`, запуск через `start.ps1`; direct-open запрещён для рабочих данных.
 - Хранение: AES-256-GCM, мастер-ключ под Windows DPAPI CurrentUser, отдельный credential vault, без искусственной квоты.
 - Роль: только «Администратор МЦТП».
 - Constitution: версия 2.0.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/004-analytics-dashboard/`.
+- Текущая feature: `specs/006-portable-reference-sync/`.
 
 ## Правила работы агента
 
 - Сначала прочитать этот файл и использовать `docs/context-map.md`.
 - Не загружать весь репозиторий без необходимости и не менять несвязанные файлы.
 - Не выдумывать vendor API, команды, transport или схемы ответов; неизвестное отмечать `TBD`/`protocol_required`.
+- Не изменять raw SR/JSON и внутренние enum-коды ради локализации; русские подписи брать из централизованного presentation dictionary в `app.js`.
+- Термины SR, GCPlus и перезагрузок не трактовать без подтверждения; использовать предусмотренные пометки «Требует уточнения» и «В разработке».
+- Доступные модули, их названия, справочные описания, пользовательские статусы и подсказки изменять через `product-catalog.js`; после правки обязательно запускать `node scripts/validate-reference.js`.
+- Не добавлять новый доступный маршрут в обход `MODULE_CATALOG` и не дублировать модульные карточки вручную в `app.js`.
+- Версию portable runtime обновлять только вместе с точными официальными URL/SHA-256 в `portable-runtime.json`, проверками и ADR; moving `latest` запрещён.
 - Никогда не помещать реальные логины, пароли, токены, ключи, IP-выгрузки или runtime data в Git, fixtures, логи, state, аналитику и ответы API.
 - Не добавлять внешнюю передачу, CDN, телеметрию или non-loopback bind без нового явного решения пользователя и security review.
 - Не делать commit/push без явного указания пользователя.
