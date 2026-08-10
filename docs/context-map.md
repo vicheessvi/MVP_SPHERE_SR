@@ -21,7 +21,8 @@
 
 ## Код по зонам
 
-- UI/state/analytics/Dashboard projection, единственный direct-file memory mode, пакетный импорт папок и Справочник: `index.html`, `runtime-config.js`, `styles.css`, `app.js`.
+- UI/state/analytics/Dashboard projection, единственный direct-file memory mode, индексированный пакетный импорт папок, progress/cancel и Справочник: `index.html`, `runtime-config.js`, `styles.css`, `app.js`.
+- Performance regression и synthetic scale matrix: `tests.js`, `benchmarks/import-performance.js`, `specs/009-scalable-polling-import/benchmark-results.md`.
 - Product catalog/reference source: `product-catalog.js`, `scripts/validate-reference.js`.
 - Catalog/polling: `runtime/model-catalog.js`, `runtime/polling.js`, `scripts/poll-devices.js`.
 - XLSX runtime: `vendor/xlsx.full.min.js`, `vendor/LICENSE.sheetjs.txt`.

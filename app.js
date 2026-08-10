@@ -122,6 +122,7 @@
     {
       id: "polling", title: "8. Опрос оборудования", description: "Как формируется и выполняется опрос.", entries: [
         { id: "logic-folders", title: "Папки запусков опроса", summary: "Общая папка может содержать несколько сеансов; имя каждого сеанса имеет формат YYYY-MM-DD_HH-MM-SS.", details: "Инструмент рекурсивно находит JSON, создаёт отдельный запуск на каждую датированную папку и обрабатывает запуски по времени.", keywords: ["папка", "пакетный импорт", "дата"] },
+        { id: "logic-batch-progress", title: "Массовая загрузка результатов", summary: "Результаты опросов обрабатываются пакетно. Во время загрузки отображается количество найденных и обработанных файлов, ошибки, скорость обработки и примерное оставшееся время.", details: "Повторно уже загруженные результаты пропускаются, если инструмент может надёжно определить, что они уже были импортированы. Активную загрузку можно остановить без удаления уже обработанных результатов.", keywords: ["прогресс", "скорость", "оставшееся время", "дубликат", "отмена"] },
         { id: "logic-matching", title: "Сопоставление с SR", summary: "IP-адрес из имени файла результата сравнивается с IP-адресами выгрузки SR.", details: "При единственном совпадении результат связывается с оборудованием и локацией; иначе сохраняется как требующий проверки.", keywords: ["matching", "unmatched"] },
         { id: "logic-no-network", title: "Как определяется отсутствие ответа", summary: "Перед получением данных инструмент может проверить сетевую доступность; отсутствие ответа отмечается статусом «Нет ответа по сети».", keywords: ["failedStage", "Ping.ok", "ping"] },
         { id: "logic-auth", title: "Как определяется ошибка авторизации", summary: "Устройство доступно, но проверка предоставленных учётных данных завершилась ошибкой.", details: "Причиной могут быть неверные данные или изменившиеся права, но конкретная причина не утверждается без ответа оборудования.", keywords: ["authorization"] },
@@ -1598,6 +1599,331 @@
       importedFolderCount: successfulFolders,
       importedFileCount,
       errorCount: grouping.rejected.length + readErrors.length + parseErrorCount,
+      errors: successfulFolders > 0 ? [] : ["Ни одна папка опроса не была импортирована"]
+    };
+  }
+
+  const DEFAULT_POLLING_IMPORT_BATCH_SIZE = 32;
+  const MAX_POLLING_READ_CONCURRENCY = 6;
+
+  function monotonicNow() {
+    return global.performance?.now ? global.performance.now() : Date.now();
+  }
+
+  function pollingResultOrder(left, right) {
+    return new Date(left.capturedAt) - new Date(right.capturedAt) || String(left.id).localeCompare(String(right.id));
+  }
+
+  function pollingPairKey(deviceId, fromResultId, toResultId) {
+    return `${deviceId}|${fromResultId}|${toResultId}`;
+  }
+
+  function pollingDuplicateKey(runId, filename, rawSha256) {
+    return `${runId}|${filename}|${rawSha256}`;
+  }
+
+  function createPollingImportContext(candidateState) {
+    const inventoryByIp = new Map();
+    for (const device of candidateState.inventoryDevices) {
+      const addresses = new Set([device.ipNormalized, ...(device.ipHistory || [])].filter(Boolean));
+      for (const address of addresses) {
+        if (!inventoryByIp.has(address)) inventoryByIp.set(address, []);
+        inventoryByIp.get(address).push(device);
+      }
+    }
+    const runByIdentity = new Map(candidateState.pollingRuns.filter((run) => run.identityKey).map((run) => [run.identityKey, run]));
+    const duplicateKeys = new Set(candidateState.pollingResults.map((result) => pollingDuplicateKey(result.runId, result.filename, result.rawSha256)));
+    const historyByDevice = new Map();
+    for (const result of candidateState.pollingResults) {
+      if (!result.deviceId || result.parseStatus !== "parsed") continue;
+      if (!historyByDevice.has(result.deviceId)) historyByDevice.set(result.deviceId, []);
+      historyByDevice.get(result.deviceId).push(result);
+    }
+    historyByDevice.forEach((history) => history.sort(pollingResultOrder));
+    const changesByPair = new Map();
+    for (const change of candidateState.deviceChanges) {
+      const key = pollingPairKey(change.deviceId, change.fromPollingResultId, change.toPollingResultId);
+      if (!changesByPair.has(key)) changesByPair.set(key, []);
+      changesByPair.get(key).push(change);
+    }
+    return { state: candidateState, inventoryByIp, runByIdentity, duplicateKeys, historyByDevice, changesByPair, removedChangeIds: new Set() };
+  }
+
+  function defaultPollingReadConcurrency() {
+    const hardware = Number(global.navigator?.hardwareConcurrency) || 4;
+    return Math.max(2, Math.min(MAX_POLLING_READ_CONCURRENCY, Math.ceil(hardware / 2)));
+  }
+
+  async function cooperativeBrowserYield() {
+    if (global.scheduler && typeof global.scheduler.yield === "function") {
+      await global.scheduler.yield();
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  async function mapWithBoundedConcurrency(items, limit, mapper) {
+    const output = new Array(items.length);
+    let cursor = 0;
+    const workerCount = Math.max(1, Math.min(Number(limit) || 1, items.length || 1));
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        output[index] = await mapper(items[index], index);
+      }
+    }));
+    return output;
+  }
+
+  function ensureIndexedPollingRun(context, input, capturedAt) {
+    const folderIdentity = input.folderPath || input.folderName || "manual";
+    const identityKey = `${capturedAt}|${folderIdentity}`;
+    let run = context.runByIdentity.get(identityKey);
+    if (!run) {
+      run = ensurePollingRun(context.state, input, capturedAt);
+      if (run) context.runByIdentity.set(identityKey, run);
+    }
+    return run;
+  }
+
+  function removeIndexedPollingPair(context, deviceId, fromResult, toResult) {
+    if (!fromResult || !toResult) return;
+    const key = pollingPairKey(deviceId, fromResult.id, toResult.id);
+    const existing = context.changesByPair.get(key) || [];
+    existing.forEach((change) => context.removedChangeIds.add(change.id));
+    context.changesByPair.delete(key);
+  }
+
+  function addIndexedPollingPair(context, deviceId, fromResult, toResult, metrics) {
+    if (!fromResult || !toResult) return;
+    const differences = [];
+    const ignored = (context.state.settings.ignoredPollingPaths || []).map((item) => String(item).startsWith("$") ? String(item) : `$.${item}`);
+    flattenPollingChanges(fromResult.normalizedData, toResult.normalizedData, "$", ignored, differences);
+    const changes = differences.map((difference) => ({
+      id: createId("device-change"),
+      deviceId,
+      fromPollingResultId: fromResult.id,
+      toPollingResultId: toResult.id,
+      detectedAt: nowIso(),
+      status: "active",
+      ...difference
+    }));
+    context.state.deviceChanges.push(...changes);
+    context.changesByPair.set(pollingPairKey(deviceId, fromResult.id, toResult.id), changes);
+    metrics.diffPairs += 1;
+  }
+
+  function insertIndexedPollingHistory(context, result, metrics) {
+    if (!result.deviceId || result.parseStatus !== "parsed") return;
+    let history = context.historyByDevice.get(result.deviceId);
+    if (!history) {
+      history = [];
+      context.historyByDevice.set(result.deviceId, history);
+    }
+    let low = 0;
+    let high = history.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (pollingResultOrder(history[middle], result) <= 0) low = middle + 1;
+      else high = middle;
+    }
+    const previous = history[low - 1] || null;
+    const next = history[low] || null;
+    removeIndexedPollingPair(context, result.deviceId, previous, next);
+    history.splice(low, 0, result);
+    addIndexedPollingPair(context, result.deviceId, previous, result, metrics);
+    addIndexedPollingPair(context, result.deviceId, result, next, metrics);
+  }
+
+  function compactRemovedPollingChanges(context) {
+    if (!context.removedChangeIds.size) return;
+    context.state.deviceChanges = context.state.deviceChanges.filter((change) => !context.removedChangeIds.has(change.id));
+    context.removedChangeIds.clear();
+  }
+
+  async function ingestIndexedPollingFile(context, input, metrics) {
+    const rawText = String(input.text || "");
+    const hashStarted = monotonicNow();
+    const rawSha256 = await sha256Text(rawText);
+    metrics.stagesMs.hash += monotonicNow() - hashStarted;
+    const duplicateKey = pollingDuplicateKey(input.run.id, input.name, rawSha256);
+    if (context.duplicateKeys.has(duplicateKey)) return { outcome: "duplicate", errors: [] };
+
+    const parseStarted = monotonicNow();
+    let payload = null;
+    let parseError = null;
+    try { payload = JSON.parse(rawText); } catch (error) { parseError = error.message || String(error); }
+    metrics.parses += 1;
+    metrics.stagesMs.parsing += monotonicNow() - parseStarted;
+
+    const ipInfo = parsePollingFilenameIp(input.name || "");
+    const matchingStarted = monotonicNow();
+    const candidates = ipInfo.ip ? (context.inventoryByIp.get(ipInfo.ip) || []) : [];
+    if (ipInfo.ip) metrics.srLookups += 1;
+    const device = candidates.length === 1 ? candidates[0] : null;
+    metrics.stagesMs.srMatching += monotonicNow() - matchingStarted;
+
+    const normalizationStarted = monotonicNow();
+    const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
+    const status = payload ? derivePollingStatus(payload) : { pollStatus: "error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
+    const normalizedData = payload ? pollingPayloadProjection(payload) : {};
+    metrics.normalized += 1;
+    metrics.stagesMs.normalization += monotonicNow() - normalizationStarted;
+
+    const result = {
+      id: createId("polling-result"), runId: input.run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
+      sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
+      deviceId: device?.id || null, capturedAt: input.capturedAt, importedAt: input.importedAt || nowIso(),
+      rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
+      detectedCategory, matchStatus: device ? "matched" : candidates.length > 1 ? "ambiguous" : "unmatched",
+      classificationConflict: Boolean(device && detectedCategory !== "unknown" && device.category !== detectedCategory),
+      normalizedData, ...status
+    };
+
+    context.state.pollingResults.push(result);
+    input.run.fileCount += 1;
+    if (parseError || status.pollStatus === "error") input.run.errorCount += 1; else input.run.successCount += 1;
+    if (parseError) context.state.inventoryIssues.push(createInventoryIssue({ kind: "malformed_json", sourceType: "polling_result", sourceId: result.id, message: `JSON не прочитан: ${parseError}` }));
+    if (!ipInfo.ok) context.state.inventoryIssues.push(createInventoryIssue({ kind: "invalid_filename_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.error }));
+    if (!device) context.state.inventoryIssues.push(createInventoryIssue({ kind: candidates.length > 1 ? "ambiguous_ip" : "unmatched_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.ip ? `IP ${ipInfo.ip} не сопоставлен однозначно` : "IP отсутствует" }));
+    if (result.classificationConflict) context.state.inventoryIssues.push(createInventoryIssue({ kind: "classification_conflict", sourceType: "polling_result", sourceId: result.id, deviceId: device.id, message: `SR=${device.category}, JSON=${detectedCategory}` }));
+    const changesStarted = monotonicNow();
+    insertIndexedPollingHistory(context, result, metrics);
+    metrics.stagesMs.changeDetection += monotonicNow() - changesStarted;
+    context.state.history.push(makeHistoryEntry({ actorId: input.actorId || "system", action: "Импортирован результат опроса", entityType: "polling_result", entityId: result.id, details: `${result.filename}: ${result.matchStatus}` }));
+    context.duplicateKeys.add(duplicateKey);
+    return { outcome: parseError ? "failed" : result.matchStatus, result, errors: parseError ? [parseError] : [] };
+  }
+
+  async function processPollingImportBatches(currentState, input) {
+    const startedAt = monotonicNow();
+    const groupingStarted = monotonicNow();
+    const grouping = groupPollingFilesByRunFolder(input.files || []);
+    const metrics = {
+      reads: 0, parses: 0, srLookups: 0, normalized: 0, diffPairs: 0, yields: 0, batches: 0, maxBatchRetainedTexts: 0,
+      stagesMs: { discoveryAndGrouping: 0, reading: 0, hash: 0, parsing: 0, srMatching: 0, normalization: 0, changeDetection: 0, storage: 0, analytics: 0, uiOverhead: 0 }
+    };
+    metrics.stagesMs.discoveryAndGrouping = monotonicNow() - groupingStarted;
+    const context = input.context?.state === currentState ? input.context : createPollingImportContext(currentState);
+    const batchSize = Math.max(1, Number(input.batchSize) || DEFAULT_POLLING_IMPORT_BATCH_SIZE);
+    const concurrency = Math.max(1, Math.min(MAX_POLLING_READ_CONCURRENCY, Number(input.concurrency) || defaultPollingReadConcurrency()));
+    const readText = input.readText || (async (file) => {
+      if (file.readError) throw new Error(String(file.readError));
+      if (file.text !== undefined) return String(file.text);
+      if (file.sourceFile && typeof file.sourceFile.text === "function") return file.sourceFile.text();
+      throw new Error("Не удалось прочитать файл");
+    });
+    const yieldControl = input.yieldControl || cooperativeBrowserYield;
+    const shouldCancel = typeof input.shouldCancel === "function" ? input.shouldCancel : () => false;
+    const onProgress = typeof input.onProgress === "function" ? input.onProgress : () => {};
+    const summary = { total: grouping.batches.reduce((sum, batch) => sum + batch.files.length, 0) + grouping.rejected.length, processed: grouping.rejected.length, succeeded: 0, errors: grouping.rejected.length, duplicates: 0, runs: 0 };
+    const folderResults = [];
+    const readErrors = [];
+
+    const emitProgress = (stage, currentRun, status) => {
+      const progressStarted = monotonicNow();
+      const elapsedSeconds = Math.max((monotonicNow() - startedAt) / 1000, 0.001);
+      const filesPerSecond = summary.processed / elapsedSeconds;
+      onProgress({
+        stage, total: summary.total, processed: summary.processed, succeeded: summary.succeeded, errors: summary.errors,
+        duplicates: summary.duplicates, currentRun: currentRun || null, filesPerSecond,
+        etaSeconds: filesPerSecond > 0 ? Math.max(0, (summary.total - summary.processed) / filesPerSecond) : null,
+        status: status || "running", cancelRequested: shouldCancel()
+      });
+      metrics.stagesMs.uiOverhead += monotonicNow() - progressStarted;
+    };
+
+    emitProgress("Поиск файлов", null);
+    emitProgress("Подготовка запусков опроса", null);
+    if (!grouping.batches.length) {
+      return { ok: false, cancelled: false, outcome: "failed", state: currentState, context, summary, metrics, folderResults, rejected: grouping.rejected, ignored: grouping.ignored, readErrors, errors: ["В выбранной папке не найдено JSON в папках формата YYYY-MM-DD_HH-MM-SS"] };
+    }
+
+    let cancelled = false;
+    for (const runGroup of grouping.batches) {
+      if (shouldCancel()) { cancelled = true; break; }
+      const fileOutcomes = [];
+      let run = null;
+      for (let offset = 0; offset < runGroup.files.length; offset += batchSize) {
+        if (shouldCancel()) { cancelled = true; break; }
+        const descriptors = runGroup.files.slice(offset, offset + batchSize);
+        emitProgress("Чтение файлов", runGroup.folderName);
+        const readingStarted = monotonicNow();
+        const prepared = await mapWithBoundedConcurrency(descriptors, concurrency, async (descriptor) => {
+          try {
+            const text = await readText(descriptor);
+            metrics.reads += 1;
+            return { descriptor, text: String(text) };
+          } catch (error) {
+            return { descriptor, readError: error?.message || String(error) };
+          }
+        });
+        metrics.stagesMs.reading += monotonicNow() - readingStarted;
+        metrics.maxBatchRetainedTexts = Math.max(metrics.maxBatchRetainedTexts, prepared.filter((item) => item.text !== undefined).length);
+        emitProgress("Обработка результатов", runGroup.folderName);
+        for (const preparedFile of prepared) {
+          if (preparedFile.readError) {
+            const issue = { name: preparedFile.descriptor.name, relativePath: preparedFile.descriptor.relativePath, reason: preparedFile.readError };
+            readErrors.push(issue);
+            fileOutcomes.push({ ...issue, outcome: "failed", errors: [issue.reason] });
+            summary.errors += 1;
+            summary.processed += 1;
+            continue;
+          }
+          if (!run) {
+            run = ensureIndexedPollingRun(context, { ...runGroup, actorId: input.actorId || "system", importedAt: input.importedAt, capturedAtSource: runGroup.capturedAtSource }, runGroup.capturedAt);
+            if (run) summary.runs += 1;
+          }
+          const imported = await ingestIndexedPollingFile(context, {
+            ...preparedFile.descriptor,
+            text: preparedFile.text,
+            run,
+            capturedAt: runGroup.capturedAt,
+            importedAt: input.importedAt,
+            actorId: input.actorId || "system"
+          }, metrics);
+          fileOutcomes.push({ name: preparedFile.descriptor.name, relativePath: preparedFile.descriptor.relativePath, outcome: imported.outcome, errors: imported.errors });
+          if (imported.outcome === "duplicate") summary.duplicates += 1;
+          else if (imported.outcome === "failed") summary.errors += 1;
+          else summary.succeeded += 1;
+          summary.processed += 1;
+          preparedFile.text = null;
+        }
+        compactRemovedPollingChanges(context);
+        metrics.batches += 1;
+        emitProgress("Сохранение данных", runGroup.folderName);
+        await yieldControl();
+        metrics.yields += 1;
+      }
+      const fileErrors = fileOutcomes.filter((item) => item.outcome === "failed").map((item) => ({ name: item.name, relativePath: item.relativePath, reason: item.errors?.join("; ") || "Ошибка обработки" }));
+      folderResults.push({
+        folderName: runGroup.folderName, folderPath: runGroup.folderPath, capturedAt: runGroup.capturedAt, runId: run?.id,
+        outcome: run ? (fileErrors.length ? "partial" : "processed") : "failed", fileCount: runGroup.files.length,
+        importedCount: fileOutcomes.length - fileErrors.length, errorCount: fileErrors.length, fileErrors
+      });
+      if (cancelled) break;
+    }
+    compactRemovedPollingChanges(context);
+    emitProgress("Обновление аналитики", null, cancelled ? "cancelled" : "running");
+    emitProgress(cancelled ? "Загрузка остановлена" : "Готово", null, cancelled ? "cancelled" : "completed");
+    const successfulFolders = folderResults.filter((item) => item.runId).length;
+    const hasPartial = cancelled || grouping.rejected.length || readErrors.length || summary.errors > grouping.rejected.length || folderResults.some((item) => item.outcome !== "processed");
+    return {
+      ok: successfulFolders > 0,
+      cancelled,
+      outcome: cancelled ? "cancelled" : successfulFolders > 0 ? (hasPartial ? "partial" : "processed") : "failed",
+      state: currentState,
+      context,
+      summary,
+      metrics,
+      folderResults,
+      rejected: grouping.rejected,
+      ignored: grouping.ignored,
+      readErrors,
+      importedFolderCount: successfulFolders,
+      importedFileCount: summary.succeeded,
+      errorCount: summary.errors,
       errors: successfulFolders > 0 ? [] : ["Ни одна папка опроса не была импортирована"]
     };
   }
@@ -3158,6 +3484,10 @@
     parsePollingFilenameIp,
     parseRunFolderTimestamp,
     pollingPayloadProjection,
+    processPollingImportBatches,
+    createPollingImportContext,
+    cooperativeBrowserYield,
+    mapWithBoundedConcurrency,
     rebuildDeviceChanges,
     rowsFromWorkbook,
     classifySrDevice,
@@ -3196,6 +3526,9 @@
 
   const loaded = loadState(persistenceStorage);
   let state = loaded.state;
+  let pollingImportContextCache = null;
+  let pollingProgressRenderTimer = null;
+  let pollingProgressLastRenderAt = 0;
   let recovery = loaded.recovery;
   let startupMessage = null;
   const sessionStorageRef = resolveSessionStorage();
@@ -3239,6 +3572,8 @@
     inventoryFilters: {},
     srImportResults: [],
     pollingImportResults: [],
+    pollingProgress: null,
+    pollingCancelRequested: false,
     pollingPlanResult: null,
     inventoryBusy: false,
     dashboardFilters: { period: "latest_run" },
@@ -3267,6 +3602,7 @@
       return false;
     }
     state = deepClone(nextState);
+    pollingImportContextCache = null;
     recovery = null;
     if (successMessage) setMessage(successMessage, "success");
     render();
@@ -3284,6 +3620,35 @@
       return;
     }
     app.innerHTML = renderShell(user);
+  }
+
+  function updatePollingProgress(snapshot, forceRender) {
+    ui.pollingProgress = { ...snapshot };
+    if (ui.route !== "upload") return;
+    const current = Date.now();
+    const renderNow = forceRender || current - pollingProgressLastRenderAt >= 100;
+    if (renderNow) {
+      if (pollingProgressRenderTimer) clearTimeout(pollingProgressRenderTimer);
+      pollingProgressRenderTimer = null;
+      pollingProgressLastRenderAt = current;
+      render();
+      return;
+    }
+    if (!pollingProgressRenderTimer) {
+      pollingProgressRenderTimer = setTimeout(() => {
+        pollingProgressRenderTimer = null;
+        pollingProgressLastRenderAt = Date.now();
+        if (ui.route === "upload" && ui.inventoryBusy) render();
+      }, Math.max(0, 100 - (current - pollingProgressLastRenderAt)));
+    }
+  }
+
+  function formatPollingEta(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return "рассчитывается";
+    if (seconds < 60) return `${Math.ceil(seconds)} с`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.ceil(seconds % 60);
+    return `${minutes} мин ${remainingSeconds} с`;
   }
 
   function renderRecovery() {
@@ -3761,6 +4126,8 @@
   }
 
   function renderUpload() {
+    const pollingProgress = ui.pollingProgress;
+    const pollingPercent = pollingProgress?.total ? Math.min(100, Math.round((pollingProgress.processed / pollingProgress.total) * 100)) : 0;
     return `
       <header class="page-header">
         <div>
@@ -3775,7 +4142,14 @@
         </section>
         <section class="card upload-card"><h2>2. Общая папка результатов опросов</h2><p class="muted">Выберите одну общую папку целиком. Внутри неё могут находиться несколько папок сеансов вида YYYY-MM-DD_HH-MM-SS; все JSON будут найдены рекурсивно и импортированы как отдельные запуски.</p>
           <div class="info-panel">Формат даты: год-месяц-день. Например, 2026-06-01_09-41-28 — 1 июня 2026 года, 09:41:28.</div>
-          <form class="form-grid section-gap" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Главная папка со всеми результатами</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать все папки опросов</button></form>
+          <form class="form-grid section-gap" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Главная папка со всеми результатами</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать все папки опросов</button></form>
+          ${pollingProgress ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="${ui.inventoryBusy ? "true" : "false"}">
+            <div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(pollingProgress.stage)}</span><strong>${pollingProgress.processed} из ${pollingProgress.total} JSON</strong></div><strong>${pollingPercent}%</strong></div>
+            <div class="polling-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pollingPercent}"><span style="width:${pollingPercent}%"></span></div>
+            <dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${pollingProgress.succeeded}</dd></div><div><dt>Ошибки</dt><dd>${pollingProgress.errors}</dd></div><div><dt>Дубликаты</dt><dd>${pollingProgress.duplicates}</dd></div><div><dt>Скорость</dt><dd>${Number(pollingProgress.filesPerSecond || 0).toFixed(1)} файл/с</dd></div><div><dt>Осталось</dt><dd>${escapeHtml(formatPollingEta(pollingProgress.etaSeconds))}</dd></div></dl>
+            ${pollingProgress.currentRun ? `<p class="muted">Текущий запуск: <span class="mono">${escapeHtml(pollingProgress.currentRun)}</span></p>` : ""}
+            ${ui.inventoryBusy ? `<button class="button danger" type="button" data-cancel-polling-import${ui.pollingCancelRequested ? " disabled" : ""}>${ui.pollingCancelRequested ? "Остановка…" : "Отменить загрузку"}</button>` : ""}
+          </section>` : ""}
           ${ui.pollingImportResults.length ? `<ul class="result-list section-gap">${ui.pollingImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
       </div>
@@ -4021,6 +4395,13 @@
   }
 
   function handleClick(event) {
+    if (event.target.closest("[data-cancel-polling-import]")) {
+      ui.pollingCancelRequested = true;
+      if (ui.pollingProgress) ui.pollingProgress.cancelRequested = true;
+      render();
+      return;
+    }
+
     const fill = event.target.closest("[data-fill-login]");
     if (fill) {
       const login = document.getElementById("login");
@@ -4397,7 +4778,7 @@
         comment: String(formData.get("comment") || ""),
         actorId: currentUser()?.id || "system"
       });
-      if (!result.ok) {
+      if (!result.ok && !result.cancelled) {
         setMessage(`Review не сохранён: ${result.errors.join("; ")}`, "error");
         render();
         return;
@@ -4606,6 +4987,7 @@
         const saved = saveState(result.state, persistenceStorage);
         if (!saved.ok) throw new Error(saved.errors.join("; "));
         state = deepClone(result.state);
+        pollingImportContextCache = null;
       }
       ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
       setMessage(result.ok ? "Выгрузка SR обработана." : "Выгрузка SR не импортирована.", result.ok ? "success" : "error");
@@ -4623,23 +5005,20 @@
       setMessage("Выберите главную папку с результатами опросов.", "error"); render(); return;
     }
     ui.inventoryBusy = true;
+    ui.pollingCancelRequested = false;
     ui.pollingImportResults = [];
+    ui.pollingProgress = { stage: "Поиск файлов", total: selectedFiles.length, processed: 0, succeeded: 0, errors: 0, duplicates: 0, currentRun: null, filesPerSecond: 0, etaSeconds: null, status: "running" };
     render();
     try {
-      const initialGrouping = groupPollingFilesByRunFolder(selectedFiles.map((file) => ({ name: file.name, relativePath: file.webkitRelativePath || file.name, sourceFile: file })));
-      const preparedFiles = [];
-      for (const batch of initialGrouping.batches) {
-        for (const descriptor of batch.files) {
-          try {
-            preparedFiles.push({ ...descriptor, text: await readFileText(descriptor.sourceFile), sourceFile: undefined });
-          } catch (error) {
-            preparedFiles.push({ ...descriptor, readError: error?.message || "Не удалось прочитать файл", sourceFile: undefined });
-          }
-        }
-      }
-      preparedFiles.push(...initialGrouping.rejected.map((item) => ({ ...item, sourceFile: undefined })));
-      preparedFiles.push(...initialGrouping.ignored.map((item) => ({ ...item, sourceFile: undefined })));
-      const result = await ingestPollingFolderTree(state, { actorId: currentUser()?.id || "system", files: preparedFiles });
+      const descriptors = selectedFiles.map((file) => ({ name: file.name, relativePath: file.webkitRelativePath || file.name, sourceFile: file }));
+      const result = await processPollingImportBatches(state, {
+        actorId: currentUser()?.id || "system",
+        files: descriptors,
+        context: pollingImportContextCache,
+        readText: (descriptor) => readFileText(descriptor.sourceFile),
+        shouldCancel: () => ui.pollingCancelRequested,
+        onProgress: (progress) => updatePollingProgress(progress, progress.status !== "running")
+      });
       if (!result.ok) {
         ui.pollingImportResults = [
           ...result.rejected.map((item) => ({ name: item.relativePath, ok: false, label: "failed", detail: item.reason })),
@@ -4647,24 +5026,31 @@
         ];
         setMessage(result.errors.join("; "), "error");
         ui.inventoryBusy = false;
+        ui.pollingCancelRequested = false;
+        pollingImportContextCache = result.context;
+        if (pollingProgressRenderTimer) clearTimeout(pollingProgressRenderTimer);
+        pollingProgressRenderTimer = null;
         render();
         return;
       }
-      const saved = saveState(result.state, persistenceStorage);
-      if (!saved.ok) throw new Error(saved.errors.join("; "));
-      state = deepClone(result.state);
+      state = result.state;
+      pollingImportContextCache = result.context;
       ui.pollingImportResults = [
         ...result.folderResults.map((item) => ({ name: item.folderPath, ok: item.outcome !== "failed", label: item.outcome, detail: `JSON: ${item.importedCount} из ${item.fileCount}; ошибок: ${item.errorCount}; время опроса: ${formatDateTime(item.capturedAt)}` })),
         ...result.folderResults.flatMap((item) => item.fileErrors.map((error) => ({ name: error.relativePath || error.name, ok: false, label: "failed", detail: error.reason }))),
         ...result.rejected.map((item) => ({ name: item.relativePath, ok: false, label: "failed", detail: item.reason })),
         ...result.ignored.map((item) => ({ name: item.relativePath, ok: true, label: "unsupported", detail: "Файл проигнорирован: требуется JSON" }))
       ];
-      setMessage(`Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.importedFileCount}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`, result.outcome === "partial" ? "warning" : "success");
+      if (result.cancelled) setMessage("Загрузка остановлена пользователем.", "warning");
+      else setMessage(`Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.summary.processed}; успешно: ${result.summary.succeeded}; дубликатов: ${result.summary.duplicates}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`, result.outcome === "partial" ? "warning" : "success");
     } catch (error) {
       ui.pollingImportResults.push({ name: "Главная папка результатов", ok: false, label: "failed", detail: "Не удалось завершить импорт. Проверьте доступ к файлам, структуру JSON и имена папок." });
       setMessage("Импорт результатов опросов не завершён. Прежние данные сохранены.", "error");
     }
     ui.inventoryBusy = false;
+    ui.pollingCancelRequested = false;
+    if (pollingProgressRenderTimer) clearTimeout(pollingProgressRenderTimer);
+    pollingProgressRenderTimer = null;
     render();
   }
 

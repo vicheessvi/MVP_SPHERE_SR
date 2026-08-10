@@ -1150,6 +1150,66 @@ table .mono {
   margin-bottom: 0;
 }
 
+.polling-progress {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--accent) 12%);
+}
+
+.polling-progress-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.polling-progress-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.polling-progress-track {
+  height: 10px;
+  margin: 14px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-soft);
+}
+
+.polling-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 120ms ease-out;
+}
+
+.polling-progress-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.polling-progress-metrics div {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.polling-progress-metrics dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.polling-progress-metrics dd {
+  margin: 4px 0 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .screen-reader-only {
   position: absolute;
   width: 1px;
@@ -1193,6 +1253,10 @@ table .mono {
 
   .reference-grid {
     grid-template-columns: 1fr;
+  }
+
+  .polling-progress-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -1251,6 +1315,14 @@ table .mono {
   .result-list li {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .polling-progress-heading {
+    align-items: flex-start;
+  }
+
+  .polling-progress-metrics {
+    grid-template-columns: 1fr 1fr;
   }
 }
 

@@ -1037,6 +1037,152 @@
     assertEqual(imported.state.pollingResults.length, 0);
   });
 
+  function scalablePollingFiles(count, options) {
+    const settings = options || {};
+    const devices = Math.max(1, settings.devices || count);
+    return Array.from({ length: count }, (_, index) => {
+      const deviceIndex = index % devices;
+      const runIndex = Math.floor(index / devices);
+      const day = String(runIndex + 1).padStart(2, "0");
+      const ip = `10.40.${Math.floor(deviceIndex / 250)}.${(deviceIndex % 250) + 1}`;
+      return {
+        name: `${ip}.json`,
+        relativePath: `root/2026-07-${day}_09-00-00/${ip}.json`,
+        text: JSON.stringify({ ok: true, ping: { ok: true }, webBlocks: { Firmware: { version: `${runIndex}.${deviceIndex}` } } })
+      };
+    });
+  }
+
+  function scalablePollingState(deviceCount) {
+    const state = api.createDemoState();
+    state.inventoryDevices = Array.from({ length: deviceCount }, (_, index) => ({
+      id: `scalable-device-${index}`,
+      category: "controller",
+      ipNormalized: `10.40.${Math.floor(index / 250)}.${(index % 250) + 1}`,
+      ipHistory: [],
+      inCurrentSr: true,
+      firstSeenAt: "2026-01-01T00:00:00.000Z",
+      lastSeenAt: "2026-01-01T00:00:00.000Z",
+      pollingCapability: { support: "not_implemented", transport: null }
+    }));
+    return state;
+  }
+
+  function pollingSemanticProjection(state) {
+    return {
+      runs: state.pollingRuns.map((run) => ({ identityKey: run.identityKey, fileCount: run.fileCount, successCount: run.successCount, errorCount: run.errorCount })),
+      results: state.pollingResults.map((result) => ({ filename: result.filename, sourceRelativePath: result.sourceRelativePath, capturedAt: result.capturedAt, parseStatus: result.parseStatus, pollStatus: result.pollStatus, pingStatus: result.pingStatus, matchStatus: result.matchStatus, deviceId: result.deviceId, detectedCategory: result.detectedCategory, normalizedData: result.normalizedData })),
+      issues: state.inventoryIssues.map((issue) => issue.kind).sort(),
+      changes: state.deviceChanges.map((change) => ({ deviceId: change.deviceId, path: change.path, oldValue: change.oldValue, newValue: change.newValue })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+    };
+  }
+
+  test("Индексированный пакетный импорт семантически совпадает с последовательным", async () => {
+    const files = scalablePollingFiles(6, { devices: 2 });
+    files.push({ name: "bad.json", relativePath: "root/2026-07-04_09-00-00/bad.json", text: "{" });
+    const initial = scalablePollingState(2);
+    const legacy = await api.ingestPollingFolderTree(api.deepClone(initial), { files, actorId: "system" });
+    const optimized = await api.processPollingImportBatches(api.deepClone(initial), { files, actorId: "system", batchSize: 2, concurrency: 2, yieldControl: async () => {} });
+    assert(optimized.ok, optimized.errors?.join("; "));
+    assert(api.validateState(optimized.state).ok, api.validateState(optimized.state).errors?.join("; "));
+    assertEqual(JSON.stringify(pollingSemanticProjection(optimized.state)), JSON.stringify(pollingSemanticProjection(legacy.state)));
+  });
+
+  test("Пакетный импорт ограничивает чтение, yield-ит и публикует согласованный прогресс", async () => {
+    const files = scalablePollingFiles(12, { devices: 12 }).map((file) => ({ ...file, payload: file.text, text: undefined }));
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    let yields = 0;
+    const progress = [];
+    const result = await api.processPollingImportBatches(scalablePollingState(12), {
+      files,
+      batchSize: 4,
+      concurrency: 3,
+      readText: async (file) => {
+        activeReads += 1;
+        maxActiveReads = Math.max(maxActiveReads, activeReads);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        activeReads -= 1;
+        return file.payload;
+      },
+      yieldControl: async () => { yields += 1; },
+      onProgress: (snapshot) => progress.push(snapshot)
+    });
+    assert(result.ok);
+    assert(maxActiveReads <= 3, `Одновременно читалось ${maxActiveReads}`);
+    assert(yields >= 3, `Yield выполнен только ${yields} раз`);
+    assertEqual(result.summary.processed, 12);
+    assertEqual(result.summary.processed, result.summary.succeeded + result.summary.errors + result.summary.duplicates);
+    assert(progress.some((item) => item.stage === "Чтение файлов"));
+    assert(progress.some((item) => item.stage === "Готово"));
+  });
+
+  test("Индексы дают линейный lookup, быстрые дубликаты и безопасную отмену", async () => {
+    const files = scalablePollingFiles(20, { devices: 20 });
+    const state = scalablePollingState(20);
+    const first = await api.processPollingImportBatches(state, { files, batchSize: 5, yieldControl: async () => {} });
+    assertEqual(first.metrics.srLookups, 20);
+    assert(first.metrics.diffPairs <= 40);
+    const repeated = await api.processPollingImportBatches(first.state, { files, context: first.context, batchSize: 5, yieldControl: async () => {} });
+    assertEqual(repeated.summary.duplicates, 20);
+    assertEqual(repeated.metrics.parses, 0);
+    assertEqual(repeated.metrics.srLookups, 0);
+    let stop = false;
+    const cancelled = await api.processPollingImportBatches(scalablePollingState(20), {
+      files,
+      batchSize: 5,
+      shouldCancel: () => stop,
+      yieldControl: async () => { stop = true; }
+    });
+    assert(cancelled.cancelled);
+    assert(cancelled.summary.processed > 0 && cancelled.summary.processed < files.length);
+    assertEqual(cancelled.summary.processed, cancelled.state.pollingResults.length);
+    assert(api.validateState(cancelled.state).ok, api.validateState(cancelled.state).errors?.join("; "));
+  });
+
+  test("Поздний результат заменяет только затронутую соседнюю пару изменений", async () => {
+    const state = scalablePollingState(1);
+    const payload = (version) => JSON.stringify({ ok: true, ping: { ok: true }, webBlocks: { Firmware: { version } } });
+    const first = await api.processPollingImportBatches(state, { files: [
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-01_09-00-00/10.40.0.1.json", text: payload("1") },
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-03_09-00-00/10.40.0.1.json", text: payload("3") }
+    ], yieldControl: async () => {} });
+    assert(first.state.deviceChanges.some((change) => change.oldValue === "1" && change.newValue === "3"));
+    const late = await api.processPollingImportBatches(first.state, { files: [
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-02_09-00-00/10.40.0.1.json", text: payload("2") }
+    ], context: first.context, yieldControl: async () => {} });
+    assert(!late.state.deviceChanges.some((change) => change.oldValue === "1" && change.newValue === "3"));
+    assert(late.state.deviceChanges.some((change) => change.oldValue === "1" && change.newValue === "2"));
+    assert(late.state.deviceChanges.some((change) => change.oldValue === "2" && change.newValue === "3"));
+    assertEqual(late.metrics.diffPairs, 2);
+  });
+
+  test("Ежедневный импорт 1000 результатов переиспользует индекс истории 50000", async () => {
+    const state = scalablePollingState(1000);
+    for (let runIndex = 0; runIndex < 50; runIndex += 1) {
+      const capturedAt = new Date(Date.UTC(2026, 0, runIndex + 1, 9, 0, 0)).toISOString();
+      const runId = `daily-history-run-${runIndex}`;
+      state.pollingRuns.push({ id: runId, identityKey: `${capturedAt}|history-${runIndex}`, capturedAt, fileCount: 1000, successCount: 1000, errorCount: 0 });
+      for (let deviceIndex = 0; deviceIndex < 1000; deviceIndex += 1) {
+        state.pollingResults.push({
+          id: `daily-history-result-${runIndex}-${deviceIndex}`, runId, deviceId: `scalable-device-${deviceIndex}`,
+          filename: `history-${deviceIndex}.json`, rawSha256: `history-${runIndex}-${deviceIndex}`, capturedAt,
+          parseStatus: "parsed", normalizedData: { version: runIndex }, pollStatus: "success", pingStatus: "ok", matchStatus: "matched"
+        });
+      }
+    }
+    const context = api.createPollingImportContext(state);
+    const files = Array.from({ length: 1000 }, (_, deviceIndex) => {
+      const ip = `10.40.${Math.floor(deviceIndex / 250)}.${(deviceIndex % 250) + 1}`;
+      return { name: `${ip}.json`, relativePath: `root/2026-09-01_09-00-00/${ip}.json`, text: JSON.stringify({ ok: true, ping: { ok: true }, version: 50 }) };
+    });
+    const result = await api.processPollingImportBatches(state, { files, context, yieldControl: async () => {} });
+    assertEqual(result.metrics.srLookups, 1000);
+    assertEqual(result.metrics.parses, 1000);
+    assert(result.metrics.diffPairs <= 2000);
+    assertEqual(result.state.pollingResults.length, 51000);
+  });
+
   test("Polling adapter registry честно блокирует реальный опрос", () => {
     const capability = api.resolvePollingCapability({ category: "controller", manufacturerRaw: "Extron" });
     assertEqual(capability.support, "not_implemented");
