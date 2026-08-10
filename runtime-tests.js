@@ -106,14 +106,16 @@ test("Polling success без verified protocol fail-closed и не читает 
   assert(rejected, "non-plan target must be rejected");
 });
 
-test("Target navigation не содержит legacy audit routes", () => {
+test("Target navigation и загрузка соответствуют единственному файловому режиму", () => {
   const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
   const routes = productCatalog.buildNavigation().map((item) => item.route);
   equal(routes.join(","), "dashboard,vcs,controllers,panels,upload,settings,reference");
   assert(!routes.some((route) => ["projects", "events", "matches", "snapshots"].includes(route)));
   assert(source.includes("PRODUCT_CATALOG.buildNavigation()"));
   assert(source.includes("PRODUCT_CATALOG.buildModuleHelpSection()"));
-  assert(source.includes('data-import-credentials'));
+  assert(source.includes('data-polling-import-form'));
+  assert(source.includes('webkitdirectory directory multiple'));
+  assert(!source.includes('data-import-credentials'));
 });
 
 test("Прямой index.html использует непостоянный file mode и не показывает удалённые уведомления", () => {
@@ -124,10 +126,12 @@ test("Прямой index.html использует непостоянный file
   assert(runtimeConfig.includes('global.location.protocol === "file:"'));
   assert(runtimeConfig.includes("__MVP_FILE_RUNTIME__"));
   assert(!/fetch\s*\(|XMLHttpRequest|localStorage|sessionStorage/.test(runtimeConfig));
-  assert(source.includes('secureRuntimeActive ? createSecureRuntimeStorage() : createVolatileStorage()'));
-  assert(source.includes('if (!secureRuntimeActive)'));
-  assert(source.indexOf('if (!secureRuntimeActive)') < source.indexOf('const file = input.files[0]'));
-  assert(source.includes('Файловый режим забывает импортированные данные при перезагрузке'));
+  assert(source.includes('const persistenceStorage = createVolatileStorage()'));
+  assert(!source.includes('createSecureRuntimeStorage'));
+  assert(!source.includes('secureRuntimeActive'));
+  assert(!source.includes('data-import-credentials'));
+  assert(source.includes('groupPollingFilesByRunFolder'));
+  assert(source.includes('ingestPollingFolderTree'));
   const prohibited = [
     "Защищённый локальный режим · Администратор МЦТП · доступ только с этого компьютера · зашифрованное хранилище Windows",
     "Защищённый локальный анализ",

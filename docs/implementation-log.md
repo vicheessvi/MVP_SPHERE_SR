@@ -689,3 +689,29 @@ Credential input в файловом режиме не отрисовывает�
 - `specs/007-direct-index-launch/`, ADR-0007 и основная документация.
 
 Commit, push и deploy для feature 007 не выполнялись.
+
+## 2026-08-10 — Пакетный импорт общей папки опросов
+
+### Итог
+
+Выполнен Full SpecKit feature `008-batch-polling-folder-import`. Модуль «Загрузка» принимает одну общую папку и рекурсивно группирует JSON по ближайшим родительским каталогам `YYYY-MM-DD_HH-MM-SS`. Каждая папка создаёт отдельный запуск, группы обрабатываются хронологически, а одинаковые имена в разных ветвях не смешиваются благодаря полному относительному пути.
+
+Ошибки пути, чтения и разбора изолируются на уровне файла: корректные папки продолжают импортироваться, пользователь получает общий итог и детализацию. В provenance результата добавлен `sourceRelativePath`, в запуск — `folderPath`.
+
+Интерфейс переведён на единственный поддерживаемый режим прямого открытия `index.html`. Он всегда использует volatile memory adapter, не предлагает серверный запуск или импорт учётных данных и не выполняет продуктовые сетевые запросы.
+
+### Проверки
+
+- JavaScript syntax: PASS.
+- Regression/contract/performance: 106/106 PASS.
+- Product catalog/reference validation: PASS.
+- Пакетная группировка, календарная валидация, хронологический порядок, provenance, malformed/read/path errors и file-only launch contract покрыты автоматическими тестами.
+- Ручной выбор каталога через `file://` описан в `specs/008-batch-polling-folder-import/quickstart.md`.
+
+### Изменённые зоны
+
+- `app.js`, `tests.js`, `runtime-tests.js`, `product-catalog.js`;
+- `README.md`, `AGENTS.md`, architecture/context/product docs;
+- `specs/008-batch-polling-folder-import/`, ADR-0008.
+
+Commit и push для feature 008 не выполнялись.

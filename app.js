@@ -60,7 +60,7 @@
     {
       id: "about", title: "1. Об инструменте", description: "Назначение и границы безопасной работы.", entries: [
         { id: "about-tool", title: "MVP_SPHERE_SR", summary: "Инструмент предназначен для учёта, опроса и анализа состояния оборудования мультимедийной инфраструктуры.", details: "Перечень оборудования формируется по выгрузке SR, а состояние — по результатам опросов Терминалов ВКС, Контроллеров и Панелей управления.", keywords: ["назначение", "оборудование"] },
-        { id: "about-local", title: "Режимы запуска и хранения", summary: "Прямое открытие index.html предназначено для анализа в текущей вкладке; запуск через start.ps1 добавляет постоянное защищённое хранилище.", details: "Файловый режим забывает импортированные данные при перезагрузке и не принимает файлы паролей. Учётные данные доступны только защищённому runtime и не должны попадать в GitHub.", keywords: ["index.html", "start.ps1", "сеанс", "безопасность", "github", "учётные данные"] }
+        { id: "about-local", title: "Запуск и хранение", summary: "Инструмент имеет один режим: прямое открытие index.html для анализа в текущей вкладке.", details: "Импортированные данные находятся только в памяти страницы и удаляются при перезагрузке или закрытии. Файлы логинов и паролей интерфейс не читает.", keywords: ["index.html", "сеанс", "безопасность", "локально"] }
       ]
     },
     PRODUCT_CATALOG.buildModuleHelpSection(),
@@ -116,12 +116,12 @@
     {
       id: "sources", title: "7. Источники данных", description: "Происхождение сведений в интерфейсе.", entries: [
         { id: "source-sr", title: "Инвентарные данные", summary: "Названия помещений, категории и реквизиты оборудования поступают из актуальной выгрузки SR.", keywords: ["xlsx"] },
-        { id: "source-polling", title: "Техническое состояние", summary: "Состояние и история формируются из локально импортированных или выполненных результатов опроса.", keywords: ["json", "опрос"] },
-        { id: "source-credentials", title: "Учётные данные", summary: "Используются только модулем опроса и не являются источником аналитики.", details: "Они хранятся отдельно, не отображаются и не входят в резервные копии.", keywords: ["логин", "пароль"] }
+        { id: "source-polling", title: "Техническое состояние", summary: "Состояние и история формируются из локально импортированных результатов опроса.", details: "Можно выбрать одну общую папку: каждая вложенная папка YYYY-MM-DD_HH-MM-SS становится отдельным запуском.", keywords: ["json", "опрос", "общая папка"] }
       ]
     },
     {
       id: "polling", title: "8. Опрос оборудования", description: "Как формируется и выполняется опрос.", entries: [
+        { id: "logic-folders", title: "Папки запусков опроса", summary: "Общая папка может содержать несколько сеансов; имя каждого сеанса имеет формат YYYY-MM-DD_HH-MM-SS.", details: "Инструмент рекурсивно находит JSON, создаёт отдельный запуск на каждую датированную папку и обрабатывает запуски по времени.", keywords: ["папка", "пакетный импорт", "дата"] },
         { id: "logic-matching", title: "Сопоставление с SR", summary: "IP-адрес из имени файла результата сравнивается с IP-адресами выгрузки SR.", details: "При единственном совпадении результат связывается с оборудованием и локацией; иначе сохраняется как требующий проверки.", keywords: ["matching", "unmatched"] },
         { id: "logic-no-network", title: "Как определяется отсутствие ответа", summary: "Перед получением данных инструмент может проверить сетевую доступность; отсутствие ответа отмечается статусом «Нет ответа по сети».", keywords: ["failedStage", "Ping.ok", "ping"] },
         { id: "logic-auth", title: "Как определяется ошибка авторизации", summary: "Устройство доступно, но проверка предоставленных учётных данных завершилась ошибкой.", details: "Причиной могут быть неверные данные или изменившиеся права, но конкретная причина не утверждается без ответа оборудования.", keywords: ["authorization"] },
@@ -139,8 +139,8 @@
     {
       id: "technical", title: "10. Часто используемые технические понятия", description: "Технические детали простым эксплуатационным языком.", entries: [
         { id: "tech-raw", title: "Исходные и отображаемые значения", summary: "SR и JSON сохраняются без перевода; пользовательские подписи формируются отдельно.", details: "Например, исходное Video Conference отображается как категория «Терминалы ВКС».", keywords: ["raw", "video conference"] },
-        { id: "tech-encryption", title: "Шифрование локальных данных", summary: "При запуске через start.ps1 рабочие данные на диске защищены шифрованием и привязаны к текущему пользователю Windows; файловый режим не сохраняет их на диске.", keywords: ["aes", "dpapi", "start.ps1", "index.html"] },
-        { id: "tech-loopback", title: "Локальный доступ", summary: "Интерфейс принимает подключения только с этого компьютера и не публикуется в локальную сеть.", keywords: ["loopback", "127.0.0.1"] },
+        { id: "tech-encryption", title: "Сеансовое хранение", summary: "Рабочие данные находятся только в памяти открытой страницы и не записываются приложением в постоянное хранилище браузера.", keywords: ["память", "сеанс", "index.html"] },
+        { id: "tech-loopback", title: "Локальный запуск", summary: "Интерфейс открывается из локального index.html и не требует публикации в сеть или запуска сервера.", keywords: ["file", "локально", "index.html"] },
         { id: "tech-json-original", title: "Просмотр исходного JSON", summary: "При необходимости технические поля могут изучаться в исходном файле, но не используются как пользовательские статусы без преобразования.", keywords: ["json", "технические поля"] }
       ]
     }
@@ -549,7 +549,7 @@
   // ---------------------------------------------------------------------------
 
   function saveState(nextState, storage, options) {
-    const targetStorage = storage || global.localStorage;
+    const targetStorage = storage;
     const settings = Object.assign({ maxBytes: DEFAULT_MAX_STATE_BYTES }, options || {});
     const validation = validateState(nextState);
     if (!validation.ok) {
@@ -600,7 +600,7 @@
   }
 
   function loadState(storage) {
-    const targetStorage = storage || global.localStorage;
+    const targetStorage = storage;
     if (!targetStorage || typeof targetStorage.getItem !== "function") {
       return {
         state: createDemoState(),
@@ -904,6 +904,60 @@
       : { ok: false, capturedAt: null, error: "Имя папки содержит некорректную календарную дату" };
   }
 
+  function normalizePollingRelativePath(value) {
+    return String(value || "")
+      .replace(/\\/g, "/")
+      .split("/")
+      .filter((segment) => segment && segment !== ".")
+      .join("/");
+  }
+
+  function groupPollingFilesByRunFolder(inputFiles) {
+    const batchesByPath = new Map();
+    const rejected = [];
+    const ignored = [];
+    for (const inputFile of inputFiles || []) {
+      const name = String(inputFile?.name || "");
+      const relativePath = normalizePollingRelativePath(inputFile?.relativePath || inputFile?.webkitRelativePath || name);
+      const file = { ...inputFile, name: name || relativePath.split("/").pop() || "unknown", relativePath };
+      if (!/\.json$/i.test(file.name)) {
+        ignored.push({ ...file, reason: "Файл не является JSON" });
+        continue;
+      }
+      const segments = relativePath.split("/").filter(Boolean);
+      const directories = segments.slice(0, -1);
+      let folderIndex = -1;
+      let timestamp = null;
+      for (let index = directories.length - 1; index >= 0; index -= 1) {
+        const parsed = parseRunFolderTimestamp(directories[index]);
+        if (parsed.ok) {
+          folderIndex = index;
+          timestamp = parsed;
+          break;
+        }
+      }
+      if (folderIndex < 0 || !timestamp) {
+        rejected.push({ ...file, reason: "JSON находится вне папки формата YYYY-MM-DD_HH-MM-SS" });
+        continue;
+      }
+      const folderPath = directories.slice(0, folderIndex + 1).join("/");
+      if (!batchesByPath.has(folderPath)) {
+        batchesByPath.set(folderPath, {
+          folderName: directories[folderIndex],
+          folderPath,
+          capturedAt: timestamp.capturedAt,
+          capturedAtSource: timestamp.source,
+          files: []
+        });
+      }
+      batchesByPath.get(folderPath).files.push(file);
+    }
+    const batches = [...batchesByPath.values()]
+      .map((batch) => ({ ...batch, files: [...batch.files].sort((left, right) => left.relativePath.localeCompare(right.relativePath, "ru")) }))
+      .sort((left, right) => new Date(left.capturedAt) - new Date(right.capturedAt) || left.folderPath.localeCompare(right.folderPath, "ru"));
+    return { batches, rejected, ignored };
+  }
+
   function parsePollingFilenameIp(filename) {
     const safeName = normalizeDisplay(filename) || "";
     const basename = safeName.replace(/^.*[\\/]/, "").replace(/\.json$/i, "").trim();
@@ -1151,10 +1205,11 @@
 
   function ensurePollingRun(next, input, capturedAt) {
     if (input.runId) return next.pollingRuns.find((item) => item.id === input.runId) || null;
-    const key = `${capturedAt}|${input.folderName || "manual"}`;
+    const folderIdentity = input.folderPath || input.folderName || "manual";
+    const key = `${capturedAt}|${folderIdentity}`;
     let run = next.pollingRuns.find((item) => item.identityKey === key);
     if (!run) {
-      run = { id: createId("polling-run"), kind: "import", identityKey: key, folderName: input.folderName || null, capturedAt, capturedAtSource: input.capturedAtSource || "manual", importedAt: input.importedAt || nowIso(), importedById: input.actorId || "system", fileCount: 0, successCount: 0, errorCount: 0 };
+      run = { id: createId("polling-run"), kind: "import", identityKey: key, folderName: input.folderName || null, folderPath: input.folderPath || input.folderName || null, capturedAt, capturedAtSource: input.capturedAtSource || "manual", importedAt: input.importedAt || nowIso(), importedById: input.actorId || "system", fileCount: 0, successCount: 0, errorCount: 0 };
       next.pollingRuns.push(run);
     }
     return run;
@@ -1434,6 +1489,7 @@
     const status = payload ? derivePollingStatus(payload) : { pollStatus: "error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
     const result = {
       id: createId("polling-result"), runId: run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
+      sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
       deviceId: device?.id || null, capturedAt: timestamp.capturedAt, importedAt: input.importedAt || nowIso(),
       rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
       detectedCategory, matchStatus: device ? "matched" : candidates.length > 1 ? "ambiguous" : "unmatched",
@@ -1461,9 +1517,89 @@
     for (const file of input.files || []) {
       const imported = await ingestPollingResultText(next, { ...input, ...file, runId: run.id, capturedAt: folderTimestamp.capturedAt, capturedAtSource: folderTimestamp.source });
       next = imported.state;
-      results.push({ name: file.name, outcome: imported.outcome, errors: imported.errors });
+      results.push({ name: file.name, relativePath: file.relativePath || file.name, outcome: imported.outcome, errors: imported.errors });
     }
     return { ok: true, outcome: results.some((item) => item.outcome === "failed") ? "partial" : "processed", state: next, runId: run.id, results, errors: [] };
+  }
+
+  async function ingestPollingFolderTree(currentState, input) {
+    const grouping = groupPollingFilesByRunFolder(input.files || []);
+    if (!grouping.batches.length) {
+      return {
+        ok: false,
+        outcome: "failed",
+        state: deepClone(currentState),
+        folderResults: [],
+        rejected: grouping.rejected,
+        ignored: grouping.ignored,
+        readErrors: [],
+        errors: ["В выбранной папке не найдено JSON в папках формата YYYY-MM-DD_HH-MM-SS"]
+      };
+    }
+    let next = deepClone(currentState);
+    const folderResults = [];
+    const readErrors = [];
+    let importedFileCount = 0;
+    let parseErrorCount = 0;
+    for (const batch of grouping.batches) {
+      const readableFiles = [];
+      const batchReadErrors = [];
+      batch.files.forEach((file) => {
+        if (file.readError) {
+          const issue = { name: file.name, relativePath: file.relativePath, reason: String(file.readError) };
+          batchReadErrors.push(issue);
+          readErrors.push(issue);
+        } else {
+          readableFiles.push(file);
+        }
+      });
+      if (!readableFiles.length) {
+        folderResults.push({ folderName: batch.folderName, folderPath: batch.folderPath, capturedAt: batch.capturedAt, outcome: "failed", fileCount: batch.files.length, importedCount: 0, errorCount: batchReadErrors.length, fileErrors: batchReadErrors });
+        continue;
+      }
+      const imported = await ingestPollingRunFiles(next, {
+        folderName: batch.folderName,
+        folderPath: batch.folderPath,
+        actorId: input.actorId || "system",
+        importedAt: input.importedAt,
+        files: readableFiles
+      });
+      if (!imported.ok) {
+        folderResults.push({ folderName: batch.folderName, folderPath: batch.folderPath, capturedAt: batch.capturedAt, outcome: "failed", fileCount: batch.files.length, importedCount: 0, errorCount: batch.files.length, fileErrors: [{ relativePath: batch.folderPath, reason: imported.errors.join("; ") }] });
+        continue;
+      }
+      next = imported.state;
+      importedFileCount += imported.results.length;
+      const parseErrors = imported.results.filter((item) => item.outcome === "failed").map((item) => ({ name: item.name, relativePath: item.relativePath, reason: "JSON не удалось разобрать" }));
+      parseErrorCount += parseErrors.length;
+      const fileErrors = [...batchReadErrors, ...parseErrors];
+      folderResults.push({
+        folderName: batch.folderName,
+        folderPath: batch.folderPath,
+        capturedAt: batch.capturedAt,
+        runId: imported.runId,
+        outcome: fileErrors.length || imported.outcome === "partial" ? "partial" : "processed",
+        fileCount: batch.files.length,
+        importedCount: imported.results.length,
+        errorCount: fileErrors.length,
+        fileErrors
+      });
+    }
+    const successfulFolders = folderResults.filter((item) => item.runId).length;
+    const hasPartial = grouping.rejected.length || readErrors.length || parseErrorCount || folderResults.some((item) => item.outcome !== "processed");
+    return {
+      ok: successfulFolders > 0,
+      outcome: successfulFolders > 0 ? (hasPartial ? "partial" : "processed") : "failed",
+      state: successfulFolders > 0 ? next : deepClone(currentState),
+      folderResults,
+      rejected: grouping.rejected,
+      ignored: grouping.ignored,
+      readErrors,
+      importedFolderCount: successfulFolders,
+      importedFileCount,
+      errorCount: grouping.rejected.length + readErrors.length + parseErrorCount,
+      errors: successfulFolders > 0 ? [] : ["Ни одна папка опроса не была импортирована"]
+    };
   }
 
   function detectSnapshotProfile(payload) {
@@ -2923,8 +3059,7 @@
     return { ok: true, state: next, projectId: project.id, snapshotId: snapshot.id };
   }
 
-  function resolveLaunchMode({ protocol, fileMarker, secureMarker } = {}) {
-    if (secureMarker) return Object.freeze({ kind: "secure", persistent: true, credentialsAvailable: true });
+  function resolveLaunchMode({ protocol, fileMarker } = {}) {
     if (protocol === "file:" && fileMarker) return Object.freeze({ kind: "file", persistent: false, credentialsAvailable: false });
     return null;
   }
@@ -2998,10 +3133,12 @@
     getProjectCurrentState,
     getProjectTimeline,
     getUnresolvedMatches,
+    groupPollingFilesByRunFolder,
     importBackupText,
     importSrRows,
     importSrWorkbook,
     ingestPollingResultText,
+    ingestPollingFolderTree,
     ingestPollingRunFiles,
     ingestSnapshotText,
     loadState,
@@ -3049,36 +3186,13 @@
   const app = document.getElementById("app");
   if (!app) return;
 
-  const launchMode = resolveLaunchMode({
-    protocol: global.location && global.location.protocol,
-    fileMarker: Boolean(global.__MVP_FILE_RUNTIME__),
-    secureMarker: Boolean(global.__MVP_SECURE_RUNTIME__)
-  });
+  const launchMode = resolveLaunchMode({ protocol: global.location && global.location.protocol, fileMarker: Boolean(global.__MVP_FILE_RUNTIME__) });
   if (!launchMode) {
-    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Не удалось определить режим запуска</h1><p>Откройте корневой <code>index.html</code> как локальный файл или запустите приложение через <code>start.ps1</code>.</p></section></main>`;
+    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Откройте локальный файл index.html</h1><p>Инструмент запускается прямым открытием корневого <code>index.html</code> на этом компьютере.</p></section></main>`;
     return;
   }
 
-  const secureRuntimeActive = launchMode.kind === "secure";
-  const persistenceStorage = secureRuntimeActive ? createSecureRuntimeStorage() : createVolatileStorage();
-
-  function createSecureRuntimeStorage() {
-    function request(method, key, value) {
-      const xhr = new XMLHttpRequest();
-      xhr.open(method, `/api/storage/${encodeURIComponent(key)}`, false);
-      if (method !== "GET") xhr.setRequestHeader("X-MVP-CSRF", String(global.__MVP_CSRF__ || ""));
-      if (method === "PUT") xhr.setRequestHeader("Content-Type", "application/json; charset=utf-8");
-      xhr.send(value === undefined ? null : value);
-      if (method === "GET" && xhr.status === 404) return null;
-      if (xhr.status < 200 || xhr.status >= 300) throw new Error(`Ошибка защищённого локального хранилища (${xhr.status})`);
-      return xhr.responseText;
-    }
-    return {
-      getItem(key) { return request("GET", key); },
-      setItem(key, value) { request("PUT", key, String(value)); },
-      removeItem(key) { request("DELETE", key); }
-    };
-  }
+  const persistenceStorage = createVolatileStorage();
 
   const loaded = loadState(persistenceStorage);
   let state = loaded.state;
@@ -3170,7 +3284,6 @@
       return;
     }
     app.innerHTML = renderShell(user);
-    if (ui.route === "upload" && secureRuntimeActive) queueMicrotask(refreshCredentialSummary);
   }
 
   function renderRecovery() {
@@ -3660,8 +3773,9 @@
           <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file">Файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить выгрузку SR</button></form>
           ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
-        <section class="card upload-card"><h2>2. Папка результатов опроса</h2><p class="muted">Имя папки: YYYY-MM-DD_HH-MM-SS; JSON-файлы именуются по IP-адресу. Если дату нельзя определить из имени папки, укажите её вручную.</p>
-          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Папка или файлы JSON</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required></div><div class="field"><label for="polling-date">Дата запуска, если не указана в папке</label><input id="polling-date" name="capturedAt" type="datetime-local"></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать результаты опроса</button></form>
+        <section class="card upload-card"><h2>2. Общая папка результатов опросов</h2><p class="muted">Выберите одну общую папку целиком. Внутри неё могут находиться несколько папок сеансов вида YYYY-MM-DD_HH-MM-SS; все JSON будут найдены рекурсивно и импортированы как отдельные запуски.</p>
+          <div class="info-panel">Формат даты: год-месяц-день. Например, 2026-06-01_09-41-28 — 1 июня 2026 года, 09:41:28.</div>
+          <form class="form-grid section-gap" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Главная папка со всеми результатами</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать все папки опросов</button></form>
           ${ui.pollingImportResults.length ? `<ul class="result-list section-gap">${ui.pollingImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
       </div>
@@ -3669,11 +3783,7 @@
         <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required><option value="vcs">${UI_TERMS.categories.vcs}</option><option value="controller">${UI_TERMS.categories.controller}</option><option value="panel">${UI_TERMS.categories.panel}</option></select></div><div class="field"><label>Производитель, необязательно</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Запланировать опрос</button><button class="button secondary" type="button" disabled>Сетевой запуск недоступен</button></form>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(formatCategoryLabel(ui.pollingPlanResult.category))}, устройств ${ui.pollingPlanResult.total}; поддерживаемых механизмов ${ui.pollingPlanResult.implemented}; ожидают реализации ${ui.pollingPlanResult.notImplemented}. Учётные данные не изменялись.</div>` : ""}
       </section>
-      ${secureRuntimeActive ? `<section class="card section-gap"><h2>4. Учётные данные для опроса</h2><p class="muted">Файл JSON или CSV должен содержать IP-адрес, логин и пароль. Он атомарно помещается в отдельное зашифрованное хранилище и не включается в аналитику или резервные копии.</p>
-        <div class="warning-panel">Исходный незашифрованный файл остаётся под вашей ответственностью. После успешного импорта защитите или удалите его согласно внутренней политике.</div>
-        <div class="button-row section-gap"><label class="button primary" for="credential-file">Импортировать учётные данные</label><input class="screen-reader-only" id="credential-file" type="file" accept=".json,.csv,application/json,text/csv" data-import-credentials></div>
-        <div id="credential-summary" class="info-panel section-gap">Сведения о хранилище учётных данных загружаются локально; секретные значения никогда не возвращаются в интерфейс.</div>
-      </section>` : `<section class="card section-gap"><h2>4. Учётные данные для опроса</h2><p class="muted">Импорт логинов и паролей доступен только при запуске через start.ps1. Файловый режим не читает и не сохраняет секреты.</p></section>`}`;
+      `;
   }
 
   function renderSnapshotRows(snapshots) {
@@ -3873,9 +3983,7 @@
           <p class="page-subtitle">Прямой запуск index.html использует только память открытой вкладки.</p>
         </div>
       </header>
-      <div class="info-panel">
-        После перезагрузки или закрытия страницы импортированные данные будут удалены. Для постоянного хранения используйте start.ps1.
-      </div>
+      <div class="info-panel">После перезагрузки или закрытия страницы импортированные данные удаляются из памяти текущей вкладки.</div>
       <div class="card-grid">
         <section class="card">
           <h2>Сеансовый режим</h2>
@@ -3911,17 +4019,6 @@
         </section>` : ""}
       </div>`;
   }
-
-  function renderSecureStorage(user) {
-    const stateBytes = measureStateBytes(state);
-    return `<header class="page-header"><div><h1>Локальное хранилище</h1><p class="page-subtitle">Зашифрованные данные текущего Windows-пользователя.</p></div></header>
-      <div class="detail-grid"><section class="card"><h2>Состояние</h2><ul class="data-list"><li><span>Размер сохранённых данных</span><strong>${formatBytes(stateBytes)}</strong></li><li><span>Ограничение приложения</span><strong>Не установлено</strong></li><li><span>Фактический предел</span><strong>Свободное место на диске</strong></li><li><span>Версия структуры данных</span><strong>v${state.version}</strong></li></ul></section>
-      <section class="card"><h2>Защита</h2><ul class="data-list"><li><span>Доступ</span><strong>Только с этого компьютера</strong></li><li><span>Данные на диске</span><strong>AES-256-GCM</strong></li><li><span>Защита главного ключа</span><strong>Windows DPAPI, текущий пользователь</strong></li><li><span>Роль</span><strong>${escapeHtml(ROLE_NAMES[user.role])}</strong></li></ul></section></div>
-      <div class="warning-panel section-gap">Незашифрованные резервные копии из интерфейса отключены. Учётные данные хранятся отдельно и никогда не входят в аналитические данные или интерфейс чтения.</div>
-      <section class="card section-gap"><h2>Сброс аналитических данных</h2><p class="muted">Защищённое хранилище учётных данных этим действием не экспортируется и не отображается.</p><button class="button danger" type="button" data-reset-demo>Сбросить аналитические данные</button></section>`;
-  }
-
-  if (secureRuntimeActive) renderSettings = renderSecureStorage;
 
   function handleClick(event) {
     const fill = event.target.closest("[data-fill-login]");
@@ -4497,23 +4594,6 @@
     });
   }
 
-  async function refreshCredentialSummary() {
-    if (!secureRuntimeActive) return;
-    const target = document.getElementById("credential-summary");
-    if (!target) return;
-    try {
-      const response = await fetch("/api/credentials/summary", { credentials: "same-origin", cache: "no-store" });
-      const payload = await response.json();
-      if (!response.ok || !payload.ok) throw new Error("summary unavailable");
-      const summary = payload.summary;
-      target.textContent = summary.recordCount
-        ? `Защищённое хранилище: ${summary.recordCount} записей; импорт ${formatDateTime(summary.importedAt)}; IP-адреса: ${summary.maskedIps.join(", ")}`
-        : "Защищённое хранилище учётных данных пусто.";
-    } catch {
-      target.textContent = "Не удалось получить сведения о защищённом хранилище. Перезапустите приложение и повторите попытку.";
-    }
-  }
-
   async function handleSrImport(form) {
     const file = form.elements.srFile?.files?.[0];
     if (!file) return;
@@ -4538,34 +4618,51 @@
   }
 
   async function handlePollingImport(form) {
-    const files = Array.from(form.elements.pollingFiles?.files || []).filter((file) => /\.json$/i.test(file.name));
-    if (!files.length) {
-      setMessage("Выберите папку с JSON-файлами.", "error"); render(); return;
-    }
-    const relative = files[0].webkitRelativePath || "";
-    const folderName = relative.split("/").filter(Boolean)[0] || "";
-    const manualValue = String(new FormData(form).get("capturedAt") || "");
-    const folderParsed = parseRunFolderTimestamp(folderName);
-    const capturedAt = folderParsed.ok ? null : normalizeDate(manualValue);
-    if (!folderParsed.ok && !capturedAt) {
-      setMessage("Имя папки не соответствует YYYY-MM-DD_HH-MM-SS. Укажите дату запуска вручную.", "error"); render(); return;
+    const selectedFiles = Array.from(form.elements.pollingFiles?.files || []);
+    if (!selectedFiles.length) {
+      setMessage("Выберите главную папку с результатами опросов.", "error"); render(); return;
     }
     ui.inventoryBusy = true;
     ui.pollingImportResults = [];
     render();
     try {
-      const descriptors = [];
-      for (const file of files) descriptors.push({ name: file.name, text: await readFileText(file) });
-      const result = await ingestPollingRunFiles(state, { folderName, capturedAt, actorId: currentUser()?.id || "system", files: descriptors });
-      if (!result.ok) throw new Error(result.errors.join("; "));
+      const initialGrouping = groupPollingFilesByRunFolder(selectedFiles.map((file) => ({ name: file.name, relativePath: file.webkitRelativePath || file.name, sourceFile: file })));
+      const preparedFiles = [];
+      for (const batch of initialGrouping.batches) {
+        for (const descriptor of batch.files) {
+          try {
+            preparedFiles.push({ ...descriptor, text: await readFileText(descriptor.sourceFile), sourceFile: undefined });
+          } catch (error) {
+            preparedFiles.push({ ...descriptor, readError: error?.message || "Не удалось прочитать файл", sourceFile: undefined });
+          }
+        }
+      }
+      preparedFiles.push(...initialGrouping.rejected.map((item) => ({ ...item, sourceFile: undefined })));
+      preparedFiles.push(...initialGrouping.ignored.map((item) => ({ ...item, sourceFile: undefined })));
+      const result = await ingestPollingFolderTree(state, { actorId: currentUser()?.id || "system", files: preparedFiles });
+      if (!result.ok) {
+        ui.pollingImportResults = [
+          ...result.rejected.map((item) => ({ name: item.relativePath, ok: false, label: "failed", detail: item.reason })),
+          ...result.ignored.map((item) => ({ name: item.relativePath, ok: true, label: "unsupported", detail: "Файл проигнорирован: требуется JSON" }))
+        ];
+        setMessage(result.errors.join("; "), "error");
+        ui.inventoryBusy = false;
+        render();
+        return;
+      }
       const saved = saveState(result.state, persistenceStorage);
       if (!saved.ok) throw new Error(saved.errors.join("; "));
       state = deepClone(result.state);
-      ui.pollingImportResults = result.results.map((item) => ({ name: item.name, ok: !["failed"].includes(item.outcome), label: item.outcome, detail: item.outcome === "failed" ? `Не удалось обработать файл ${item.name}. Проверьте корректность структуры JSON.` : "" }));
-      setMessage(`Импортирован запуск: ${files.length} файлов.`, result.outcome === "partial" ? "warning" : "success");
+      ui.pollingImportResults = [
+        ...result.folderResults.map((item) => ({ name: item.folderPath, ok: item.outcome !== "failed", label: item.outcome, detail: `JSON: ${item.importedCount} из ${item.fileCount}; ошибок: ${item.errorCount}; время опроса: ${formatDateTime(item.capturedAt)}` })),
+        ...result.folderResults.flatMap((item) => item.fileErrors.map((error) => ({ name: error.relativePath || error.name, ok: false, label: "failed", detail: error.reason }))),
+        ...result.rejected.map((item) => ({ name: item.relativePath, ok: false, label: "failed", detail: item.reason })),
+        ...result.ignored.map((item) => ({ name: item.relativePath, ok: true, label: "unsupported", detail: "Файл проигнорирован: требуется JSON" }))
+      ];
+      setMessage(`Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.importedFileCount}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`, result.outcome === "partial" ? "warning" : "success");
     } catch (error) {
-      ui.pollingImportResults.push({ name: folderName || "папка результатов", ok: false, label: "failed", detail: "Не удалось обработать папку результатов. Проверьте имена файлов, структуру JSON и дату запуска." });
-      setMessage("Импорт результатов опроса не завершён. Прежние данные сохранены; проверьте файлы и повторите попытку.", "error");
+      ui.pollingImportResults.push({ name: "Главная папка результатов", ok: false, label: "failed", detail: "Не удалось завершить импорт. Проверьте доступ к файлам, структуру JSON и имена папок." });
+      setMessage("Импорт результатов опросов не завершён. Прежние данные сохранены.", "error");
     }
     ui.inventoryBusy = false;
     render();
@@ -4628,33 +4725,6 @@
   }
 
   function handleChange(event) {
-    if (event.target.matches("[data-import-credentials]") && event.target.files?.[0]) {
-      const input = event.target;
-      if (!secureRuntimeActive) {
-        input.value = "";
-        setMessage("Импорт учётных данных доступен только при запуске через start.ps1.", "error");
-        render();
-        return;
-      }
-      const file = input.files[0];
-      const reader = new FileReader();
-      reader.addEventListener("load", async () => {
-        try {
-          const format = /\.csv$/i.test(file.name) ? "csv" : "json";
-          const response = await fetch(`/api/credentials/import?format=${format}`, { method: "POST", credentials: "same-origin", cache: "no-store", headers: { "Content-Type": "text/plain; charset=utf-8", "X-MVP-CSRF": String(global.__MVP_CSRF__ || "") }, body: String(reader.result || "") });
-          const payload = await response.json();
-          if (!response.ok || !payload.ok) throw new Error(payload.error || "credential_import_failed");
-          setMessage(`Защищённое хранилище учётных данных обновлено: ${payload.summary.recordCount} записей. Секретные значения не отображаются.`, "success");
-        } catch (error) {
-          setMessage(`Учётные данные из файла ${file.name} не импортированы. Проверьте структуру, обязательные поля и отсутствие повторяющихся IP-адресов.`, "error");
-        }
-        input.value = "";
-        render();
-      });
-      reader.addEventListener("error", () => { setMessage(`Не удалось прочитать файл учётных данных ${file.name}. Выберите доступный файл JSON или CSV.`, "error"); input.value = ""; render(); });
-      reader.readAsText(file);
-      return;
-    }
     if (!event.target.matches("[data-import-backup]") || !event.target.files?.[0]) return;
     const file = event.target.files[0];
     const reader = new FileReader();

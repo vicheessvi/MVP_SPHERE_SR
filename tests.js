@@ -167,6 +167,42 @@
     assert(!api.parseRunFolderTimestamp("2026-02-30_09-41-28").ok);
   });
 
+  test("Общая папка группирует JSON по ближайшим датированным родителям", () => {
+    const grouped = api.groupPollingFilesByRunFolder([
+      { name: "10.0.0.2.json", relativePath: "export/2026-06-02_10-15-00/vendor/10.0.0.2.json" },
+      { name: "10.0.0.1.JSON", relativePath: "export/2026-06-01_09-41-28/10.0.0.1.JSON" },
+      { name: "10.0.0.3.json", relativePath: "export/invalid-date/10.0.0.3.json" },
+      { name: "note.txt", relativePath: "export/2026-06-01_09-41-28/note.txt" }
+    ]);
+    assertEqual(grouped.batches.length, 2);
+    assertEqual(grouped.batches[0].folderName, "2026-06-01_09-41-28");
+    assertEqual(grouped.batches[1].folderPath, "export/2026-06-02_10-15-00");
+    assertEqual(grouped.batches[1].files[0].relativePath, "export/2026-06-02_10-15-00/vendor/10.0.0.2.json");
+    assertEqual(grouped.rejected.length, 1);
+    assertEqual(grouped.ignored.length, 1);
+  });
+
+  test("Одинаковые имена папок в разных ветвях не смешиваются", () => {
+    const grouped = api.groupPollingFilesByRunFolder([
+      { name: "10.0.0.1.json", relativePath: "export/a/2026-06-01_09-41-28/10.0.0.1.json" },
+      { name: "10.0.0.2.json", relativePath: "export/b/2026-06-01_09-41-28/10.0.0.2.json" }
+    ]);
+    assertEqual(grouped.batches.length, 2);
+    assert(grouped.batches[0].folderPath !== grouped.batches[1].folderPath);
+  });
+
+  test("Группировка 1000 JSON по 10 папкам выполняется без заметной задержки", () => {
+    const files = Array.from({ length: 1000 }, (_, index) => {
+      const day = String((index % 10) + 1).padStart(2, "0");
+      return { name: `10.20.${Math.floor(index / 250)}.${(index % 250) + 1}.json`, relativePath: `export/2026-06-${day}_09-41-28/device-${index}.json` };
+    });
+    const started = Date.now();
+    const grouped = api.groupPollingFilesByRunFolder(files);
+    assertEqual(grouped.batches.length, 10);
+    assertEqual(grouped.batches.reduce((sum, batch) => sum + batch.files.length, 0), 1000);
+    assert(Date.now() - started < 1000, "Группировка должна укладываться в 1 секунду");
+  });
+
   test("Polling filename parser нормализует IPv4 и не падает на invalid", () => {
     assertEqual(api.parsePollingFilenameIp(" 10.10.20.30.json ").ip, "10.10.20.30");
     assert(!api.parsePollingFilenameIp("controller.json").ok);
@@ -739,7 +775,7 @@
     assert(api.canPerformAction(state, "user-administrator", "reset_state"));
     assertEqual(state.users.length, 1);
     assertEqual(api.resolveLaunchMode({ protocol: "file:", fileMarker: true }).kind, "file");
-    assertEqual(api.resolveLaunchMode({ protocol: "http:", secureMarker: true }).kind, "secure");
+    assertEqual(api.resolveLaunchMode({ protocol: "http:", secureMarker: true }), null);
     assertEqual(api.resolveLaunchMode({ protocol: "http:" }), null);
     const first = api.createVolatileStorage();
     first.setItem("synthetic", "value");
@@ -967,6 +1003,38 @@
     assertEqual(result.state.pollingResults[1].pingStatus, "failed");
     assert(result.state.inventoryIssues.some((item) => item.kind === "malformed_json"));
     assert(result.state.inventoryIssues.some((item) => item.kind === "unmatched_ip"));
+  });
+
+  test("Пакетный импорт создаёт отдельные запуски и сохраняет provenance пути", async () => {
+    const imported = await api.ingestPollingFolderTree(api.createDemoState(), {
+      files: [
+        { name: "10.0.0.2.json", relativePath: "export/2026-06-02_10-15-00/nested/10.0.0.2.json", text: JSON.stringify({ ok: true }) },
+        { name: "10.0.0.1.json", relativePath: "export/2026-06-01_09-41-28/10.0.0.1.json", text: JSON.stringify({ ok: true }) },
+        { name: "bad.json", relativePath: "export/2026-06-02_10-15-00/bad.json", text: "{" },
+        { name: "unreadable.json", relativePath: "export/2026-06-02_10-15-00/unreadable.json", readError: "synthetic read failure" },
+        { name: "outside.json", relativePath: "export/no-date/outside.json", text: "{}" },
+        { name: "note.txt", relativePath: "export/note.txt" }
+      ]
+    });
+    assert(imported.ok, imported.errors?.join("; "));
+    assertEqual(imported.state.pollingRuns.length, 2);
+    assert(new Date(imported.state.pollingRuns[0].capturedAt) < new Date(imported.state.pollingRuns[1].capturedAt));
+    assertEqual(imported.state.pollingResults.length, 3);
+    assertEqual(imported.state.pollingResults.find((item) => item.filename === "10.0.0.2.json").sourceRelativePath, "export/2026-06-02_10-15-00/nested/10.0.0.2.json");
+    assertEqual(imported.rejected.length, 1);
+    assertEqual(imported.ignored.length, 1);
+    assertEqual(imported.readErrors.length, 1);
+    assertEqual(imported.outcome, "partial");
+  });
+
+  test("Пакет без пригодных JSON не изменяет состояние", async () => {
+    const initial = api.createDemoState();
+    const imported = await api.ingestPollingFolderTree(initial, {
+      files: [{ name: "outside.json", relativePath: "export/no-date/outside.json", text: "{}" }]
+    });
+    assert(!imported.ok);
+    assertEqual(imported.state.pollingRuns.length, 0);
+    assertEqual(imported.state.pollingResults.length, 0);
   });
 
   test("Polling adapter registry честно блокирует реальный опрос", () => {
