@@ -116,6 +116,27 @@ test("Target navigation не содержит legacy audit routes", () => {
   assert(source.includes('data-import-credentials'));
 });
 
+test("Прямой index.html использует непостоянный file mode и не показывает удалённые уведомления", () => {
+  const index = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  const runtimeConfig = fs.readFileSync(path.join(__dirname, "runtime-config.js"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+  assert(index.indexOf('src="runtime-config.js"') < index.indexOf('src="app.js"'));
+  assert(runtimeConfig.includes('global.location.protocol === "file:"'));
+  assert(runtimeConfig.includes("__MVP_FILE_RUNTIME__"));
+  assert(!/fetch\s*\(|XMLHttpRequest|localStorage|sessionStorage/.test(runtimeConfig));
+  assert(source.includes('secureRuntimeActive ? createSecureRuntimeStorage() : createVolatileStorage()'));
+  assert(source.includes('if (!secureRuntimeActive)'));
+  assert(source.indexOf('if (!secureRuntimeActive)') < source.indexOf('const file = input.files[0]'));
+  assert(source.includes('Файловый режим забывает импортированные данные при перезагрузке'));
+  const prohibited = [
+    "Защищённый локальный режим · Администратор МЦТП · доступ только с этого компьютера · зашифрованное хранилище Windows",
+    "Защищённый локальный анализ",
+    "Зашифрованное хранилище · доступ только с этого компьютера",
+    "Данные хранятся только на этом компьютере в зашифрованном хранилище. Сетевые обращения разрешены только к явно выбранным IP-адресам оборудования. Учётные данные изолированы и не входят в аналитику или резервные копии."
+  ];
+  prohibited.forEach((text) => assert(!index.includes(text) && !source.includes(text), `Prohibited notice remains: ${text}`));
+});
+
 test("Portable runtime manifest закрепляет официальный Node.js LTS для x64 и ARM64", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "portable-runtime.json"), "utf8"));
   equal(manifest.schemaVersion, 1);

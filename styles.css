@@ -79,20 +79,6 @@ textarea:focus-visible {
   transform: translateY(0);
 }
 
-.demo-banner {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  padding: 8px 20px;
-  color: #4d350b;
-  background: #ffe7b7;
-  border-bottom: 1px solid #e8c57e;
-  text-align: center;
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
 .noscript-message,
 .fatal-screen {
   max-width: 760px;
@@ -348,28 +334,6 @@ meter {
 
 .workspace {
   min-width: 0;
-}
-
-.security-notice {
-  display: flex;
-  padding: 8px 28px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #5d3b02;
-  border-bottom: 1px solid #edcd8e;
-  background: #fff5df;
-  font-size: 0.78rem;
-  font-weight: 650;
-}
-
-.storage-chip {
-  flex: 0 0 auto;
-  padding: 3px 8px;
-  border: 1px solid #edcd8e;
-  border-radius: 999px;
-  background: #fffaf0;
-  white-space: nowrap;
 }
 
 .topbar {
@@ -1243,12 +1207,6 @@ table .mono {
   .user-summary {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .security-notice {
-    align-items: flex-start;
-    flex-direction: column;
-    padding-inline: 20px;
   }
 
   .stats-grid,

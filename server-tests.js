@@ -32,6 +32,9 @@ async function main() {
     const catalogResponse = await fetch(`${base}/product-catalog.js`, { headers: { Cookie: cookie } });
     const catalogSource = await catalogResponse.text();
     if (!catalogResponse.ok || !catalogSource.includes("MODULE_CATALOG") || !catalogSource.includes("validateProductCatalog")) throw new Error("Product catalog was not served from authenticated loopback origin");
+    const runtimeConfigResponse = await fetch(`${base}/runtime-config.js`, { headers: { Cookie: cookie } });
+    const runtimeConfigSource = await runtimeConfigResponse.text();
+    if (!runtimeConfigResponse.ok || !runtimeConfigSource.includes("__MVP_SECURE_RUNTIME__=true") || !runtimeConfigSource.includes(session.csrfToken) || runtimeConfigSource.includes("__MVP_FILE_RUNTIME__")) throw new Error("Dynamic secure runtime config contract failed");
     const state = JSON.stringify({ version: 3, synthetic: "x".repeat(5 * 1024 * 1024) });
     const put = await fetch(`${base}/api/storage/integration-state`, { method: "PUT", headers: { Cookie: cookie, Origin: base, "X-MVP-CSRF": session.csrfToken, "Content-Type": "application/json" }, body: state });
     if (!put.ok) throw new Error(`Storage PUT ${put.status}`);

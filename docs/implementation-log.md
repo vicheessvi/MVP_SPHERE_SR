@@ -662,3 +662,30 @@ Commit, push и deploy для этого этапа не выполнялись.
 - `specs/006-portable-reference-sync/`, ADR-0006 и основная документация.
 
 Commit, push и deploy не выполнялись.
+
+## 2026-08-10 — Прямой запуск index.html с сохранением security boundary
+
+### Итог
+
+Выполнен Full SpecKit feature `007-direct-index-launch`. Корневой `index.html` снова открывает приложение напрямую без Node.js, PowerShell и сети. Файловый режим подтверждается статическим `runtime-config.js`, использует новый in-memory adapter и не читает/не пишет рабочие данные в `localStorage` или IndexedDB. Импорт SR и результатов опроса доступен для аналитики текущей вкладки; reload/close создаёт чистое состояние.
+
+Credential input в файловом режиме не отрисовывается, а общий обработчик дополнительно проверяет secure runtime до получения `File` и создания `FileReader`. Постоянное хранение, импорт учётных данных, AES-256-GCM, DPAPI CurrentUser, HttpOnly session и CSRF остаются только за `start.ps1`. Неподтверждённый HTTP/HTTPS runtime по-прежнему блокируется без browser fallback.
+
+Удалены три заданных глобальных уведомления: статический banner, topbar «Защищённый локальный анализ» и повторяющийся `SECURITY_NOTICE`. Экран хранения и Справочник обновлены для точного описания активного режима; catalog validation остаётся обязательным.
+
+### Проверки
+
+- Spec quality checklist: 16/16 PASS.
+- JavaScript syntax и product catalog: PASS.
+- Regression/contract/performance: 101/101 PASS.
+- Runtime/bootstrap/direct-open contracts: 13/13 PASS.
+- Loopback server integration: 1/1 PASS.
+- Автоматическая browser-навигация на `file://` заблокирована политикой browser-control; обход не выполнялся. Требуется короткая ручная проверка двойным щелчком по `index.html`.
+
+### Изменённые зоны
+
+- `index.html`, `runtime-config.js`, `app.js`, `styles.css`, `product-catalog.js`;
+- `tests.js`, `runtime-tests.js`, `server-tests.js`, `.github/workflows/quality.yml`;
+- `specs/007-direct-index-launch/`, ADR-0007 и основная документация.
+
+Commit, push и deploy для feature 007 не выполнялись.

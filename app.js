@@ -14,7 +14,6 @@
   const DEFAULT_MAX_STATE_BYTES = Number.MAX_SAFE_INTEGER;
   const DEFAULT_MAX_RAW_INPUT_BYTES = Number.MAX_SAFE_INTEGER;
   const DASHBOARD_LIST_LIMIT = 8;
-  const SECURITY_NOTICE = "Данные хранятся только на этом компьютере в зашифрованном хранилище. Сетевые обращения разрешены только к явно выбранным IP-адресам оборудования. Учётные данные изолированы и не входят в аналитику или резервные копии.";
 
   const COMMON_ACTIONS = Object.freeze([
     "view",
@@ -61,7 +60,7 @@
     {
       id: "about", title: "1. Об инструменте", description: "Назначение и границы безопасной работы.", entries: [
         { id: "about-tool", title: "MVP_SPHERE_SR", summary: "Инструмент предназначен для учёта, опроса и анализа состояния оборудования мультимедийной инфраструктуры.", details: "Перечень оборудования формируется по выгрузке SR, а состояние — по результатам опросов Терминалов ВКС, Контроллеров и Панелей управления.", keywords: ["назначение", "оборудование"] },
-        { id: "about-local", title: "Локальная работа и защита данных", summary: "Выгрузка SR, результаты опросов и аналитика хранятся только на компьютере, где запущен инструмент.", details: "Учётные данные используются только для выполнения опроса, хранятся отдельно в зашифрованном виде и не должны попадать в GitHub.", keywords: ["безопасность", "локально", "github", "учётные данные"] }
+        { id: "about-local", title: "Режимы запуска и хранения", summary: "Прямое открытие index.html предназначено для анализа в текущей вкладке; запуск через start.ps1 добавляет постоянное защищённое хранилище.", details: "Файловый режим забывает импортированные данные при перезагрузке и не принимает файлы паролей. Учётные данные доступны только защищённому runtime и не должны попадать в GitHub.", keywords: ["index.html", "start.ps1", "сеанс", "безопасность", "github", "учётные данные"] }
       ]
     },
     PRODUCT_CATALOG.buildModuleHelpSection(),
@@ -140,7 +139,7 @@
     {
       id: "technical", title: "10. Часто используемые технические понятия", description: "Технические детали простым эксплуатационным языком.", entries: [
         { id: "tech-raw", title: "Исходные и отображаемые значения", summary: "SR и JSON сохраняются без перевода; пользовательские подписи формируются отдельно.", details: "Например, исходное Video Conference отображается как категория «Терминалы ВКС».", keywords: ["raw", "video conference"] },
-        { id: "tech-encryption", title: "Шифрование локальных данных", summary: "Рабочие данные на диске защищены шифрованием и привязаны к текущему пользователю Windows.", keywords: ["aes", "dpapi"] },
+        { id: "tech-encryption", title: "Шифрование локальных данных", summary: "При запуске через start.ps1 рабочие данные на диске защищены шифрованием и привязаны к текущему пользователю Windows; файловый режим не сохраняет их на диске.", keywords: ["aes", "dpapi", "start.ps1", "index.html"] },
         { id: "tech-loopback", title: "Локальный доступ", summary: "Интерфейс принимает подключения только с этого компьютера и не публикуется в локальную сеть.", keywords: ["loopback", "127.0.0.1"] },
         { id: "tech-json-original", title: "Просмотр исходного JSON", summary: "При необходимости технические поля могут изучаться в исходном файле, но не используются как пользовательские статусы без преобразования.", keywords: ["json", "технические поля"] }
       ]
@@ -2924,6 +2923,21 @@
     return { ok: true, state: next, projectId: project.id, snapshotId: snapshot.id };
   }
 
+  function resolveLaunchMode({ protocol, fileMarker, secureMarker } = {}) {
+    if (secureMarker) return Object.freeze({ kind: "secure", persistent: true, credentialsAvailable: true });
+    if (protocol === "file:" && fileMarker) return Object.freeze({ kind: "file", persistent: false, credentialsAvailable: false });
+    return null;
+  }
+
+  function createVolatileStorage(initialValues) {
+    const values = new Map(Object.entries(initialValues || {}).map(([key, value]) => [String(key), String(value)]));
+    return Object.freeze({
+      getItem(key) { return values.has(String(key)) ? values.get(String(key)) : null; },
+      setItem(key, value) { values.set(String(key), String(value)); },
+      removeItem(key) { values.delete(String(key)); }
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Public test surface (pure foundational primitives only)
   // ---------------------------------------------------------------------------
@@ -2937,7 +2951,6 @@
     DEFAULT_MAX_STATE_BYTES,
     DEFAULT_MAX_RAW_INPUT_BYTES,
     DASHBOARD_LIST_LIMIT,
-    SECURITY_NOTICE,
     PRODUCT_CATALOG,
     MODULE_CATALOG,
     UI_TERMS,
@@ -3012,12 +3025,14 @@
     rowsFromWorkbook,
     classifySrDevice,
     resolvePollingCapability,
+    resolveLaunchMode,
     resolveMatchDecision,
     readSessionUserId,
     saveState,
     searchReferenceEntries,
     sha256Bytes,
     sha256Text,
+    createVolatileStorage,
     validateBackup,
     validateExtronV1,
     validateState,
@@ -3034,12 +3049,18 @@
   const app = document.getElementById("app");
   if (!app) return;
 
-  if (!global.__MVP_SECURE_RUNTIME__) {
-    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Требуется защищённый локальный запуск</h1><p>Прямое открытие <code>index.html</code> отключено: хранилище браузера не обеспечивает требуемую защиту и объём данных.</p><p class="muted">Запустите <code>powershell -ExecutionPolicy Bypass -File .\\start.ps1</code>.</p></section></main>`;
+  const launchMode = resolveLaunchMode({
+    protocol: global.location && global.location.protocol,
+    fileMarker: Boolean(global.__MVP_FILE_RUNTIME__),
+    secureMarker: Boolean(global.__MVP_SECURE_RUNTIME__)
+  });
+  if (!launchMode) {
+    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Не удалось определить режим запуска</h1><p>Откройте корневой <code>index.html</code> как локальный файл или запустите приложение через <code>start.ps1</code>.</p></section></main>`;
     return;
   }
 
-  const persistenceStorage = createSecureRuntimeStorage();
+  const secureRuntimeActive = launchMode.kind === "secure";
+  const persistenceStorage = secureRuntimeActive ? createSecureRuntimeStorage() : createVolatileStorage();
 
   function createSecureRuntimeStorage() {
     function request(method, key, value) {
@@ -3149,7 +3170,7 @@
       return;
     }
     app.innerHTML = renderShell(user);
-    if (ui.route === "upload") queueMicrotask(refreshCredentialSummary);
+    if (ui.route === "upload" && secureRuntimeActive) queueMicrotask(refreshCredentialSummary);
   }
 
   function renderRecovery() {
@@ -3174,10 +3195,13 @@
         <section class="login-card" aria-labelledby="login-title">
           <div class="brand-mark" aria-hidden="true">SR</div>
           <h1 id="login-title">MVP_SPHERE_SR</h1>
-          <p class="page-subtitle">Защищённая локальная сессия недоступна</p>
-          <div class="warning-panel" role="note">${escapeHtml(SECURITY_NOTICE)}</div>
+          <p class="page-subtitle">Вход администратора</p>
           ${renderMessage()}
-          <p>Закройте эту вкладку и запустите приложение через <code>start.ps1</code>. Пароль приложения не используется: локальный доступ создаётся для текущего пользователя Windows.</p>
+          <form class="form-grid" data-login-form>
+            <div class="field"><label for="login">Логин</label><input id="login" name="login" autocomplete="username" required></div>
+            <div class="field"><label for="password">Пароль</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
+            <div class="button-row"><button class="button primary" type="submit">Войти</button><button class="button secondary" type="button" data-fill-login="admin" data-fill-password="admin">Заполнить тестовые данные</button></div>
+          </form>
         </section>
       </main>`;
   }
@@ -3193,16 +3217,12 @@
         </aside>
         <div class="workspace">
           <header class="topbar">
-            <div><strong>Защищённый локальный анализ</strong><br><span class="muted">Зашифрованное хранилище · доступ только с этого компьютера</span></div>
+            <div><strong>MVP_SPHERE_SR</strong><br><span class="muted">Инвентаризация и аналитика оборудования ВКС</span></div>
             <div class="user-summary">
               <span>${escapeHtml(user.name)}</span>
               <span class="role-chip">${escapeHtml(ROLE_NAMES[user.role])}</span>
             </div>
           </header>
-          <div class="security-notice" role="note">
-            <span>${escapeHtml(SECURITY_NOTICE)}</span>
-            <span class="storage-chip">Данные: ${formatBytes(measureStateBytes(state))} · без ограничения приложения</span>
-          </div>
           <main id="main-content" class="page" tabindex="-1">
             ${renderMessage()}
             ${renderRoute(user)}
@@ -3635,9 +3655,6 @@
           <p class="page-subtitle">Загрузите выгрузку SR и результаты уже выполненных опросов. Все операции выполняются локально.</p>
         </div>
       </header>
-      <div class="warning-panel">
-        Выгрузка SR, исходные файлы JSON и аналитика сохраняются только в зашифрованном локальном хранилище. Учётные данные помещаются в отдельное защищённое хранилище и не входят в резервные копии.
-      </div>
       <div class="card-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR (.xlsx)</h2><p class="muted">Первый непустой лист; «Домен» необязателен. Повторный импорт обновляет устройства без потери истории.</p>
           <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file">Файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить выгрузку SR</button></form>
@@ -3652,11 +3669,11 @@
         <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required><option value="vcs">${UI_TERMS.categories.vcs}</option><option value="controller">${UI_TERMS.categories.controller}</option><option value="panel">${UI_TERMS.categories.panel}</option></select></div><div class="field"><label>Производитель, необязательно</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Запланировать опрос</button><button class="button secondary" type="button" disabled>Сетевой запуск недоступен</button></form>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(formatCategoryLabel(ui.pollingPlanResult.category))}, устройств ${ui.pollingPlanResult.total}; поддерживаемых механизмов ${ui.pollingPlanResult.implemented}; ожидают реализации ${ui.pollingPlanResult.notImplemented}. Учётные данные не изменялись.</div>` : ""}
       </section>
-      <section class="card section-gap"><h2>4. Учётные данные для опроса</h2><p class="muted">Файл JSON или CSV должен содержать IP-адрес, логин и пароль. Он обрабатывается только локально, атомарно помещается в отдельное зашифрованное хранилище и не включается в аналитику или резервные копии.</p>
+      ${secureRuntimeActive ? `<section class="card section-gap"><h2>4. Учётные данные для опроса</h2><p class="muted">Файл JSON или CSV должен содержать IP-адрес, логин и пароль. Он атомарно помещается в отдельное зашифрованное хранилище и не включается в аналитику или резервные копии.</p>
         <div class="warning-panel">Исходный незашифрованный файл остаётся под вашей ответственностью. После успешного импорта защитите или удалите его согласно внутренней политике.</div>
         <div class="button-row section-gap"><label class="button primary" for="credential-file">Импортировать учётные данные</label><input class="screen-reader-only" id="credential-file" type="file" accept=".json,.csv,application/json,text/csv" data-import-credentials></div>
-        <div id="credential-summary" class="info-panel section-gap">Сведения о защищённом хранилище загружаются локально; секретные значения никогда не возвращаются в интерфейс.</div>
-      </section>`;
+        <div id="credential-summary" class="info-panel section-gap">Сведения о хранилище учётных данных загружаются локально; секретные значения никогда не возвращаются в интерфейс.</div>
+      </section>` : `<section class="card section-gap"><h2>4. Учётные данные для опроса</h2><p class="muted">Импорт логинов и паролей доступен только при запуске через start.ps1. Файловый режим не читает и не сохраняет секреты.</p></section>`}`;
   }
 
   function renderSnapshotRows(snapshots) {
@@ -3849,32 +3866,25 @@
 
   function renderSettings(user) {
     const stateBytes = measureStateBytes(state);
-    const storagePercent = Math.min(100, Math.round((stateBytes / DEFAULT_MAX_STATE_BYTES) * 100));
     return `
       <header class="page-header">
         <div>
-          <h1>Локальные настройки</h1>
-          <p class="page-subtitle">Backup, восстановление и сведения о demo-state.</p>
+          <h1>Данные текущего сеанса</h1>
+          <p class="page-subtitle">Прямой запуск index.html использует только память открытой вкладки.</p>
         </div>
       </header>
-      <div class="warning-panel">
-        localStorage не является защищённым или гарантированно долговечным хранилищем. Перед значимыми изменениями экспортируйте backup.
+      <div class="info-panel">
+        После перезагрузки или закрытия страницы импортированные данные будут удалены. Для постоянного хранения используйте start.ps1.
       </div>
       <div class="card-grid">
         <section class="card">
-          <h2>Полный JSON backup</h2>
-          <p class="muted">Экспорт включает проекты, snapshots, comparisons, baselines, reviews и history. Активная login-сессия не экспортируется.</p>
-          <div class="button-row">
-            <button class="button primary" type="button" data-export-backup>Экспортировать</button>
-            <label class="button secondary" for="backup-file">Импортировать</label>
-            <input class="screen-reader-only" id="backup-file" type="file" accept="application/json,.json" data-import-backup>
-          </div>
+          <h2>Сеансовый режим</h2>
+          <p class="muted">Рабочие данные не записываются в localStorage, IndexedDB или файл на диске. Экспорт незашифрованной резервной копии отключён.</p>
         </section>
         <section class="card">
-          <h2>Использование storage</h2>
-          <p><strong>${formatBytes(stateBytes)}</strong> из программного безопасного лимита ${formatBytes(DEFAULT_MAX_STATE_BYTES)}</p>
-          <meter min="0" max="100" value="${storagePercent}">${storagePercent}%</meter>
-          <p class="muted">Фактическая browser quota может отличаться.</p>
+          <h2>Использование памяти</h2>
+          <p><strong>${formatBytes(stateBytes)}</strong> в текущей вкладке</p>
+          <p class="muted">Фактический предел определяется доступной памятью браузера.</p>
         </section>
         ${canPerformAction(state, user.id, "configure_retention") ? `<section class="card">
           <h2>Retention</h2>
@@ -3899,8 +3909,7 @@
           <p class="muted">Удаляет текущий local state после явного подтверждения.</p>
           <button class="button danger" type="button" data-reset-demo>Сбросить demo-state</button>
         </section>` : ""}
-      </div>
-      <div class="info-panel">Текущий пользователь: ${escapeHtml(user.name)}. ${escapeHtml(SECURITY_NOTICE)}</div>`;
+      </div>`;
   }
 
   function renderSecureStorage(user) {
@@ -3912,7 +3921,7 @@
       <section class="card section-gap"><h2>Сброс аналитических данных</h2><p class="muted">Защищённое хранилище учётных данных этим действием не экспортируется и не отображается.</p><button class="button danger" type="button" data-reset-demo>Сбросить аналитические данные</button></section>`;
   }
 
-  renderSettings = renderSecureStorage;
+  if (secureRuntimeActive) renderSettings = renderSecureStorage;
 
   function handleClick(event) {
     const fill = event.target.closest("[data-fill-login]");
@@ -4489,6 +4498,7 @@
   }
 
   async function refreshCredentialSummary() {
+    if (!secureRuntimeActive) return;
     const target = document.getElementById("credential-summary");
     if (!target) return;
     try {
@@ -4620,6 +4630,12 @@
   function handleChange(event) {
     if (event.target.matches("[data-import-credentials]") && event.target.files?.[0]) {
       const input = event.target;
+      if (!secureRuntimeActive) {
+        input.value = "";
+        setMessage("Импорт учётных данных доступен только при запуске через start.ps1.", "error");
+        render();
+        return;
+      }
       const file = input.files[0];
       const reader = new FileReader();
       reader.addEventListener("load", async () => {

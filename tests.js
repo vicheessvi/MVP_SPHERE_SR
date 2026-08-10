@@ -730,7 +730,7 @@
     assertEqual(JSON.stringify(second.state.snapshots), originalState);
   });
 
-  test("Единственная роль разрешает действия администратора и публикует русское уведомление о защите", () => {
+  test("Единственная роль разрешает действия администратора, а режимы запуска выбираются fail-closed", () => {
     const state = api.createDemoState();
     assert(!api.canPerformAction(state, "user-av-engineer", "review_event"));
     assert(!api.canPerformAction(state, "user-av-engineer", "export_backup"));
@@ -738,8 +738,13 @@
     assert(!api.canPerformAction(state, "user-av-engineer", "manage_users"));
     assert(api.canPerformAction(state, "user-administrator", "reset_state"));
     assertEqual(state.users.length, 1);
-    assert(api.SECURITY_NOTICE.includes("зашифрованном хранилище"));
-    assert(api.SECURITY_NOTICE.includes("Учётные данные изолированы"));
+    assertEqual(api.resolveLaunchMode({ protocol: "file:", fileMarker: true }).kind, "file");
+    assertEqual(api.resolveLaunchMode({ protocol: "http:", secureMarker: true }).kind, "secure");
+    assertEqual(api.resolveLaunchMode({ protocol: "http:" }), null);
+    const first = api.createVolatileStorage();
+    first.setItem("synthetic", "value");
+    assertEqual(first.getItem("synthetic"), "value");
+    assertEqual(api.createVolatileStorage().getItem("synthetic"), null);
   });
 
   test("MatchDecision choose пересчитывает зависимый diff и сохраняет старый ChangeSet", async () => {

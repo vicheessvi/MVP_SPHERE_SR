@@ -2,14 +2,15 @@
 
 ## Текущий статус
 
-Принят однопользовательский защищённый локальный runtime для Windows. Решение описано в `docs/decisions/ADR-0005-secure-local-runtime.md`; прежний browser-only ADR-0003 больше не определяет рабочий режим.
+Приняты два явных локальных режима: непостоянный browser-only сеанс при прямом открытии `index.html` и защищённый постоянный runtime для Windows через `start.ps1`. Решения описаны в ADR-0005 и ADR-0007. Файловый режим не заменяет защищённое хранилище и не принимает секреты.
 
 ## Компоненты
 
 - `start.ps1` получает совместимую Node.js 24+ через безопасный resolver и запускает runtime.
 - `portable-runtime.json` и `scripts/ensure-node.ps1` позволяют чистой GitHub-копии локально подготовить закреплённый официальный Node.js 24 LTS для x64/ARM64 после SHA-256 проверки, без установки в ОС.
 - `server.js` слушает случайный порт только на `127.0.0.1`, создаёт одноразовую launch-сессию и обслуживает UI/API.
-- `app.js` содержит state v3, импорт SR/результатов, чистую Dashboard-проекцию, аналитику и UI единственной роли.
+- `runtime-config.js` подтверждает статический `file://` режим; при loopback-запуске `server.js` отдаёт по тому же пути динамический secure marker и CSRF token.
+- `app.js` выбирает непостоянный memory adapter либо secure API adapter, содержит state v3, импорт SR/результатов, чистую Dashboard-проекцию, аналитику и UI единственной роли.
 - `app.js` содержит безопасные форматтеры внутренних кодов, объединяет генерируемые и явные разделы Справочника и выполняет чистый локальный поиск.
 - `product-catalog.js` является единым browser/CommonJS-источником модулей, presentation dictionary и генерируемых карточек модулей/статусов; `app.js` потребляет его проекции.
 - `runtime/secure-store.js` атомарно хранит зашифрованные объекты без прикладной квоты.
@@ -23,6 +24,13 @@
 ## Security boundary
 
 ```text
+index.html (file://)
+        |
+        v
+in-memory state for current page only
+        |
+        +-- no credential import, no browser persistence
+
 Browser tab (same origin)
         |
         | HttpOnly session + SameSite=Strict + Origin/CSRF
@@ -40,9 +48,11 @@ encrypted state objects     separate credential vault
 
 Runtime не слушает LAN-интерфейсы, не включает CORS, CDN, telemetry или cloud API. CSP запрещает внешние script/connect источники. Launch token одноразовый, cookie недоступна JavaScript. Мутации требуют same-origin `Origin` и непредсказуемый CSRF token.
 
+Файловый режим загружает только относительные локальные assets, не выполняет storage/credential API requests и не читает прежние значения `localStorage`. Его состояние уничтожается при reload/close. HTTP/HTTPS без server-issued secure marker остаётся заблокированным и не получает browser fallback.
+
 ## Данные
 
-State schema v3 мигрирует v1/v2, оставляет единственного пользователя `administrator` и хранится как encrypted object `mvpSphereSrState.v3`. Credential vault является отдельным encrypted object и не доступен через универсальный storage API.
+State schema v3 мигрирует v1/v2 и оставляет единственного пользователя `administrator`. В файловом режиме новый state создаётся в памяти каждой страницы. В защищённом режиме он хранится как encrypted object `mvpSphereSrState.v3`; credential vault является отдельным encrypted object и не доступен через универсальный storage API.
 
 Искусственного лимита 4 МиБ больше нет. Запись создаётся во временном файле, синхронизируется и атомарно заменяет предыдущий объект. Реальные границы — свободный диск, память процесса и ограничения файловой системы/ОС.
 

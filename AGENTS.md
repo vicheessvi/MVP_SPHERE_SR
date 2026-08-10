@@ -6,11 +6,11 @@
 
 - Видение: `docs/project-vision.md`.
 - Стек: Windows, Node.js 24 LTS portable/system, встроенный HTTP, HTML5, CSS3, Vanilla JavaScript, vendored SheetJS CE 0.20.3.
-- Runtime: только `127.0.0.1`, запуск через `start.ps1`; direct-open запрещён для рабочих данных.
-- Хранение: AES-256-GCM, мастер-ключ под Windows DPAPI CurrentUser, отдельный credential vault, без искусственной квоты.
+- Runtime: два явных режима — непостоянный `file://index.html` для текущей вкладки и защищённый `127.0.0.1` через `start.ps1`.
+- Хранение: file mode использует только память страницы и не принимает secrets; secure mode использует AES-256-GCM, Windows DPAPI CurrentUser, отдельный credential vault и не имеет искусственной квоты.
 - Роль: только «Администратор МЦТП».
 - Constitution: версия 2.0.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/006-portable-reference-sync/`.
+- Текущая feature: `specs/007-direct-index-launch/`.
 
 ## Правила работы агента
 
@@ -23,6 +23,7 @@
 - Не добавлять новый доступный маршрут в обход `MODULE_CATALOG` и не дублировать модульные карточки вручную в `app.js`.
 - Версию portable runtime обновлять только вместе с точными официальными URL/SHA-256 в `portable-runtime.json`, проверками и ADR; moving `latest` запрещён.
 - Никогда не помещать реальные логины, пароли, токены, ключи, IP-выгрузки или runtime data в Git, fixtures, логи, state, аналитику и ответы API.
+- Не заменять file-mode memory adapter на `localStorage`/`IndexedDB` и не включать credential import для `file://`; чувствительные данные браузер не сохраняет.
 - Не добавлять внешнюю передачу, CDN, телеметрию или non-loopback bind без нового явного решения пользователя и security review.
 - Не делать commit/push без явного указания пользователя.
 - Значимые решения фиксировать в `docs/decisions`, этапы — в `docs/implementation-log.md`.
@@ -43,4 +44,4 @@
 - Loopback API, CSRF и encrypted persistence: `node server-tests.js`.
 - Синтаксис: `node --check` для изменённых `.js`.
 - Secret/artifact scan обязателен перед commit.
-- Рабочая acceptance выполняется запуском `start.ps1`, а не открытием `index.html`.
+- Acceptance выполняется для обоих режимов: прямое открытие `index.html` проверяет сеансовую аналитику и сброс при reload, а `start.ps1` — encrypted persistence, vault и loopback boundary.

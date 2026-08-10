@@ -36,6 +36,7 @@ jobs:
         shell: powershell
         run: |
           $nodeExe = '${{ steps.portable.outputs.node }}'
+          & $nodeExe --check runtime-config.js
           & $nodeExe --check product-catalog.js
           & $nodeExe --check app.js
           & $nodeExe --check scripts\validate-reference.js
