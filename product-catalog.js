@@ -111,7 +111,7 @@
     { id: "status-not-polled", group: "pollStatuses", code: "not_polled", summary: "Устройство присутствует в SR, но история его опросов отсутствует.", keywords: ["not_polled", "never"] },
     { id: "status-unsupported", group: "pollStatuses", code: "unsupported", summary: "В текущей версии отсутствует подтверждённый механизм автоматического опроса данного оборудования.", keywords: ["unsupported"] },
     { id: "status-no-network", group: "pingStatuses", code: "failed", tooltip: "noNetwork", keywords: ["ping", "ping_failure", "недоступно"] },
-    { id: "status-auth", group: "pollStatuses", code: "authorization_error", summary: "Инструмент смог обратиться к устройству, но не прошёл проверку учётных данных.", keywords: ["authorization_error", "логин", "пароль"] },
+    { id: "status-auth", group: "pollStatuses", code: "authorization_error", summary: "Для любого устройства Extron в результате получено точное значение error = No credentials were accepted либо подтверждённая стадия авторизации.", keywords: ["authorization_error", "no credentials were accepted", "логин", "пароль", "extron"] },
     { id: "status-no-data", group: "pollStatuses", code: "unknown", summary: "Информации недостаточно для определения состояния.", keywords: ["no data", "unknown"] },
     { id: "status-stale", group: "pollStatuses", code: "stale", summary: "Последние данные старше установленного допустимого периода.", details: "Порог пока не настроен, поэтому статус не рассчитывается.", keywords: ["stale", "freshness"], status: "in_development" }
   ]);

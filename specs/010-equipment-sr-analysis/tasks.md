@@ -58,3 +58,13 @@
 ## Parallel opportunities
 
 Tasks с `[P]` независимы по смыслу, но в текущем сеансе выполняются последовательно, чтобы не создавать конфликтующих правок одного `tests.js`.
+
+## Phase 7 — Исправления по эксплуатационной проверке
+
+- [x] T029 [P] [US1] Добавить regression tests начального collapsed-state, рабочего toggle и одинакового шрифта в `tests.js` и `runtime-tests.js`.
+- [x] T030 [US1] Исправить parent navigation state и стили в `app.js`, `styles.css`.
+- [x] T031 [P] [US1] Добавить tests приоритета «Тип модели» и сохранения строк без identity в `tests.js`.
+- [x] T032 [US1] Реализовать fallback identity и приоритет классификации в `app.js`, `product-catalog.js`.
+- [x] T033 [P] [US2] Добавить exact Extron auth fixture и full-inventory IP matching regression tests в `tests.js`.
+- [x] T034 [US2] Реализовать exact auth evidence и подтвердить category-neutral matching в `app.js`.
+- [x] T035 Обновить Справочник, ADR/architecture/log и выполнить все syntax/regression/runtime/reference/secret проверки.

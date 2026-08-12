@@ -336,7 +336,6 @@ meter {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-weight: 800;
 }
 
 .nav-children {

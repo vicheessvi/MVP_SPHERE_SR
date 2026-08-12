@@ -82,6 +82,10 @@ README.md
 5. `ANALYZED_PARAMETER_RULES` разрешает только подтверждённые JSON paths. Diff получает device scope, path label и rationale; scope без правил даёт пустой diff.
 6. Chronology использует known result time, стабильный tie-breaker и отдельное размещение unknown; unknown result не образует ложных chronological changes.
 7. Dashboard category counts и drill-down строятся из catalog IDs в одном проходе; UI показывает компактный список семи категорий.
+8. SR-строки без strong/network identity не отбрасываются: им назначается детерминированный fallback key из локации и технического описания с ordinal для одинаковых строк; предупреждение сохраняется.
+9. Классификация сначала проверяет все утверждённые значения «Тип модели», затем использует `Тип оборудования = controller` как fallback.
+10. Навигационное состояние не зависит от active child: initial `false`, последующие toggle отражают только действие пользователя.
+11. Exact Extron marker `error = No credentials were accepted` является единственным новым auth evidence; IP matching продолжает использовать полный inventory index.
 
 ## Complexity Tracking
 

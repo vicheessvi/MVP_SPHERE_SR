@@ -126,8 +126,9 @@
         { id: "logic-result-time", title: "Дата и время опроса", summary: "Для отдельного JSON используется доступное браузеру время последнего изменения файла.", details: "Это не время создания файла. Если File API не предоставляет валидное значение, время результата остаётся неизвестным; дата папки используется только для группировки запуска.", keywords: ["lastModified", "время файла", "время опроса"] },
         { id: "logic-batch-progress", title: "Массовая загрузка результатов", summary: "Результаты опросов обрабатываются пакетно. Во время загрузки отображается количество найденных и обработанных файлов, ошибки, скорость обработки и примерное оставшееся время.", details: "Повторно уже загруженные результаты пропускаются, если инструмент может надёжно определить, что они уже были импортированы. Активную загрузку можно остановить без удаления уже обработанных результатов.", keywords: ["прогресс", "скорость", "оставшееся время", "дубликат", "отмена"] },
         { id: "logic-matching", title: "Сопоставление с SR", summary: "IP-адрес из имени файла результата сравнивается с IP-адресами выгрузки SR.", details: "При единственном совпадении результат связывается с оборудованием и локацией; иначе сохраняется как требующий проверки.", keywords: ["matching", "unmatched"] },
+        { id: "logic-passive-sr", title: "Оборудование без идентификаторов", summary: "Строка SR без inventory, serial, MAC и IP всё равно отображается в соответствующей категории.", details: "Инструмент показывает предупреждение и использует локальную составную идентичность из помещения и описания оборудования. Такое устройство нельзя автоматически связать с JSON по IP, пока IP отсутствует в SR.", keywords: ["пассивное оборудование", "без ip", "missing identity"] },
         { id: "logic-no-network", title: "Как определяется отсутствие ответа", summary: "Перед получением данных инструмент может проверить сетевую доступность; отсутствие ответа отмечается статусом «Нет ответа по сети».", keywords: ["failedStage", "Ping.ok", "ping"] },
-        { id: "logic-auth", title: "Как определяется ошибка авторизации", summary: "Устройство доступно, но проверка предоставленных учётных данных завершилась ошибкой.", details: "Причиной могут быть неверные данные или изменившиеся права, но конкретная причина не утверждается без ответа оборудования.", keywords: ["authorization"] },
+        { id: "logic-auth", title: "Как определяется ошибка авторизации", summary: "Для любого устройства Extron подтверждённым признаком является точное значение error = No credentials were accepted.", details: "Категория устройства Extron не ограничивает это правило. Другие значения error, ошибки чтения, обработки и сетевой доступности не называются ошибкой авторизации. Статус применяется после однозначной связи файла с устройством Extron из SR.", keywords: ["authorization", "no credentials were accepted", "extron"] },
         { id: "logic-support", title: "Поддержка автоматического опроса", summary: "Наличие устройства в SR не означает наличие подтверждённого механизма его автоматического опроса.", keywords: ["adapter", "supported", "unsupported"] },
         { id: "logic-reboots", title: "Анализ перезагрузок", summary: "Функция находится в разработке.", details: "Показатели появятся только после подтверждения достоверного технического правила определения перезагрузки.", keywords: ["reboot", "перезагрузка"], status: "in_development" }
       ]
@@ -170,7 +171,7 @@
       ambiguous_ip: `IP-адрес ${ip} соответствует нескольким устройствам. Проверьте актуальную выгрузку SR.`,
       classification_conflict: "Категория устройства в результате опроса не совпадает с SR. Проверьте карточку оборудования.",
       invalid_ip: "В выгрузке SR указан некорректный IP-адрес. Проверьте исходную строку.",
-      missing_identity: "В строке SR недостаточно данных для устойчивого определения устройства. Проверьте инвентарный или серийный номер.",
+      missing_identity: "Устройство сохранено в перечне, но в строке SR нет inventory/serial/MAC/IP. Для повторного импорта используется локальная составная идентичность по помещению и описанию.",
       ambiguous_identity: "Строка SR может относиться к нескольким устройствам. Требуется проверка идентификаторов.",
       unknown_category: "Не удалось определить категорию оборудования по данным SR. Проверьте тип оборудования и тип модели."
     }[issue?.kind] || "Обнаружена ошибка данных. Проверьте исходный файл и повторите импорт.";
@@ -871,7 +872,11 @@
   }
 
   function classifySrDevice(row) {
-    const descriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => normalizeText(getSrValue(row, item.srField)) === normalizeText(item.srValue));
+    const modelDescriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => normalizeSrHeader(item.srField) === normalizeSrHeader("Тип модели")
+      && normalizeText(getSrValue(row, item.srField)) === normalizeText(item.srValue));
+    if (modelDescriptor) return modelDescriptor.id;
+    const descriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => normalizeSrHeader(item.srField) !== normalizeSrHeader("Тип модели")
+      && normalizeText(getSrValue(row, item.srField)) === normalizeText(item.srValue));
     return descriptor?.id || "other";
   }
 
@@ -984,6 +989,7 @@
 
   function derivePollingStatus(payload) {
     const failedStage = normalizeText(getCaseInsensitive(payload, "failedStage"));
+    const explicitError = normalizeText(getCaseInsensitive(payload, "error"));
     const ping = getCaseInsensitive(payload, "ping");
     const pingOk = isPlainObject(ping) && typeof getCaseInsensitive(ping, "ok") === "boolean"
       ? getCaseInsensitive(ping, "ok")
@@ -992,7 +998,8 @@
     if (failedStage === "ping" && pingOk === false) pingStatus = "failed";
     else if (pingOk === true) pingStatus = "ok";
     const explicitOk = getCaseInsensitive(payload, "ok");
-    const authFailure = ["authorization", "authentication", "auth"].includes(failedStage) && explicitOk === false;
+    const authFailure = explicitError === "no credentials were accepted"
+      || (["authorization", "authentication", "auth"].includes(failedStage) && explicitOk === false);
     let pollStatus = "unknown";
     if (authFailure) pollStatus = "authorization_error";
     else if (pingStatus === "failed") pollStatus = "network_unreachable";
@@ -1002,9 +1009,18 @@
       pollStatus,
       pingStatus,
       authorizationStatus: authFailure ? "failed" : "unknown",
+      authorizationEvidence: explicitError === "no credentials were accepted" ? "extron_no_credentials_accepted" : authFailure ? "failed_stage" : null,
       rebootCount: null,
       gcPlus: null
     };
+  }
+
+  function scopePollingStatusToInventory(status, device) {
+    if (status?.pollStatus !== "authorization_error") return status;
+    const supportedScope = device
+      && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "extron";
+    if (supportedScope) return status;
+    return { ...status, pollStatus: "processing_error", authorizationStatus: "unknown", authorizationEvidence: null };
   }
 
   function resolvePollingResultTimestamp(input) {
@@ -1174,12 +1190,19 @@
     };
   }
 
+  function srFallbackIdentityBase(row) {
+    return [row.roomName, row.roomAddress, row.category, row.equipmentTypeNormalized, row.modelTypeNormalized, row.manufacturerNormalized, row.modelNormalized, row.nameRaw]
+      .map((value) => normalizeText(value) || "")
+      .join("|");
+  }
+
   function findInventoryCandidates(devices, row) {
     const levels = [
       row.inventoryNumber && ((device) => normalizeText(device.inventoryNumber) === normalizeText(row.inventoryNumber)),
       row.serialNumber && row.manufacturerNormalized && ((device) => normalizeText(device.serialNumber) === normalizeText(row.serialNumber) && device.manufacturerNormalized === row.manufacturerNormalized),
       row.macNormalized && ((device) => device.macNormalized === row.macNormalized),
-      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized && ((device) => device.ipNormalized === row.ipNormalized || (device.ipHistory || []).includes(row.ipNormalized))
+      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized && ((device) => device.ipNormalized === row.ipNormalized || (device.ipHistory || []).includes(row.ipNormalized)),
+      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized && row.sourceFallbackKey && ((device) => device.sourceFallbackKey === row.sourceFallbackKey)
     ].filter(Boolean);
     for (const matcher of levels) {
       const candidates = devices.filter(matcher);
@@ -1201,14 +1224,16 @@
     const srImport = { id: createId("sr-import"), filename: input.filename || "inventory.xlsx", sheetName: input.sheetName || "", rawSha256: input.rawSha256 || null, importedAt, importedById: input.actorId || "system", rowCount: rows.length, acceptedCount: 0, rejectedCount: 0, status: "processing" };
     next.inventoryDevices.forEach((device) => { device.inCurrentSr = false; });
     next.locations.forEach((location) => { location.inCurrentSr = false; });
+    const fallbackOccurrences = new Map();
     rows.forEach((rawRow, index) => {
       const rowNumber = index + 2;
       const row = normalizedSrRow(rawRow);
       const hasIdentity = row.inventoryNumber || row.serialNumber || row.macNormalized || row.ipNormalized;
       if (!hasIdentity) {
-        srImport.rejectedCount += 1;
-        next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Строка не содержит пригодного inventory/serial/MAC/IP", details: { rawRow } }));
-        return;
+        const fallbackBase = srFallbackIdentityBase(row);
+        const occurrence = (fallbackOccurrences.get(fallbackBase) || 0) + 1;
+        fallbackOccurrences.set(fallbackBase, occurrence);
+        row.sourceFallbackKey = `${fallbackBase}|${occurrence}`;
       }
       const locationKey = `${normalizeText(row.roomName) || ""}|${normalizeText(row.roomAddress) || ""}`;
       let location = next.locations.find((item) => item.identityKey === locationKey);
@@ -1228,6 +1253,7 @@
       }
       if (oldIp && oldIp !== row.ipNormalized && !device.ipHistory.includes(oldIp)) device.ipHistory.push(oldIp);
       Object.assign(device, row, { locationId: location.id, inCurrentSr: true, lastSeenAt: importedAt, lastSrImportId: srImport.id, sourceRowNumber: rowNumber, pollingCapability: resolvePollingCapability(row) });
+      if (!hasIdentity) next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Устройство сохранено без inventory/serial/MAC/IP; используется локальная составная идентичность", details: { sourceFallbackKey: row.sourceFallbackKey } }));
       if (row.ipRaw && !row.ipNormalized) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_ip", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: `Некорректный IP: ${row.ipRaw}` }));
       if (row.category === "other") next.inventoryIssues.push(createInventoryIssue({ kind: "unknown_category", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Строка не относится к ВКС, контроллеру или панели" }));
       srImport.acceptedCount += 1;
@@ -1258,14 +1284,15 @@
       inventory: normalizeText(device?.inventoryNumber),
       serialManufacturer: device?.serialNumber && device?.manufacturerNormalized ? `${normalizeText(device.serialNumber)}|${device.manufacturerNormalized}` : null,
       mac: device?.macNormalized || null,
-      ips: [...new Set([device?.ipNormalized, ...(device?.ipHistory || [])].filter(Boolean))]
+      ips: [...new Set([device?.ipNormalized, ...(device?.ipHistory || [])].filter(Boolean))],
+      fallback: device?.sourceFallbackKey || null
     };
   }
 
   function createSrImportContext(candidateState) {
     const context = {
       locationsByIdentity: new Map(candidateState.locations.map((location) => [location.identityKey, location])),
-      byInventory: new Map(), bySerialManufacturer: new Map(), byMac: new Map(), byIp: new Map()
+      byInventory: new Map(), bySerialManufacturer: new Map(), byMac: new Map(), byIp: new Map(), byFallback: new Map()
     };
     for (const device of candidateState.inventoryDevices) {
       const keys = srDeviceIndexKeys(device);
@@ -1273,6 +1300,7 @@
       addSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
       addSrIndexValue(context.byMac, keys.mac, device);
       keys.ips.forEach((ip) => addSrIndexValue(context.byIp, ip, device));
+      addSrIndexValue(context.byFallback, keys.fallback, device);
     }
     return context;
   }
@@ -1283,6 +1311,7 @@
     removeSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
     removeSrIndexValue(context.byMac, keys.mac, device);
     keys.ips.forEach((ip) => removeSrIndexValue(context.byIp, ip, device));
+    removeSrIndexValue(context.byFallback, keys.fallback, device);
   }
 
   function addSrDeviceToContext(context, device) {
@@ -1291,6 +1320,7 @@
     addSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
     addSrIndexValue(context.byMac, keys.mac, device);
     keys.ips.forEach((ip) => addSrIndexValue(context.byIp, ip, device));
+    addSrIndexValue(context.byFallback, keys.fallback, device);
   }
 
   function findIndexedSrCandidates(context, row) {
@@ -1298,7 +1328,8 @@
       row.inventoryNumber ? context.byInventory.get(normalizeText(row.inventoryNumber)) : null,
       row.serialNumber && row.manufacturerNormalized ? context.bySerialManufacturer.get(`${normalizeText(row.serialNumber)}|${row.manufacturerNormalized}`) : null,
       row.macNormalized ? context.byMac.get(row.macNormalized) : null,
-      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized ? context.byIp.get(row.ipNormalized) : null
+      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized ? context.byIp.get(row.ipNormalized) : null,
+      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized && row.sourceFallbackKey ? context.byFallback.get(row.sourceFallbackKey) : null
     ];
     return levels.find((candidates) => candidates?.length) || [];
   }
@@ -1330,6 +1361,7 @@
     next.locations.forEach((location) => { location.inCurrentSr = false; });
     const contextStarted = monotonicNow();
     const context = createSrImportContext(next);
+    const fallbackOccurrences = new Map();
     metrics.stagesMs.inventory += monotonicNow() - contextStarted;
     emitProgress("Обработка строк", 0);
 
@@ -1344,9 +1376,10 @@
           metrics.normalizedRows += 1;
           const hasIdentity = row.inventoryNumber || row.serialNumber || row.macNormalized || row.ipNormalized;
           if (!hasIdentity) {
-            srImport.rejectedCount += 1;
-            next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Строка не содержит пригодного inventory/serial/MAC/IP", details: { rawRow } }));
-            continue;
+            const fallbackBase = srFallbackIdentityBase(row);
+            const occurrence = (fallbackOccurrences.get(fallbackBase) || 0) + 1;
+            fallbackOccurrences.set(fallbackBase, occurrence);
+            row.sourceFallbackKey = `${fallbackBase}|${occurrence}`;
           }
           const locationKey = `${normalizeText(row.roomName) || ""}|${normalizeText(row.roomAddress) || ""}`;
           metrics.locationLookups += 1;
@@ -1372,6 +1405,7 @@
           if (oldIp && oldIp !== row.ipNormalized && !device.ipHistory.includes(oldIp)) device.ipHistory.push(oldIp);
           Object.assign(device, row, { locationId: location.id, inCurrentSr: true, lastSeenAt: importedAt, lastSrImportId: srImport.id, sourceRowNumber: rowNumber, pollingCapability: resolvePollingCapability(row) });
           addSrDeviceToContext(context, device);
+          if (!hasIdentity) next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Устройство сохранено без inventory/serial/MAC/IP; используется локальная составная идентичность", details: { sourceFallbackKey: row.sourceFallbackKey } }));
           if (row.ipRaw && !row.ipNormalized) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_ip", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: `Некорректный IP: ${row.ipRaw}` }));
           if (row.category === "other") next.inventoryIssues.push(createInventoryIssue({ kind: "unknown_category", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Строка не относится ни к одной утверждённой категории оборудования" }));
           srImport.acceptedCount += 1;
@@ -1697,7 +1731,7 @@
     const candidates = ipInfo.ip ? next.inventoryDevices.filter((device) => device.ipNormalized === ipInfo.ip || (device.ipHistory || []).includes(ipInfo.ip)) : [];
     const device = candidates.length === 1 ? candidates[0] : null;
     const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
-    const status = payload ? derivePollingStatus(payload) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
+    const status = payload ? scopePollingStatusToInventory(derivePollingStatus(payload), device) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", authorizationEvidence: null, rebootCount: null, gcPlus: null };
     const result = {
       id: createId("polling-result"), runId: run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
@@ -1990,7 +2024,7 @@
 
     const normalizationStarted = monotonicNow();
     const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
-    const status = payload ? derivePollingStatus(payload) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
+    const status = payload ? scopePollingStatusToInventory(derivePollingStatus(payload), device) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", authorizationEvidence: null, rebootCount: null, gcPlus: null };
     const normalizedData = payload ? pollingPayloadProjection(payload) : {};
     const timestamp = resolvePollingResultTimestamp(input);
     metrics.normalized += 1;
@@ -3810,7 +3844,7 @@
     pollingCancelRequested: false,
     pollingPlanResult: null,
     inventoryBusy: false,
-    equipmentExpanded: true,
+    equipmentExpanded: false,
     dashboardFilters: { period: "latest_run" },
     helpQuery: "",
     helpTopicId: null
@@ -3961,7 +3995,7 @@
 
   function renderNavigationGroup(item) {
     const childActive = item.children.some((child) => child.route === ui.route);
-    const expanded = ui.equipmentExpanded || childActive;
+    const expanded = ui.equipmentExpanded;
     return `<div class="nav-group"><button class="nav-button nav-parent${childActive || ui.route === item.route ? " active" : ""}" type="button" data-equipment-toggle aria-expanded="${expanded}"><span>${escapeHtml(item.title)}</span><span aria-hidden="true">${expanded ? "▾" : "▸"}</span></button><div class="nav-children"${expanded ? "" : " hidden"}>${item.children.map((child) => `<button class="nav-button nav-child${ui.route === child.route ? " active" : ""}" type="button" data-route="${child.route}">${escapeHtml(child.title)}</button>`).join("")}</div></div>`;
   }
 

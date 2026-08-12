@@ -11,6 +11,14 @@
 - SR import переведён на indexes/batches/progress; 25k benchmark: 128,86 s → 1,87 s.
 - Обновлены Dashboard, Справочник, tests, benchmark и ADR-0010.
 
+## 2026-08-12 — Эксплуатационные исправления feature 010
+
+- Убрано отдельное жирное начертание родителя «Оборудование»; initial state изменён на collapsed, toggle больше не блокируется активной дочерней категорией.
+- SR-строки без inventory/serial/MAC/IP сохраняются как устройства с fallback identity и предупреждением, что возвращает пассивное AV-оборудование в counts и таблицы.
+- Более конкретный «Тип модели» получил приоритет над `Тип оборудования = controller`.
+- Подтверждено category-neutral IP matching по полной базе SR и связь результата с `deviceId`.
+- Добавлено exact auth rule для устройств Extron любой категории: `error = No credentials were accepted`; прочие производители и generic errors остаются processing errors.
+
 Мелкие правки текста, стилей и локальные багфиксы не нужно логировать, если они не влияют на архитектуру, workflow, продуктовое поведение или важные соглашения.
 
 ## 2026-08-01 — Инициализирован project workflow

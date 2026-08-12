@@ -52,3 +52,10 @@ Rule matches when category equals and all supplied specializations equal. Бол
 - `startedAt`, `elapsedMs`, `yields`
 
 Не входит в persistent state и очищается после reload вместе со всей вкладкой.
+
+## InventoryDevice fallback identity
+
+- `sourceFallbackKey`: локальный составной ключ только для строки без inventory/serial/MAC/IP.
+- Основа: normalized локация, категория, тип оборудования, тип модели, производитель, модель и наименование.
+- Ordinal различает несколько одинаково описанных экземпляров одной выгрузки.
+- Отсутствие strong/network identity создаёт warning `missing_identity`, но не исключает устройство из inventory.

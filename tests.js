@@ -161,6 +161,7 @@
     assertEqual(api.classifySrDevice({ "Тип модели": "Аудио процессор" }), "audio_processor");
     assertEqual(api.classifySrDevice({ "Тип модели": "Неизвестно" }), "other");
     assertEqual(new Set(api.EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id)).size, 7);
+    assertEqual(api.classifySrDevice({ "Тип оборудования": "controller", "Тип модели": "Коммутатор" }), "switch", "Более конкретный Тип модели должен иметь приоритет");
   });
 
   test("Время результата использует только lastModified конкретного файла", () => {
@@ -234,6 +235,8 @@
     assertEqual(api.derivePollingStatus(primary).pollStatus, "network_unreachable");
     assertEqual(api.derivePollingStatus({ ok: false, failedStage: "authorization" }).pollStatus, "authorization_error");
     assertEqual(api.derivePollingStatus({ ok: false }).pollStatus, "processing_error");
+    assertEqual(api.derivePollingStatus({ ok: false, error: "No credentials were accepted" }).pollStatus, "authorization_error");
+    assertEqual(api.derivePollingStatus({ ok: false, error: "Connection closed" }).pollStatus, "processing_error");
     assert(api.formatPollStatus("processing_error") !== api.formatPollStatus("authorization_error"));
   });
 
@@ -1025,6 +1028,78 @@
     assertEqual(result.state.inventoryDevices.length, 600);
     assert(yields >= 5);
     ["Обработка строк", "Формирование перечня оборудования", "Обновление аналитики", "Готово"].forEach((stage) => assert(progress.some((item) => item.stage === stage), stage));
+  });
+
+  test("SR import сохраняет пассивные устройства без inventory, serial, MAC и IP", async () => {
+    const passive = (name) => srRow({
+      "Тип оборудования": "device", "Тип модели": "Аудио процессор", "Наименование": name,
+      "Инвентарный номер": "", "Серийный номер": "", MAC: "", IP: "", "SIP URI": ""
+    });
+    const first = await api.processSrImportRows(api.createDemoState(), {
+      filename: "passive-1.xlsx", headers: srHeaders(), rawSha256: "passive-1", rows: [passive("DSP"), passive("DSP")], yieldControl: async () => {}
+    });
+    assert(first.ok, first.errors?.join("; "));
+    assertEqual(first.acceptedCount, 2);
+    assertEqual(first.rejectedCount, 0);
+    assertEqual(first.state.inventoryDevices.filter((item) => item.category === "audio_processor").length, 2);
+    assertEqual(first.state.inventoryIssues.filter((item) => item.kind === "missing_identity").length, 2);
+    const stableIds = first.state.inventoryDevices.map((item) => item.id).sort().join(",");
+    const second = await api.processSrImportRows(first.state, {
+      filename: "passive-2.xlsx", headers: srHeaders(), rawSha256: "passive-2", rows: [passive("DSP"), passive("DSP")], yieldControl: async () => {}
+    });
+    assertEqual(second.state.inventoryDevices.length, 2);
+    assertEqual(second.state.inventoryDevices.map((item) => item.id).sort().join(","), stableIds);
+  });
+
+  test("Все семь inventory-таблиц получают строки SR без polling history", async () => {
+    const rows = api.EQUIPMENT_CATEGORY_CATALOG.map((category, index) => srRow({
+      "Тип оборудования": category.id === "controller" ? "controller" : "device",
+      "Тип модели": category.id === "controller" ? "Контроллер" : category.srValue,
+      "Наименование": `Без опроса ${index}`,
+      "Инвентарный номер": "", "Серийный номер": "", MAC: "", IP: "", "SIP URI": ""
+    }));
+    const imported = await api.processSrImportRows(api.createDemoState(), {
+      filename: "seven-tables.xlsx", headers: srHeaders(), rawSha256: "seven-tables", rows, yieldControl: async () => {}
+    });
+    api.EQUIPMENT_CATEGORY_IDS.forEach((category) => {
+      assertEqual(api.filterInventoryDevices(imported.state, category, {}).length, 1, `Таблица ${category}`);
+    });
+  });
+
+  test("Polling JSON сопоставляется по IP со всей базой SR независимо от категории", async () => {
+    const importedSr = await api.processSrImportRows(api.createDemoState(), {
+      filename: "all-equipment.xlsx", headers: srHeaders(), rawSha256: "all-equipment",
+      rows: [srRow({ "Тип оборудования": "device", "Тип модели": "Скалер", "Производитель": "Synthetic", IP: "10.88.0.7" })], yieldControl: async () => {}
+    });
+    const device = importedSr.state.inventoryDevices[0];
+    const polling = await api.processPollingImportBatches(importedSr.state, {
+      files: [{ name: "10.88.0.7.json", relativePath: "root/2026-08-12_12-00-00/10.88.0.7.json", lastModified: Date.UTC(2026, 7, 12, 12), text: JSON.stringify({ ok: true }) }],
+      yieldControl: async () => {}
+    });
+    assert(polling.ok, polling.errors?.join("; "));
+    assertEqual(polling.state.pollingResults[0].deviceId, device.id);
+    assertEqual(polling.state.pollingResults[0].matchStatus, "matched");
+  });
+
+  test("No credentials were accepted означает auth error для любого устройства Extron из SR", async () => {
+    const importedSr = await api.processSrImportRows(api.createDemoState(), {
+      filename: "auth-scope.xlsx", headers: srHeaders(), rawSha256: "auth-scope", rows: [
+        srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron", IP: "10.89.0.8", "Инвентарный номер": "AUTH-1" }),
+        srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Crestron", IP: "10.89.0.9", "Инвентарный номер": "AUTH-2", "Серийный номер": "AUTH-SN-2", MAC: "00-11-22-33-44-99" }),
+        srRow({ "Тип оборудования": "device", "Тип модели": "Скалер", "Производитель": "Extron", IP: "10.89.0.10", "Инвентарный номер": "AUTH-3", "Серийный номер": "AUTH-SN-3", MAC: "00-11-22-33-44-AA" })
+      ], yieldControl: async () => {}
+    });
+    const payload = JSON.stringify({ ok: false, error: "No credentials were accepted" });
+    const polling = await api.processPollingImportBatches(importedSr.state, {
+      files: [
+        { name: "10.89.0.8.json", relativePath: "root/2026-08-12_12-10-00/10.89.0.8.json", lastModified: Date.UTC(2026, 7, 12, 12, 10), text: payload },
+        { name: "10.89.0.9.json", relativePath: "root/2026-08-12_12-10-00/10.89.0.9.json", lastModified: Date.UTC(2026, 7, 12, 12, 10), text: payload },
+        { name: "10.89.0.10.json", relativePath: "root/2026-08-12_12-10-00/10.89.0.10.json", lastModified: Date.UTC(2026, 7, 12, 12, 10), text: payload }
+      ], yieldControl: async () => {}
+    });
+    assertEqual(polling.state.pollingResults.find((item) => item.filenameIp === "10.89.0.8").operationalStatus, "authorization_error");
+    assertEqual(polling.state.pollingResults.find((item) => item.filenameIp === "10.89.0.9").operationalStatus, "processing_error");
+    assertEqual(polling.state.pollingResults.find((item) => item.filenameIp === "10.89.0.10").operationalStatus, "authorization_error");
   });
 
   test("Selective changes используют только утверждённые русские параметры", () => {

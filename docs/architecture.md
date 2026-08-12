@@ -7,6 +7,9 @@
 - Время run берётся из имени папки, а время результата — только из `File.lastModified`; при отсутствии evidence хранится `null/unavailable`.
 - SR import строит неперсистентные location/identity indexes, обрабатывает строки batches и yield-ит browser event loop.
 - Polling raw history сохраняется полностью, но DeviceChange строится только по утверждённым rules.
+- Все SR-строки участвуют в inventory: при отсутствии inventory/serial/MAC/IP применяется локальная fallback identity, а не отбрасывание строки.
+- Polling matching строит один IP-index по всему inventory SR и не ограничивает кандидатов открытым модулем или категорией.
+- Статус Extron authorization подтверждается exact `error = No credentials were accepted` для однозначно связанного устройства Extron любой категории.
 
 ## Текущий статус
 

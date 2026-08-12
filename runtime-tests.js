@@ -108,6 +108,7 @@ test("Polling success без verified protocol fail-closed и не читает 
 
 test("Target navigation и загрузка соответствуют единственному файловому режиму", () => {
   const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+  const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
   const navigation = productCatalog.buildNavigation();
   const routes = navigation.map((item) => item.route);
   equal(routes.join(","), "dashboard,equipment,upload,settings,reference");
@@ -118,6 +119,10 @@ test("Target navigation и загрузка соответствуют един�
   assert(source.includes('data-polling-import-form'));
   assert(source.includes('webkitdirectory directory multiple'));
   assert(!source.includes('data-import-credentials'));
+  assert(source.includes('equipmentExpanded: false'), "Оборудование должно быть свёрнуто при старте");
+  assert(!source.includes('ui.equipmentExpanded || childActive'), "Active child не должен блокировать сворачивание");
+  const parentStyle = styles.match(/\.nav-parent\s*\{([^}]*)\}/)?.[1] || "";
+  assert(!/font-weight\s*:/.test(parentStyle), "Родитель Оборудование не должен иметь отдельное усиление шрифта");
 });
 
 test("Прямой index.html использует непостоянный file mode и не показывает удалённые уведомления", () => {
