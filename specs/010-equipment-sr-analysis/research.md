@@ -44,3 +44,11 @@ Synthetic workbook содержит все обязательные SR columns, 
 **Решение**: allowlist вместо полного flatten. Начальная конфигурация включает только уже доказанно используемые Extron paths: тип контроллера и версия прошивки для контроллеров/панелей. Новые категории и прочие производители получают пустой список. Raw JSON при этом сохраняется.
 
 **Отклонено**: универсальный diff всего `webBlocks`, blacklist timestamps и предположение о полях новых manufacturers — эти подходы создают шум либо выдумывают бизнес-смысл.
+
+## Current и historical IP matching
+
+**Обнаружение**: прежний polling index включал `[device.ipNormalized, ...device.ipHistory]`. Поэтому JSON с IP `.100` мог получить `deviceId` скалера с current `.102`, если `.100` находился в его истории.
+
+**Решение**: строить current index только из `inCurrentSr !== false` и текущего `ipNormalized`; historical index сохранять отдельно исключительно для диагностической подсказки. Подтверждённые внутренние paths реальных поддержанных форматов — top-level `$.ip` локального polling output и `$.webBlocks['LAN Settings']['IP Address']` Extron legacy/v1. Доступный валидный IP должен согласовываться с basename файла; неизвестные paths не угадываются.
+
+**Сложность**: оба индекса строятся одним O(N + history) проходом при создании context, затем каждый JSON выполняет один O(1) current lookup и optional O(1) diagnostic lookup. Возврата к JSON × SR scan нет.

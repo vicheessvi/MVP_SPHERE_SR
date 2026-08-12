@@ -13,7 +13,7 @@
 - Сохранить legacy-функции как эталон, но перевести UI на `processPollingImportBatches`.
 - Читать по 32 файла с bounded concurrency 2–6 и освобождать raw batch после обработки.
 - После каждого пакета отдавать управление event loop через `scheduler.yield` с `setTimeout(0)` fallback.
-- Один раз строить Map/Set индексы IP, запусков, дубликатов, истории и change-пар; переиспользовать context, пока identity state актуален.
+- Один раз строить Map/Set индексы current IP, diagnostic historical IP, запусков, дубликатов, истории и change-пар; только current IP участвует в matching, context переиспользуется, пока identity state актуален.
 - Применять новый результат атомарно к каноническому in-memory state без full-state clone.
 - При late arrival бинарно вставлять результат и пересчитывать только две затронутые соседние пары.
 - Обновлять progress DOM не чаще 10 раз/с; Dashboard не считать внутри pipeline.

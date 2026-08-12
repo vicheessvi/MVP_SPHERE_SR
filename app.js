@@ -126,6 +126,7 @@
         { id: "logic-result-time", title: "Дата и время опроса", summary: "Для отдельного JSON используется доступное браузеру время последнего изменения файла.", details: "Это не время создания файла. Если File API не предоставляет валидное значение, время результата остаётся неизвестным; дата папки используется только для группировки запуска.", keywords: ["lastModified", "время файла", "время опроса"] },
         { id: "logic-batch-progress", title: "Массовая загрузка результатов", summary: "Результаты опросов обрабатываются пакетно. Во время загрузки отображается количество найденных и обработанных файлов, ошибки, скорость обработки и примерное оставшееся время.", details: "Повторно уже загруженные результаты пропускаются, если инструмент может надёжно определить, что они уже были импортированы. Активную загрузку можно остановить без удаления уже обработанных результатов.", keywords: ["прогресс", "скорость", "оставшееся время", "дубликат", "отмена"] },
         { id: "logic-matching", title: "Сопоставление с SR", summary: "IP-адрес из имени файла результата сравнивается с IP-адресами выгрузки SR.", details: "При единственном совпадении результат связывается с оборудованием и локацией; иначе сохраняется как требующий проверки.", keywords: ["matching", "unmatched"] },
+        { id: "logic-current-ip-matching", title: "Актуальный IP при сопоставлении", summary: "Результат опроса связывается только с текущим IP устройства из актуальной выгрузки SR.", details: "Исторические адреса из ipHistory сохраняются для справки, но не используются для автоматической привязки новых JSON. Если надёжный IP внутри JSON или тип оборудования противоречит имени файла и SR, результат сохраняется отдельно как конфликт данных и не меняет состояние устройства.", keywords: ["актуальный ip", "iphistory", "конфликт ip", "конфликт типа оборудования"] },
         { id: "logic-passive-sr", title: "Оборудование без идентификаторов", summary: "Строка SR без inventory, serial, MAC и IP всё равно отображается в соответствующей категории.", details: "Инструмент показывает предупреждение и использует локальную составную идентичность из помещения и описания оборудования. Такое устройство нельзя автоматически связать с JSON по IP, пока IP отсутствует в SR.", keywords: ["пассивное оборудование", "без ip", "missing identity"] },
         { id: "logic-no-network", title: "Как определяется отсутствие ответа", summary: "Перед получением данных инструмент может проверить сетевую доступность; отсутствие ответа отмечается статусом «Нет ответа по сети».", keywords: ["failedStage", "Ping.ok", "ping"] },
         { id: "logic-auth", title: "Как определяется ошибка авторизации", summary: "Для любого устройства Extron подтверждённым признаком является точное значение error = No credentials were accepted.", details: "Категория устройства Extron не ограничивает это правило. Другие значения error, ошибки чтения, обработки и сетевой доступности не называются ошибкой авторизации. Статус применяется после однозначной связи файла с устройством Extron из SR.", keywords: ["authorization", "no credentials were accepted", "extron"] },
@@ -169,7 +170,8 @@
       invalid_filename_ip: `Не удалось определить IP-адрес по имени файла ${filename}. Переименуйте файл по IP-адресу устройства.`,
       unmatched_ip: `Устройство с IP-адресом ${ip} не найдено в текущей выгрузке SR.`,
       ambiguous_ip: `IP-адрес ${ip} соответствует нескольким устройствам. Проверьте актуальную выгрузку SR.`,
-      classification_conflict: "Категория устройства в результате опроса не совпадает с SR. Проверьте карточку оборудования.",
+      polling_ip_conflict: `IP-адрес в имени файла ${filename} не совпадает с подтверждённым IP внутри JSON. Результат не привязан к оборудованию.`,
+      classification_conflict: "Конфликт типа оборудования: категория результата опроса не совпадает с актуальной SR. Результат не привязан к оборудованию.",
       invalid_ip: "В выгрузке SR указан некорректный IP-адрес. Проверьте исходную строку.",
       missing_identity: "Устройство сохранено в перечне, но в строке SR нет inventory/serial/MAC/IP. Для повторного импорта используется локальная составная идентичность по помещению и описанию.",
       ambiguous_identity: "Строка SR может относиться к нескольким устройствам. Требуется проверка идентификаторов.",
@@ -987,6 +989,91 @@
     return "unknown";
   }
 
+  function extractPollingInternalIpEvidence(payload) {
+    if (!isPlainObject(payload)) return { internalIp: null, internalIps: [], evidence: [] };
+    const blocks = getCaseInsensitive(payload, "webBlocks");
+    const lanSettings = getCaseInsensitive(blocks, "LAN Settings");
+    const candidates = [
+      { path: "$.ip", rawValue: getCaseInsensitive(payload, "ip") },
+      { path: "$.webBlocks['LAN Settings']['IP Address']", rawValue: getCaseInsensitive(lanSettings, "IP Address") }
+    ];
+    const evidence = candidates
+      .filter((item) => item.rawValue !== undefined && item.rawValue !== null && String(item.rawValue).trim() !== "")
+      .map((item) => ({ ...item, ipNormalized: normalizeIpv4(item.rawValue) }));
+    const internalIps = [...new Set(evidence.map((item) => item.ipNormalized).filter(Boolean))];
+    return { internalIp: internalIps.length === 1 ? internalIps[0] : null, internalIps, evidence };
+  }
+
+  function addPollingIpIndexValue(index, ip, device) {
+    if (!ip) return;
+    if (!index.has(ip)) index.set(ip, []);
+    const values = index.get(ip);
+    if (!values.includes(device)) values.push(device);
+  }
+
+  function createPollingInventoryIndexes(devices) {
+    const currentInventoryByIp = new Map();
+    const historicalInventoryByIp = new Map();
+    for (const device of devices || []) {
+      if (device.inCurrentSr !== false && device.ipNormalized) addPollingIpIndexValue(currentInventoryByIp, device.ipNormalized, device);
+      for (const historicalIp of new Set(device.ipHistory || [])) {
+        if (historicalIp && historicalIp !== device.ipNormalized) addPollingIpIndexValue(historicalInventoryByIp, historicalIp, device);
+      }
+    }
+    return { currentInventoryByIp, historicalInventoryByIp };
+  }
+
+  function resolvePollingInventoryMatch(input) {
+    const filenameIp = input?.filenameIp || null;
+    const currentCandidates = Array.isArray(input?.currentCandidates) ? input.currentCandidates : [];
+    const historicalCandidates = Array.isArray(input?.historicalCandidates) ? input.historicalCandidates : [];
+    const detectedCategory = input?.detectedCategory || "unknown";
+    const internal = extractPollingInternalIpEvidence(input?.payload);
+    const historicalCandidateDeviceIds = [...new Set(historicalCandidates.map((device) => device.id).filter(Boolean))];
+    const internalIpConflict = internal.internalIps.length > 1
+      || Boolean(filenameIp && internal.internalIps.some((ip) => ip !== filenameIp));
+    const base = {
+      device: null,
+      currentCandidates,
+      historicalCandidateDeviceIds,
+      detectedCategory,
+      internalIp: internal.internalIp,
+      internalIps: internal.internalIps,
+      internalIpEvidence: internal.evidence
+    };
+    if (internalIpConflict) return { ...base, matchStatus: "ip_conflict", reason: "polling_ip_conflict" };
+    if (!filenameIp || !currentCandidates.length) return { ...base, matchStatus: "unmatched", reason: "unmatched_ip" };
+    let candidates = currentCandidates;
+    if (candidates.length > 1 && detectedCategory !== "unknown") {
+      const categoryCandidates = candidates.filter((device) => device.category === detectedCategory);
+      if (categoryCandidates.length === 1) candidates = categoryCandidates;
+    }
+    if (candidates.length !== 1) return { ...base, currentCandidates: candidates, matchStatus: "ambiguous", reason: "ambiguous_ip" };
+    const candidate = candidates[0];
+    if (detectedCategory !== "unknown" && candidate.category !== detectedCategory) {
+      return { ...base, currentCandidates: candidates, matchStatus: "category_conflict", reason: "classification_conflict" };
+    }
+    return { ...base, currentCandidates: candidates, device: candidate, matchStatus: "matched", reason: null };
+  }
+
+  function pollingMatchIssueInput(match, filenameIp) {
+    if (!match || match.matchStatus === "matched") return null;
+    const candidateIds = match.currentCandidates.map((device) => device.id);
+    const details = {
+      filenameIp: filenameIp || null,
+      internalIps: match.internalIps,
+      internalIpEvidence: match.internalIpEvidence,
+      candidateIds,
+      historicalCandidateDeviceIds: match.historicalCandidateDeviceIds,
+      jsonCategory: match.detectedCategory,
+      srCategories: [...new Set(match.currentCandidates.map((device) => device.category))]
+    };
+    if (match.matchStatus === "ip_conflict") return { kind: "polling_ip_conflict", message: "IP имени файла не совпадает с подтверждённым IP внутри JSON", details };
+    if (match.matchStatus === "category_conflict") return { kind: "classification_conflict", message: "Тип оборудования JSON не совпадает с типом текущего устройства SR", details };
+    if (match.matchStatus === "ambiguous") return { kind: "ambiguous_ip", message: `IP ${filenameIp || "не определён"} соответствует нескольким текущим устройствам SR`, details };
+    return { kind: "unmatched_ip", message: filenameIp ? `Текущий IP ${filenameIp} не найден в актуальной SR` : "IP отсутствует", details };
+  }
+
   function derivePollingStatus(payload) {
     const failedStage = normalizeText(getCaseInsensitive(payload, "failedStage"));
     const explicitError = normalizeText(getCaseInsensitive(payload, "error"));
@@ -1607,7 +1694,7 @@
     const periodChanges = scopedChanges.filter((change) => period.includes(change.detectedAt));
     const issueTime = (issue) => issue.timestamp || issue.createdAt || candidateState.pollingResults.find((result) => result.id === issue.sourceId)?.importedAt;
     const periodIssues = candidateState.inventoryIssues.filter((issue) => issue.status !== "closed" && period.includes(issueTime(issue)) && (!issue.deviceId || scopedIds.has(issue.deviceId)));
-    const dataIssueKinds = new Set(["malformed_json", "invalid_filename_ip", "unmatched_ip", "ambiguous_ip", "classification_conflict", "invalid_ip", "missing_identity", "ambiguous_identity", "unknown_category"]);
+    const dataIssueKinds = new Set(["malformed_json", "invalid_filename_ip", "unmatched_ip", "ambiguous_ip", "polling_ip_conflict", "classification_conflict", "invalid_ip", "missing_identity", "ambiguous_identity", "unknown_category"]);
     const openDataIssues = candidateState.inventoryIssues.filter((issue) => issue.status !== "closed" && dataIssueKinds.has(issue.kind) && (!issue.deviceId || scopedIds.has(issue.deviceId)));
     const unmatchedResults = candidateState.pollingResults.filter((result) => result.matchStatus === "unmatched" && (period.kind === "all" || result.runId === latestRun?.id || period.includes(result.capturedAt)));
     const locationAgg = new Map();
@@ -1728,17 +1815,26 @@
     let payload = null;
     let parseError = null;
     try { payload = JSON.parse(rawText); } catch (error) { parseError = error.message || String(error); }
-    const candidates = ipInfo.ip ? next.inventoryDevices.filter((device) => device.ipNormalized === ipInfo.ip || (device.ipHistory || []).includes(ipInfo.ip)) : [];
-    const device = candidates.length === 1 ? candidates[0] : null;
     const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
+    const { currentInventoryByIp, historicalInventoryByIp } = createPollingInventoryIndexes(next.inventoryDevices);
+    const match = resolvePollingInventoryMatch({
+      filenameIp: ipInfo.ip,
+      payload,
+      detectedCategory,
+      currentCandidates: ipInfo.ip ? (currentInventoryByIp.get(ipInfo.ip) || []) : [],
+      historicalCandidates: ipInfo.ip ? (historicalInventoryByIp.get(ipInfo.ip) || []) : []
+    });
+    const device = match.device;
     const status = payload ? scopePollingStatusToInventory(derivePollingStatus(payload), device) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", authorizationEvidence: null, rebootCount: null, gcPlus: null };
     const result = {
       id: createId("polling-result"), runId: run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
       deviceId: device?.id || null, capturedAt: resultTimestamp.capturedAt, capturedAtSource: resultTimestamp.source, sourceLastModified: resultTimestamp.sourceLastModified, importedAt: input.importedAt || nowIso(),
       rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
-      detectedCategory, matchStatus: device ? "matched" : candidates.length > 1 ? "ambiguous" : "unmatched",
-      classificationConflict: Boolean(device && detectedCategory !== "unknown" && device.category !== detectedCategory),
+      detectedCategory, matchStatus: match.matchStatus,
+      classificationConflict: match.matchStatus === "category_conflict",
+      internalIp: match.internalIp, internalIpEvidence: match.internalIpEvidence,
+      historicalCandidateDeviceIds: match.historicalCandidateDeviceIds,
       normalizedData: payload ? pollingPayloadProjection(payload) : {}, ...status
     };
     result.operationalStatus = parseError ? "processing_error" : !device ? "unmatched" : status.pollStatus;
@@ -1747,8 +1843,8 @@
     if (result.operationalStatus === "success") run.successCount += 1; else run.errorCount += 1;
     if (parseError) next.inventoryIssues.push(createInventoryIssue({ kind: "malformed_json", sourceType: "polling_result", sourceId: result.id, message: `JSON не прочитан: ${parseError}` }));
     if (!ipInfo.ok) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_filename_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.error }));
-    if (!device) next.inventoryIssues.push(createInventoryIssue({ kind: candidates.length > 1 ? "ambiguous_ip" : "unmatched_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.ip ? `IP ${ipInfo.ip} не сопоставлен однозначно` : "IP отсутствует" }));
-    if (result.classificationConflict) next.inventoryIssues.push(createInventoryIssue({ kind: "classification_conflict", sourceType: "polling_result", sourceId: result.id, deviceId: device.id, message: `SR=${device.category}, JSON=${detectedCategory}` }));
+    const matchIssue = pollingMatchIssueInput(match, ipInfo.ip);
+    if (matchIssue) next.inventoryIssues.push(createInventoryIssue({ ...matchIssue, sourceType: "polling_result", sourceId: result.id }));
     if (device) rebuildDeviceChanges(next, device.id);
     next = appendHistory(next, { actorId: input.actorId || "system", action: "Импортирован результат опроса", entityType: "polling_result", entityId: result.id, details: `${result.filename}: ${result.matchStatus}` });
     return { ok: true, outcome: parseError ? "failed" : result.matchStatus, state: next, pollingResultId: result.id, runId: run.id, errors: parseError ? [parseError] : [] };
@@ -1882,14 +1978,7 @@
   }
 
   function createPollingImportContext(candidateState) {
-    const inventoryByIp = new Map();
-    for (const device of candidateState.inventoryDevices) {
-      const addresses = new Set([device.ipNormalized, ...(device.ipHistory || [])].filter(Boolean));
-      for (const address of addresses) {
-        if (!inventoryByIp.has(address)) inventoryByIp.set(address, []);
-        inventoryByIp.get(address).push(device);
-      }
-    }
+    const { currentInventoryByIp, historicalInventoryByIp } = createPollingInventoryIndexes(candidateState.inventoryDevices);
     const runByIdentity = new Map(candidateState.pollingRuns.filter((run) => run.identityKey).map((run) => [run.identityKey, run]));
     const duplicateKeys = new Set(candidateState.pollingResults.map((result) => pollingDuplicateKey(result.runId, result.filename, result.rawSha256)));
     const historyByDevice = new Map();
@@ -1905,7 +1994,7 @@
       if (!changesByPair.has(key)) changesByPair.set(key, []);
       changesByPair.get(key).push(change);
     }
-    return { state: candidateState, inventoryByIp, runByIdentity, duplicateKeys, historyByDevice, changesByPair, removedChangeIds: new Set() };
+    return { state: candidateState, currentInventoryByIp, historicalInventoryByIp, runByIdentity, duplicateKeys, historyByDevice, changesByPair, removedChangeIds: new Set() };
   }
 
   function defaultPollingReadConcurrency() {
@@ -2017,13 +2106,15 @@
 
     const ipInfo = parsePollingFilenameIp(input.name || "");
     const matchingStarted = monotonicNow();
-    const candidates = ipInfo.ip ? (context.inventoryByIp.get(ipInfo.ip) || []) : [];
+    const currentCandidates = ipInfo.ip ? (context.currentInventoryByIp.get(ipInfo.ip) || []) : [];
+    const historicalCandidates = ipInfo.ip ? (context.historicalInventoryByIp.get(ipInfo.ip) || []) : [];
     if (ipInfo.ip) metrics.srLookups += 1;
-    const device = candidates.length === 1 ? candidates[0] : null;
+    const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
+    const match = resolvePollingInventoryMatch({ filenameIp: ipInfo.ip, payload, detectedCategory, currentCandidates, historicalCandidates });
+    const device = match.device;
     metrics.stagesMs.srMatching += monotonicNow() - matchingStarted;
 
     const normalizationStarted = monotonicNow();
-    const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
     const status = payload ? scopePollingStatusToInventory(derivePollingStatus(payload), device) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", authorizationEvidence: null, rebootCount: null, gcPlus: null };
     const normalizedData = payload ? pollingPayloadProjection(payload) : {};
     const timestamp = resolvePollingResultTimestamp(input);
@@ -2035,8 +2126,10 @@
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
       deviceId: device?.id || null, capturedAt: timestamp.capturedAt, capturedAtSource: timestamp.source, sourceLastModified: timestamp.sourceLastModified, importedAt: input.importedAt || nowIso(),
       rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
-      detectedCategory, matchStatus: device ? "matched" : candidates.length > 1 ? "ambiguous" : "unmatched",
-      classificationConflict: Boolean(device && detectedCategory !== "unknown" && device.category !== detectedCategory),
+      detectedCategory, matchStatus: match.matchStatus,
+      classificationConflict: match.matchStatus === "category_conflict",
+      internalIp: match.internalIp, internalIpEvidence: match.internalIpEvidence,
+      historicalCandidateDeviceIds: match.historicalCandidateDeviceIds,
       normalizedData, ...status
     };
     result.operationalStatus = parseError ? "processing_error" : !device ? "unmatched" : status.pollStatus;
@@ -2046,8 +2139,8 @@
     if (result.operationalStatus === "success") input.run.successCount += 1; else input.run.errorCount += 1;
     if (parseError) context.state.inventoryIssues.push(createInventoryIssue({ kind: "malformed_json", sourceType: "polling_result", sourceId: result.id, message: `JSON не прочитан: ${parseError}` }));
     if (!ipInfo.ok) context.state.inventoryIssues.push(createInventoryIssue({ kind: "invalid_filename_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.error }));
-    if (!device) context.state.inventoryIssues.push(createInventoryIssue({ kind: candidates.length > 1 ? "ambiguous_ip" : "unmatched_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.ip ? `IP ${ipInfo.ip} не сопоставлен однозначно` : "IP отсутствует" }));
-    if (result.classificationConflict) context.state.inventoryIssues.push(createInventoryIssue({ kind: "classification_conflict", sourceType: "polling_result", sourceId: result.id, deviceId: device.id, message: `SR=${device.category}, JSON=${detectedCategory}` }));
+    const matchIssue = pollingMatchIssueInput(match, ipInfo.ip);
+    if (matchIssue) context.state.inventoryIssues.push(createInventoryIssue({ ...matchIssue, sourceType: "polling_result", sourceId: result.id }));
     const changesStarted = monotonicNow();
     insertIndexedPollingHistory(context, result, metrics);
     metrics.stagesMs.changeDetection += monotonicNow() - changesStarted;
@@ -3697,6 +3790,8 @@
     deepClone,
     deriveLegacyMetadata,
     derivePollingStatus,
+    extractPollingInternalIpEvidence,
+    resolvePollingInventoryMatch,
     resolvePollingResultTimestamp,
     detectExtronJsonDeviceType,
     detectSecrets,

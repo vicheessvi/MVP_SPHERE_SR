@@ -1081,6 +1081,114 @@
     assertEqual(polling.state.pollingResults[0].matchStatus, "matched");
   });
 
+  test("Current IP контроллера .100 имеет приоритет над historical IP скалера .102", async () => {
+    const importedSr = await api.processSrImportRows(api.createDemoState(), {
+      filename: "current-vs-history.xlsx", headers: srHeaders(), rawSha256: "current-vs-history", rows: [
+        srRow({ "Тип оборудования": "device", "Тип модели": "Скалер", "Производитель": "Extron", IP: "192.0.2.102", "Инвентарный номер": "SCALER-102", "Серийный номер": "SCALER-SN-102", MAC: "02-00-00-00-01-02" }),
+        srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron", IP: "192.0.2.100", "Инвентарный номер": "CONTROLLER-100", "Серийный номер": "CONTROLLER-SN-100", MAC: "02-00-00-00-01-00" })
+      ], yieldControl: async () => {}
+    });
+    const scaler = importedSr.state.inventoryDevices.find((item) => item.category === "scaler");
+    const controller = importedSr.state.inventoryDevices.find((item) => item.category === "controller");
+    scaler.ipHistory = ["192.0.2.100"];
+    const context = api.createPollingImportContext(importedSr.state);
+    assertEqual(context.currentInventoryByIp.get("192.0.2.100")[0].id, controller.id);
+    assertEqual(context.historicalInventoryByIp.get("192.0.2.100")[0].id, scaler.id);
+    const payload = { ip: "192.0.2.100", ok: true, ping: { ok: true }, webBlocks: { "Project Info": { "Controller Type": "Primary Controller" }, "LAN Settings": { "IP Address": "192.0.2.100" } } };
+    const polling = await api.processPollingImportBatches(importedSr.state, {
+      context,
+      files: [{ name: "192.0.2.100.json", relativePath: "root/2026-08-12_13-00-00/192.0.2.100.json", lastModified: Date.UTC(2026, 7, 12, 13), text: JSON.stringify(payload) }],
+      yieldControl: async () => {}
+    });
+    const result = polling.state.pollingResults[0];
+    assertEqual(result.deviceId, controller.id);
+    assertEqual(result.matchStatus, "matched");
+    assertEqual(polling.state.pollingResults.filter((item) => item.deviceId === scaler.id).length, 0);
+    const scalerAnalytics = api.getInventoryAnalytics(polling.state, "scaler");
+    assertEqual(scalerAnalytics.polled, 0);
+    assertEqual(scalerAnalytics.unpolled, 1);
+  });
+
+  test("Historical IP без current-кандидата не выполняет automatic matching", async () => {
+    const importedSr = await api.processSrImportRows(api.createDemoState(), {
+      filename: "history-only.xlsx", headers: srHeaders(), rawSha256: "history-only", rows: [
+        srRow({ "Тип оборудования": "device", "Тип модели": "Скалер", "Производитель": "Extron", IP: "192.0.2.102", "Инвентарный номер": "HISTORY-SCALER", "Серийный номер": "HISTORY-SN", MAC: "02-00-00-00-02-02" })
+      ], yieldControl: async () => {}
+    });
+    const scaler = importedSr.state.inventoryDevices[0];
+    scaler.ipHistory = ["192.0.2.100"];
+    const payload = { ip: "192.0.2.100", ok: true, webBlocks: { "Project Info": { "Controller Type": "Primary Controller" }, "LAN Settings": { "IP Address": "192.0.2.100" } } };
+    const polling = await api.processPollingImportBatches(importedSr.state, {
+      files: [{ name: "192.0.2.100.json", relativePath: "root/2026-08-12_13-10-00/192.0.2.100.json", text: JSON.stringify(payload) }], yieldControl: async () => {}
+    });
+    const result = polling.state.pollingResults[0];
+    assertEqual(result.deviceId, null);
+    assertEqual(result.matchStatus, "unmatched");
+    assert(result.historicalCandidateDeviceIds.includes(scaler.id));
+    assert(polling.state.inventoryIssues.some((item) => item.kind === "unmatched_ip" && item.details?.historicalCandidateDeviceIds?.includes(scaler.id)));
+    assertEqual(api.getInventoryAnalytics(polling.state, "scaler").polled, 0);
+  });
+
+  test("Конфликт категории controller JSON и scaler SR блокирует привязку", async () => {
+    const importedSr = await api.processSrImportRows(api.createDemoState(), {
+      filename: "category-conflict.xlsx", headers: srHeaders(), rawSha256: "category-conflict", rows: [
+        srRow({ "Тип оборудования": "device", "Тип модели": "Скалер", "Производитель": "Extron", IP: "192.0.2.100", "Инвентарный номер": "CATEGORY-SCALER" })
+      ], yieldControl: async () => {}
+    });
+    const scaler = importedSr.state.inventoryDevices[0];
+    const payload = { ip: "192.0.2.100", ok: true, webBlocks: { "Project Info": { "Controller Type": "Primary Controller" }, "LAN Settings": { "IP Address": "192.0.2.100" } } };
+    const polling = await api.processPollingImportBatches(importedSr.state, {
+      files: [{ name: "192.0.2.100.json", relativePath: "root/2026-08-12_13-20-00/192.0.2.100.json", text: JSON.stringify(payload) }], yieldControl: async () => {}
+    });
+    const result = polling.state.pollingResults[0];
+    assertEqual(result.deviceId, null);
+    assertEqual(result.matchStatus, "category_conflict");
+    assertEqual(result.classificationConflict, true);
+    assert(polling.state.inventoryIssues.some((item) => item.kind === "classification_conflict"));
+    assertEqual(polling.state.pollingResults.filter((item) => item.deviceId === scaler.id).length, 0);
+    assertEqual(api.getInventoryAnalytics(polling.state, "scaler").polled, 0);
+  });
+
+  test("Категория JSON безопасно уточняет duplicate current IP", async () => {
+    const importedSr = await api.processSrImportRows(api.createDemoState(), {
+      filename: "duplicate-current-ip.xlsx", headers: srHeaders(), rawSha256: "duplicate-current-ip", rows: [
+        srRow({ "Тип оборудования": "device", "Тип модели": "Скалер", "Производитель": "Extron", IP: "192.0.2.100", "Инвентарный номер": "DUP-SCALER", "Серийный номер": "DUP-SCALER-SN", MAC: "02-00-00-00-03-01" }),
+        srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron", IP: "192.0.2.100", "Инвентарный номер": "DUP-CONTROLLER", "Серийный номер": "DUP-CONTROLLER-SN", MAC: "02-00-00-00-03-02" })
+      ], yieldControl: async () => {}
+    });
+    const controller = importedSr.state.inventoryDevices.find((item) => item.category === "controller");
+    const polling = await api.processPollingImportBatches(importedSr.state, {
+      files: [{ name: "192.0.2.100.json", relativePath: "root/2026-08-12_13-25-00/192.0.2.100.json", text: JSON.stringify({ ok: true, webBlocks: { "Project Info": { "Controller Type": "Primary Controller" } } }) }],
+      yieldControl: async () => {}
+    });
+    assertEqual(polling.state.pollingResults[0].deviceId, controller.id);
+    assertEqual(polling.state.pollingResults[0].matchStatus, "matched");
+  });
+
+  test("Внутренний IP JSON подтверждает matching и блокирует конфликт адресов", async () => {
+    const importedSr = await api.processSrImportRows(api.createDemoState(), {
+      filename: "internal-ip.xlsx", headers: srHeaders(), rawSha256: "internal-ip", rows: [
+        srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron", IP: "192.0.2.100", "Инвентарный номер": "INTERNAL-IP-100" })
+      ], yieldControl: async () => {}
+    });
+    const controller = importedSr.state.inventoryDevices[0];
+    const payload = (ip) => ({ ip, ok: true, webBlocks: { "Project Info": { "Controller Type": "Primary Controller" }, "LAN Settings": { "IP Address": ip } } });
+    const polling = await api.processPollingImportBatches(importedSr.state, {
+      files: [
+        { name: "192.0.2.100.json", relativePath: "root/2026-08-12_13-30-00/192.0.2.100.json", lastModified: 1000, text: JSON.stringify(payload("192.0.2.100")) },
+        { name: "192.0.2.100.json", relativePath: "root/2026-08-12_13-31-00/192.0.2.100.json", lastModified: 2000, text: JSON.stringify(payload("192.0.2.101")) }
+      ], yieldControl: async () => {}
+    });
+    const matched = polling.state.pollingResults.find((item) => item.internalIp === "192.0.2.100");
+    const conflict = polling.state.pollingResults.find((item) => item.internalIp === "192.0.2.101");
+    assertEqual(matched.deviceId, controller.id);
+    assertEqual(matched.matchStatus, "matched");
+    assertEqual(conflict.deviceId, null);
+    assertEqual(conflict.matchStatus, "ip_conflict");
+    assert(polling.state.inventoryIssues.some((item) => item.kind === "polling_ip_conflict" && item.details?.filenameIp === "192.0.2.100" && item.details?.internalIps?.includes("192.0.2.101")));
+    assertEqual(polling.state.pollingResults.filter((item) => item.deviceId === controller.id).length, 1);
+  });
+
   test("No credentials were accepted означает auth error для любого устройства Extron из SR", async () => {
     const importedSr = await api.processSrImportRows(api.createDemoState(), {
       filename: "auth-scope.xlsx", headers: srHeaders(), rawSha256: "auth-scope", rows: [
@@ -1392,6 +1500,8 @@
     const payload = { ok: true, ping: { ok: true }, webBlocks: { "Project Info": { "Controller Type": "Primary Controller" } } };
     const result = await api.ingestPollingRunFiles(sr.state, { folderName: "2026-06-01_09-41-28", files: [{ name: "10.10.20.30.json", text: JSON.stringify(payload) }] });
     assertEqual(result.state.pollingResults[0].classificationConflict, true);
+    assertEqual(result.state.pollingResults[0].deviceId, null);
+    assertEqual(result.state.pollingResults[0].matchStatus, "category_conflict");
     assert(result.state.inventoryIssues.some((item) => item.kind === "classification_conflict"));
   });
 

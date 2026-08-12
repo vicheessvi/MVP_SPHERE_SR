@@ -85,7 +85,10 @@ README.md
 8. SR-строки без strong/network identity не отбрасываются: им назначается детерминированный fallback key из локации и технического описания с ordinal для одинаковых строк; предупреждение сохраняется.
 9. Классификация сначала проверяет все утверждённые значения «Тип модели», затем использует `Тип оборудования = controller` как fallback.
 10. Навигационное состояние не зависит от active child: initial `false`, последующие toggle отражают только действие пользователя.
-11. Exact Extron marker `error = No credentials were accepted` является единственным новым auth evidence; IP matching продолжает использовать полный inventory index.
+11. Exact Extron marker `error = No credentials were accepted` является единственным новым auth evidence; IP lookup охватывает весь актуальный inventory без ограничения открытой категорией.
+12. Polling context разделяет `currentInventoryByIp` (только `inCurrentSr !== false` и текущий `ipNormalized`) и `historicalInventoryByIp` (только диагностика); automatic matching никогда не читает historical index.
+13. После current-IP lookup resolver проверяет подтверждённые внутренние IP `$.ip` и `$.webBlocks['LAN Settings']['IP Address']`, затем надёжно определённую категорию. Любой конфликт изолирует raw result без `deviceId`.
+14. При duplicate current IP категория JSON может сузить кандидатов только до единственного совпадения; иначе результат остаётся неоднозначным.
 
 ## Complexity Tracking
 

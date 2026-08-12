@@ -8,7 +8,8 @@
 - SR import строит неперсистентные location/identity indexes, обрабатывает строки batches и yield-ит browser event loop.
 - Polling raw history сохраняется полностью, но DeviceChange строится только по утверждённым rules.
 - Все SR-строки участвуют в inventory: при отсутствии inventory/serial/MAC/IP применяется локальная fallback identity, а не отбрасывание строки.
-- Polling matching строит один IP-index по всему inventory SR и не ограничивает кандидатов открытым модулем или категорией.
+- Polling matching строит `currentInventoryByIp` только из актуальных `ipNormalized` и отдельный `historicalInventoryByIp` только для диагностики. `ipHistory` никогда не назначает `deviceId` новому результату.
+- После current-IP lookup подтверждённые `$.ip` и `$.webBlocks['LAN Settings']['IP Address']` проверяются на согласованность с именем файла; надёжный конфликт категории также блокирует привязку. Raw result и issue сохраняются без влияния на device history, latest state и Dashboard equipment metrics.
 - Статус Extron authorization подтверждается exact `error = No credentials were accepted` для однозначно связанного устройства Extron любой категории.
 
 ## Текущий статус

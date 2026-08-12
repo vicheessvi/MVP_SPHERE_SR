@@ -41,3 +41,11 @@ Input включает rows, headers, metadata, optional `onProgress` и batch s
 `derivePollingStatus(payload)` не возвращает `authorization_error` без explicit confirmed authorization stage/failure. Ping failure возвращает `network_unreachable`; прочий explicit failure — `processing_error`; отсутствие evidence — `unknown`.
 
 При импорте exact `error = No credentials were accepted` сохраняется как `authorization_error` только если IP файла однозначно связан со всем inventory SR и найденное устройство является устройством Extron любой категории.
+
+## Current-IP polling matching
+
+`createPollingImportContext(state)` строит `currentInventoryByIp` только из актуального `ipNormalized`. `ipHistory` хранится в отдельном diagnostic index и не участвует в выборе устройства.
+
+`resolvePollingInventoryMatch(input)` использует нормализованный IP basename JSON, проверяет подтверждённые внутренние paths `$.ip` и `$.webBlocks['LAN Settings']['IP Address']`, блокирует internal-IP mismatch (`ip_conflict`) и надёжный category mismatch (`category_conflict`). `deviceId` возвращается только для единственного current-кандидата после проверок; historical candidates сохраняются только в diagnostic details.
+
+Результат без `deviceId` не добавляется в device history, latest device state или DeviceChange.

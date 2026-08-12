@@ -75,7 +75,7 @@ README.md
 ## Design
 
 1. `groupPollingFilesByRunFolder` остаётся единственным распознавателем и сортировщиком запусков.
-2. `createPollingImportContext` один раз строит Map/Set индексы и сортированные компактные массивы истории; UI повторно использует context, пока state identity актуален.
+2. `createPollingImportContext` один раз строит отдельные current/historical IP indexes, другие Map/Set и сортированные компактные массивы истории; только current IP index участвует в matching, UI повторно использует context, пока state identity актуален.
 3. `processPollingImportBatches` работает по группам и пакетам по 32 файла, читает их с concurrency 2–6, затем освобождает тексты.
 4. `ingestIndexedPollingFile` проверяет hash-дубликат, один раз parse/normalize, атомарно добавляет result/issue/history и изменяет только две соседние пары.
 5. После каждого пакета выполняются compact change removals, progress callback и cooperative yield (`scheduler.yield` либо `setTimeout(0)`).

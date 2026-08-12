@@ -19,10 +19,19 @@
 - `capturedAtSource`: `file_last_modified | unavailable`
 - `sourceLastModified`: исходное число ms либо `null`
 - `pollStatus`: `success | authorization_error | network_unreachable | processing_error | unknown`
-- `matchStatus`: `matched | unmatched | ambiguous`
+- `matchStatus`: `matched | unmatched | ambiguous | ip_conflict | category_conflict`
+- `internalIp`: единственный согласованный внутренний IPv4 либо `null`
+- `internalIpEvidence`: подтверждённые paths и нормализованные значения без догадок по неизвестным схемам
+- `historicalCandidateDeviceIds`: optional diagnostic IDs; не являются match candidates
 - `normalizedData`: raw-preserving technical projection
 
 Known timestamps сортируются по времени, затем стабильному file/result ID. Unknown timestamps размещаются детерминированно по import sequence и не участвуют в chronological diff.
+
+## Polling IP indexes (ephemeral)
+
+- `currentInventoryByIp`: только текущий `ipNormalized` устройства с `inCurrentSr !== false`; единственный источник automatic matching.
+- `historicalInventoryByIp`: значения `ipHistory`, используемые только для диагностической подсказки при отсутствии current match.
+- IP из historical index никогда не создаёт `deviceId` у нового результата.
 
 ## AnalyzedParameterRule
 

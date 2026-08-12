@@ -19,6 +19,14 @@
 - Подтверждено category-neutral IP matching по полной базе SR и связь результата с `deviceId`.
 - Добавлено exact auth rule для устройств Extron любой категории: `error = No credentials were accepted`; прочие производители и generic errors остаются processing errors.
 
+## 2026-08-12 — Исправлена изоляция current и historical IP
+
+- Устранён дефект, при котором новый JSON мог привязываться к чужому устройству по адресу из `ipHistory`.
+- Automatic matching переведён на current IP index актуальной SR; historical index используется только в диагностике.
+- Добавлены fail-closed проверки подтверждённого внутреннего IP и категории JSON до назначения `deviceId`.
+- Конфликтные результаты сохраняют raw provenance, но не входят в историю, latest status, Dashboard equipment metrics или changes устройства.
+- Добавлены regression `.100/.102`, history-only, reused/duplicate current IP, category conflict и internal-IP conflict.
+
 Мелкие правки текста, стилей и локальные багфиксы не нужно логировать, если они не влияют на архитектуру, workflow, продуктовое поведение или важные соглашения.
 
 ## 2026-08-01 — Инициализирован project workflow

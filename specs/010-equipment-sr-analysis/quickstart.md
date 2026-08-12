@@ -7,7 +7,8 @@
 5. Проверить success, ping failure, explicit auth failure, malformed/unmatched и отсутствие подмены auth status.
 6. Импортировать две/три версии результата Extron: firmware/controller type создают changes; timestamps/Diagnostics — нет.
 7. Перезагрузить страницу: импортированные данные должны исчезнуть.
-8. Выполнить проверки:
+8. Проверить current-IP matching: historical IP не принимает новый JSON; конфликт внутреннего IP или типа оборудования остаётся отдельной ошибкой данных.
+9. Выполнить проверки:
 
 ```powershell
 node tests.js

@@ -22,7 +22,8 @@ Progress не входит в persisted domain state и не содержит ra
 ## PollingImportContext (ephemeral)
 
 - `state`: identity канонического объекта.
-- `inventoryByIp: Map<string, InventoryDevice[]>`.
+- `currentInventoryByIp: Map<string, InventoryDevice[]>` — только актуальные current IP, используется для matching.
+- `historicalInventoryByIp: Map<string, InventoryDevice[]>` — только diagnostic history, никогда не назначает `deviceId`.
 - `runByIdentity: Map<string, PollingRun>`.
 - `duplicateKeys: Set<string>`.
 - `historyByDevice: Map<string, PollingResult[]>`, отсортировано по `polledAt` и стабильному ID.

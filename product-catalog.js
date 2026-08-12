@@ -95,7 +95,7 @@
       unknown: "Данные отсутствуют"
     },
     runStatuses: { planned: "Запланирован", completed: "Завершён", processed: "Обработан", partial: "Завершён частично", failed: "Ошибка" },
-    importOutcomes: { processed: "Обработано", partial: "Обработано частично", matched: "Найдено в SR", unmatched: "Не найдено в SR", ambiguous: "Требует проверки", duplicate: "Дубликат", failed: "Ошибка", unsupported: "Не поддерживается" },
+    importOutcomes: { processed: "Обработано", partial: "Обработано частично", matched: "Найдено в SR", unmatched: "Не найдено в SR", ambiguous: "Неоднозначное сопоставление с SR", ip_conflict: "Конфликт IP результата опроса", category_conflict: "Конфликт типа оборудования", duplicate: "Дубликат", failed: "Ошибка", unsupported: "Не поддерживается" },
     tooltips: {
       noNetwork: "Количество устройств, которые не ответили на проверку сетевой доступности.",
       notPolled: "Устройство есть в выгрузке SR, но результаты его опросов отсутствуют.",
@@ -122,7 +122,7 @@
     pingStatuses: ["ok", "failed", "unknown"],
     capabilities: ["implemented", "not_implemented", "unknown"],
     runStatuses: ["planned", "completed", "partial", "failed"],
-    importOutcomes: ["processed", "partial", "matched", "unmatched", "ambiguous", "duplicate", "failed", "unsupported"],
+    importOutcomes: ["processed", "partial", "matched", "unmatched", "ambiguous", "ip_conflict", "category_conflict", "duplicate", "failed", "unsupported"],
     tooltips: ["noNetwork", "notPolled", "changedDevices"]
   });
 

@@ -34,7 +34,7 @@ Operation count на 1 000: 1 000 000 SR comparisons, минимум 2 003 по�
 
 ## Decision 3: Индексы
 
-**Decision**: Map IP→device candidates, Set duplicate keys, Map run identity→run, Map device→sorted result references, Map adjacent pair→changes.
+**Decision**: Map current IP→device candidates для matching, отдельный Map historical IP→devices только для диагностики, Set duplicate keys, Map run identity→run, Map device→sorted result references, Map adjacent pair→changes.
 
 **Rationale**: Один линейный build заменяет scans на каждый JSON. Context кэшируется в памяти пока identity state не изменилась.
 

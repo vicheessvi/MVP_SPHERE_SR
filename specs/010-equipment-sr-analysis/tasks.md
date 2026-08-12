@@ -68,3 +68,13 @@ Tasks с `[P]` независимы по смыслу, но в текущем с
 - [x] T033 [P] [US2] Добавить exact Extron auth fixture и full-inventory IP matching regression tests в `tests.js`.
 - [x] T034 [US2] Реализовать exact auth evidence и подтвердить category-neutral matching в `app.js`.
 - [x] T035 Обновить Справочник, ADR/architecture/log и выполнить все syntax/regression/runtime/reference/secret проверки.
+
+## Phase 8 — Целостность current-IP matching
+
+- [x] T036 [P] [US2] Добавить regression `.100/.102`: current controller выигрывает у historical scaler, а история скалера изолирована, в `tests.js`.
+- [x] T037 [P] [US2] Добавить tests отсутствующего current IP, reused IP и current/historical index semantics в `tests.js`.
+- [x] T038 [P] [US2] Добавить tests category conflict, согласованного и конфликтующего internal IP в `tests.js`.
+- [x] T039 [US2] Разделить current/historical indexes и реализовать единый fail-closed resolver в legacy и indexed paths `app.js`.
+- [x] T040 [US2] Добавить русскую диагностику конфликтов и правило current SR в `product-catalog.js`, `app.js`.
+- [x] T041 Обновить ADR/architecture/README/log и matching contracts без удаления `ipHistory`.
+- [x] T042 Выполнить syntax, regression, runtime/server/reference, matching performance, secret scan и `git diff --check`; не выполнять commit/push/deploy.

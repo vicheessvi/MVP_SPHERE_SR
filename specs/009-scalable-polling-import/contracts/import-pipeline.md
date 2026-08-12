@@ -26,7 +26,7 @@ Guarantees:
 - no more than configured concurrent reads;
 - run groups ordered chronologically;
 - per-file errors isolated;
-- at most one SR map lookup per non-duplicate file;
+- at most one current SR map lookup per non-duplicate file; historical IP lookup не участвует в назначении устройства;
 - duplicate skipped before parse/normalize/diff;
 - ≤2 recalculated adjacent pairs per accepted matched result;
 - progress callback receives snapshots, never raw data;
