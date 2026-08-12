@@ -1,5 +1,13 @@
 # Карта контекста
 
+## Текущая feature 010
+
+- Спецификация и план: `specs/010-equipment-sr-analysis/`.
+- Категории, модули, статусы и analyzed rules: `product-catalog.js`.
+- SR/polling/time/diff/UI: `app.js`.
+- Performance evidence: `benchmarks/sr-import-performance.js` и `specs/010-equipment-sr-analysis/research.md`.
+- Архитектурное решение: `docs/decisions/ADR-0010-equipment-analysis.md`.
+
 ## Постоянные инструкции
 
 - `AGENTS.md`

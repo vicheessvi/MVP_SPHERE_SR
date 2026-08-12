@@ -1,5 +1,13 @@
 # Архитектура
 
+## Feature 010: единое оборудование и масштабируемый SR
+
+- `product-catalog.js` хранит семь category descriptors, вложенные routes, русские presentation terms и allowlist значимых analyzed parameters.
+- Все дочерние категории используют один inventory renderer и общие selectors; Dashboard агрегирует category IDs одним проходом.
+- Время run берётся из имени папки, а время результата — только из `File.lastModified`; при отсутствии evidence хранится `null/unavailable`.
+- SR import строит неперсистентные location/identity indexes, обрабатывает строки batches и yield-ит browser event loop.
+- Polling raw history сохраняется полностью, но DeviceChange строится только по утверждённым rules.
+
 ## Текущий статус
 
 Поддерживается один пользовательский режим: непостоянный browser-only сеанс при прямом открытии `index.html`. Решение описано в ADR-0008. Интерфейс не принимает секреты и не использует постоянное browser-хранилище.

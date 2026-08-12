@@ -12,6 +12,37 @@
     return Object.freeze(value);
   }
 
+  const EQUIPMENT_CATEGORY_CATALOG = deepFreeze([
+    { id: "vcs", route: "vcs", title: "Терминалы ВКС", order: 21, srField: "Тип модели", srValue: "Video Conference", pollingProtocol: "protocol_required" },
+    { id: "controller", route: "controllers", title: "Контроллеры", order: 22, srField: "Тип оборудования", srValue: "controller", pollingProtocol: "protocol_required" },
+    { id: "panel", route: "panels", title: "Панели управления", order: 23, srField: "Тип модели", srValue: "Панель управления", pollingProtocol: "protocol_required" },
+    { id: "switch", route: "switches", title: "Коммутаторы", order: 24, srField: "Тип модели", srValue: "Коммутатор", pollingProtocol: "protocol_required" },
+    { id: "matrix_switch", route: "matrix-switches", title: "Матричные коммутаторы", order: 25, srField: "Тип модели", srValue: "Матричный коммутатор", pollingProtocol: "protocol_required" },
+    { id: "scaler", route: "scalers", title: "Скалеры", order: 26, srField: "Тип модели", srValue: "Скалер", pollingProtocol: "protocol_required" },
+    { id: "audio_processor", route: "audio-processors", title: "Аудио процессоры", order: 27, srField: "Тип модели", srValue: "Аудио процессор", pollingProtocol: "protocol_required" }
+  ]);
+
+  const ANALYZED_PARAMETER_RULES = deepFreeze([
+    { id: "extron-controller-type-v1", category: "controller", manufacturerNormalized: "extron", path: "$.webBlocks.Project Info.Controller Type", label: "Тип контроллера", rationale: "Используется для подтверждённой классификации Контроллера Extron.", version: 1 },
+    { id: "extron-controller-firmware-v1", category: "controller", manufacturerNormalized: "extron", path: "$.webBlocks.Firmware.version", label: "Версия прошивки", rationale: "Показывает изменение установленной версии прошивки Контроллера Extron.", version: 1 },
+    { id: "extron-panel-type-v1", category: "panel", manufacturerNormalized: "extron", path: "$.webBlocks.Project Info.Controller Type", label: "Тип панели управления", rationale: "Используется для подтверждённой классификации Панели управления Extron.", version: 1 },
+    { id: "extron-panel-firmware-v1", category: "panel", manufacturerNormalized: "extron", path: "$.webBlocks.Firmware.version", label: "Версия прошивки", rationale: "Показывает изменение установленной версии прошивки Панели управления Extron.", version: 1 }
+  ]);
+
+  const equipmentModules = EQUIPMENT_CATEGORY_CATALOG.map((category) => ({
+    route: category.route,
+    renderer: "inventory",
+    parentRoute: "equipment",
+    category: category.id,
+    title: category.title,
+    order: category.order,
+    helpId: `module-${category.route}`,
+    contextHelp: true,
+    summary: `Перечень категории «${category.title}» из актуальной выгрузки SR.`,
+    details: `Использует общий перечень, фильтры, карточку, историю опросов и аналитику оборудования. Категория определяется по полю SR «${category.srField}» со значением «${category.srValue}». Подтверждённый протокол автоматического опроса не предполагается без отдельной спецификации.`,
+    keywords: [category.title.toLocaleLowerCase("ru-RU"), category.srValue.toLocaleLowerCase("ru-RU"), category.id]
+  }));
+
   const MODULE_CATALOG = deepFreeze([
     {
       route: "dashboard", renderer: "dashboard", title: "Главный экран", order: 10, helpId: "module-dashboard", contextHelp: true,
@@ -20,23 +51,12 @@
       keywords: ["главный экран", "дашборд", "показатели"]
     },
     {
-      route: "vcs", renderer: "inventory", category: "vcs", title: "Терминалы ВКС", order: 20, helpId: "module-vcs", contextHelp: true,
-      summary: "Перечень оборудования для проведения видеоконференций.",
-      details: "Формируется из строк SR, где исходное поле «Тип модели» имеет значение Video Conference. Пользователь видит локацию, производителя, модель, сетевые параметры, последнее состояние, историю и изменения.",
-      keywords: ["вкс", "video conference", "видеоконференцсвязь"]
+      route: "equipment", renderer: "equipment", title: "Оборудование", order: 20, helpId: "module-equipment", contextHelp: true,
+      summary: "Единая точка доступа к семи категориям оборудования мультимедийной инфраструктуры.",
+      details: "Раскрывает Терминалы ВКС, Контроллеры, Панели управления, Коммутаторы, Матричные коммутаторы, Скалеры и Аудио процессоры. Все категории используют общий перечень, фильтры, карточки и аналитику.",
+      keywords: ["оборудование", "категории", "перечень"]
     },
-    {
-      route: "controllers", renderer: "inventory", category: "controller", title: "Контроллеры", order: 30, helpId: "module-controllers", contextHelp: true,
-      summary: "Устройства, управляющие оборудованием и сценариями мультимедийной системы помещения.",
-      details: "Формируются из строк SR с техническим значением типа оборудования controller. Наличие в SR и поддержка автоматического опроса являются разными признаками.",
-      keywords: ["controller", "extron", "управление"]
-    },
-    {
-      route: "panels", renderer: "inventory", category: "panel", title: "Панели управления", order: 40, helpId: "module-panels", contextHelp: true,
-      summary: "Пользовательские устройства управления мультимедийной системой помещения.",
-      details: "В модуле показаны все Панели управления из SR. TLP — встречающееся в данных обозначение Панелей управления Extron, а не пользовательское название категории.",
-      keywords: ["панели", "tlp", "extron"]
-    },
+    ...equipmentModules,
     {
       route: "upload", renderer: "upload", title: "Загрузка", order: 50, helpId: "module-upload", contextHelp: false,
       summary: "Импортирует выгрузку SR и все папки результатов опросов из одной выбранной общей папки.",
@@ -58,10 +78,11 @@
   ]);
 
   const UI_TERMS = deepFreeze({
-    categories: { vcs: "Терминалы ВКС", controller: "Контроллеры", panel: "Панели управления" },
+    categories: Object.fromEntries(EQUIPMENT_CATEGORY_CATALOG.map((item) => [item.id, item.title])),
     pollStatuses: {
       success: "Успешно", SUCCESS: "Успешно", completed: "Успешно", processed: "Успешно",
       error: "Ошибка", failed: "Ошибка", FAILED: "Ошибка",
+      network_unreachable: "Нет ответа по сети", processing_error: "Ошибка обработки", unmatched: "Не найдено в SR",
       not_polled: "Не опрашивалось", NOT_POLLED: "Не опрашивалось", never: "Не опрашивалось",
       unsupported: "Автоматический опрос не поддерживается", UNSUPPORTED: "Автоматический опрос не поддерживается",
       authorization_error: "Ошибка авторизации", stale: "Данные устарели",
@@ -84,7 +105,9 @@
 
   const STATUS_DESCRIPTORS = deepFreeze([
     { id: "status-success", group: "pollStatuses", code: "success", summary: "Последний опрос завершён без известной ошибки.", keywords: ["success"] },
-    { id: "status-error", group: "pollStatuses", code: "error", summary: "Последний опрос выполнялся, но завершился ошибкой.", keywords: ["failed", "error"] },
+    { id: "status-error", group: "pollStatuses", code: "processing_error", summary: "Файл или ответ устройства не удалось корректно обработать; это не означает ошибку авторизации.", keywords: ["failed", "error", "processing_error"] },
+    { id: "status-network", group: "pollStatuses", code: "network_unreachable", summary: "Подтверждённая проверка сетевой доступности завершилась без ответа.", keywords: ["ping", "network_unreachable"] },
+    { id: "status-unmatched", group: "pollStatuses", code: "unmatched", summary: "Результат опроса не удалось однозначно связать с устройством актуальной SR.", keywords: ["unmatched", "sr"] },
     { id: "status-not-polled", group: "pollStatuses", code: "not_polled", summary: "Устройство присутствует в SR, но история его опросов отсутствует.", keywords: ["not_polled", "never"] },
     { id: "status-unsupported", group: "pollStatuses", code: "unsupported", summary: "В текущей версии отсутствует подтверждённый механизм автоматического опроса данного оборудования.", keywords: ["unsupported"] },
     { id: "status-no-network", group: "pingStatuses", code: "failed", tooltip: "noNetwork", keywords: ["ping", "ping_failure", "недоступно"] },
@@ -94,8 +117,8 @@
   ]);
 
   const REQUIRED_TERM_CODES = deepFreeze({
-    categories: ["vcs", "controller", "panel"],
-    pollStatuses: ["success", "error", "not_polled", "unsupported", "authorization_error", "stale", "unknown"],
+    categories: EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id),
+    pollStatuses: ["success", "error", "network_unreachable", "processing_error", "unmatched", "not_polled", "unsupported", "authorization_error", "stale", "unknown"],
     pingStatuses: ["ok", "failed", "unknown"],
     capabilities: ["implemented", "not_implemented", "unknown"],
     runStatuses: ["planned", "completed", "partial", "failed"],
@@ -108,7 +131,12 @@
   }
 
   function buildNavigation(modules) {
-    return orderedModules(modules).map(({ route, title }) => ({ route, title }));
+    const ordered = orderedModules(modules);
+    return ordered.filter((item) => !item.parentRoute).map(({ route, title }) => ({
+      route,
+      title,
+      children: ordered.filter((child) => child.parentRoute === route).map(({ route: childRoute, title: childTitle }) => ({ route: childRoute, title: childTitle }))
+    }));
   }
 
   function buildModuleHelpSection(modules) {
@@ -151,7 +179,7 @@
     const modules = input.modules || MODULE_CATALOG;
     const terms = input.uiTerms || UI_TERMS;
     const statusDescriptors = input.statusDescriptors || STATUS_DESCRIPTORS;
-    const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "inventory", "upload", "settings", "reference"]);
+    const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "equipment", "inventory", "upload", "settings", "reference"]);
     const errors = [];
     const russian = /[А-Яа-яЁё]/;
 
@@ -166,6 +194,18 @@
         if (!String(item[field] || "").trim() || !russian.test(String(item[field] || ""))) errors.push(`У модуля ${item.route || "(пусто)"} отсутствует русское поле ${field}`);
       });
       if (!Array.isArray(item.keywords) || !item.keywords.length) errors.push(`У модуля ${item.route || "(пусто)"} отсутствуют keywords`);
+      if (item.parentRoute && !modules.some((parent) => parent.route === item.parentRoute)) errors.push(`Не найден родитель ${item.parentRoute} для ${item.route}`);
+    });
+
+    const categoryIds = new Set(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id));
+    duplicateValues(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id)).forEach((value) => errors.push(`Повторяется category id: ${value}`));
+    duplicateValues(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.route)).forEach((value) => errors.push(`Повторяется category route: ${value}`));
+    const ruleIds = ANALYZED_PARAMETER_RULES.map((item) => item.id);
+    duplicateValues(ruleIds).forEach((value) => errors.push(`Повторяется analyzed rule id: ${value}`));
+    ANALYZED_PARAMETER_RULES.forEach((rule) => {
+      if (!categoryIds.has(rule.category)) errors.push(`Analyzed rule ${rule.id} содержит неизвестную категорию`);
+      if (!String(rule.path || "").startsWith("$.")) errors.push(`Analyzed rule ${rule.id} содержит некорректный JSON path`);
+      if (!russian.test(String(rule.label || "")) || !russian.test(String(rule.rationale || ""))) errors.push(`Analyzed rule ${rule.id} не имеет русского описания`);
     });
 
     Object.entries(REQUIRED_TERM_CODES).forEach(([group, codes]) => {
@@ -197,6 +237,8 @@
   }
 
   return deepFreeze({
+    EQUIPMENT_CATEGORY_CATALOG,
+    ANALYZED_PARAMETER_RULES,
     MODULE_CATALOG,
     UI_TERMS,
     STATUS_DESCRIPTORS,

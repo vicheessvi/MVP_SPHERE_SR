@@ -10,7 +10,7 @@
 - Хранение интерфейса: только память страницы; secrets не принимаются, `localStorage`/`IndexedDB` не используются.
 - Роль: только «Администратор МЦТП».
 - Constitution: версия 2.0.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/008-batch-polling-folder-import/`.
+- Текущая feature: `specs/010-equipment-sr-analysis/`.
 
 ## Правила работы агента
 

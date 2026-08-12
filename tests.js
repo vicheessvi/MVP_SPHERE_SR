@@ -149,12 +149,27 @@
     assert(storage.getItem(api.LEGACY_STORAGE_KEY), "legacy evidence не удаляется автоматически");
   });
 
-  test("SR normalization сохраняет raw и классифицирует три категории", () => {
+  test("SR normalization сохраняет raw и классифицирует семь категорий", () => {
     assertEqual(api.normalizeSrHeader("  Тип Модели "), "тип модели");
     assertEqual(api.normalizeManufacturer("Huawey"), "huawei");
     assertEqual(api.classifySrDevice({ "Тип модели": " Video Conference " }), "vcs");
     assertEqual(api.classifySrDevice({ "Тип оборудования": " CONTROLLER " }), "controller");
     assertEqual(api.classifySrDevice({ "Тип модели": "Панель управления" }), "panel");
+    assertEqual(api.classifySrDevice({ "Тип модели": " Коммутатор " }), "switch");
+    assertEqual(api.classifySrDevice({ "Тип модели": "МАТРИЧНЫЙ КОММУТАТОР" }), "matrix_switch");
+    assertEqual(api.classifySrDevice({ "Тип модели": "Скалер" }), "scaler");
+    assertEqual(api.classifySrDevice({ "Тип модели": "Аудио процессор" }), "audio_processor");
+    assertEqual(api.classifySrDevice({ "Тип модели": "Неизвестно" }), "other");
+    assertEqual(new Set(api.EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id)).size, 7);
+  });
+
+  test("Время результата использует только lastModified конкретного файла", () => {
+    const known = api.resolvePollingResultTimestamp({ lastModified: Date.UTC(2026, 6, 1, 9, 41, 28) });
+    assertEqual(known.capturedAt, "2026-07-01T09:41:28.000Z");
+    assertEqual(known.source, "file_last_modified");
+    const unknown = api.resolvePollingResultTimestamp({ capturedAt: "2026-07-01T09:41:28.000Z" });
+    assertEqual(unknown.capturedAt, null);
+    assertEqual(unknown.source, "unavailable");
   });
 
   test("Folder timestamp parser использует YYYY-MM-DD_HH-MM-SS", () => {
@@ -216,6 +231,10 @@
     assertEqual(api.detectExtronJsonDeviceType(panel), "panel");
     assertEqual(api.derivePollingStatus(primary).pingStatus, "failed");
     assertEqual(api.derivePollingStatus({ failedStage: "ping" }).pingStatus, "unknown");
+    assertEqual(api.derivePollingStatus(primary).pollStatus, "network_unreachable");
+    assertEqual(api.derivePollingStatus({ ok: false, failedStage: "authorization" }).pollStatus, "authorization_error");
+    assertEqual(api.derivePollingStatus({ ok: false }).pollStatus, "processing_error");
+    assert(api.formatPollStatus("processing_error") !== api.formatPollStatus("authorization_error"));
   });
 
   test("Polling registry не содержит фиктивных transports", () => {
@@ -984,12 +1003,66 @@
     assertEqual(result.state.inventoryDevices.length, 1);
   });
 
+  test("Индексный SR import выполняет один lookup на строку и публикует прогресс", async () => {
+    const rows = Array.from({ length: 600 }, (_, index) => srRow({
+      "Название комнаты": `Зал ${Math.floor(index / 3)}`,
+      "Инвентарный номер": `PERF-${index}`,
+      "Серийный номер": `PERF-SN-${index}`,
+      MAC: `02-00-00-00-${String(Math.floor(index / 100)).padStart(2, "0")}-${String(index % 100).padStart(2, "0")}`,
+      IP: `10.60.${Math.floor(index / 250)}.${(index % 250) + 1}`
+    }));
+    const progress = [];
+    let yields = 0;
+    const result = await api.processSrImportRows(api.createDemoState(), {
+      filename: "synthetic.xlsx", headers: srHeaders(), rows, batchSize: 100,
+      yieldControl: async () => { yields += 1; },
+      onProgress: (item) => progress.push(item)
+    });
+    assert(result.ok, result.errors?.join("; "));
+    assertEqual(result.metrics.normalizedRows, 600);
+    assertEqual(result.metrics.locationLookups, 600);
+    assertEqual(result.metrics.identityLookups, 600);
+    assertEqual(result.state.inventoryDevices.length, 600);
+    assert(yields >= 5);
+    ["Обработка строк", "Формирование перечня оборудования", "Обновление аналитики", "Готово"].forEach((stage) => assert(progress.some((item) => item.stage === stage), stage));
+  });
+
+  test("Selective changes используют только утверждённые русские параметры", () => {
+    const device = { category: "controller", manufacturerNormalized: "extron", modelNormalized: "ipc" };
+    const before = { webBlocks: { Firmware: { version: "1.0" }, "Project Info": { "Controller Type": "Primary Controller" }, Diagnostics: { timestamp: "old" } } };
+    const after = api.deepClone(before);
+    after.webBlocks.Firmware.version = "1.1";
+    after.webBlocks["Project Info"]["Controller Type"] = "Secondary Controller";
+    after.webBlocks.Diagnostics.timestamp = "new";
+    const changes = api.diffAnalyzedParameters(device, before, after);
+    assertEqual(changes.length, 2);
+    const firmware = changes.find((item) => item.parameterLabel === "Версия прошивки");
+    assertEqual(firmware.oldValue, "1.0");
+    assertEqual(firmware.newValue, "1.1");
+    assertEqual(api.diffAnalyzedParameters({ category: "switch", manufacturerNormalized: "unknown" }, before, after).length, 0);
+  });
+
+  test("Dashboard считает все семь категорий", async () => {
+    const rows = api.EQUIPMENT_CATEGORY_CATALOG.map((category, index) => srRow({
+      "Тип оборудования": category.id === "controller" ? category.srValue : "device",
+      "Тип модели": category.id === "controller" ? "Контроллер" : category.srValue,
+      "Инвентарный номер": `CAT-${index}`,
+      "Серийный номер": `CAT-SN-${index}`,
+      MAC: `02-00-00-00-00-${String(index + 1).padStart(2, "0")}`,
+      IP: `10.70.0.${index + 1}`
+    }));
+    const imported = await api.processSrImportRows(api.createDemoState(), { filename: "categories.xlsx", headers: srHeaders(), rows, yieldControl: async () => {} });
+    const summary = api.getDashboardSummary(imported.state, { period: "all" });
+    assertEqual(summary.inventory.total, 7);
+    api.EQUIPMENT_CATEGORY_IDS.forEach((category) => assertEqual(summary.inventory.byCategory[category], 1, category));
+  });
+
   test("Polling run связывает filename IP, классифицирует Extron и считает изменения", async () => {
     let sr = api.importSrRows(api.createDemoState(), { filename: "sr.xlsx", headers: srHeaders(), rawSha256: "poll-sr", rows: [srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron" })] });
     const first = { ok: true, ping: { ok: true }, webBlocks: { "Project Info": { "Controller Type": "Primary Controller", Version: "1" }, Firmware: { version: "1.0" } } };
-    let imported = await api.ingestPollingRunFiles(sr.state, { folderName: "2026-06-01_09-41-28", files: [{ name: "10.10.20.30.json", text: JSON.stringify(first) }] });
+    let imported = await api.ingestPollingRunFiles(sr.state, { folderName: "2026-06-01_09-41-28", files: [{ name: "10.10.20.30.json", lastModified: Date.UTC(2026, 5, 1, 9, 41, 28), text: JSON.stringify(first) }] });
     const second = api.deepClone(first); second.webBlocks.Firmware.version = "1.1";
-    imported = await api.ingestPollingRunFiles(imported.state, { folderName: "2026-06-02_09-41-28", files: [{ name: "10.10.20.30.json", text: JSON.stringify(second) }] });
+    imported = await api.ingestPollingRunFiles(imported.state, { folderName: "2026-06-02_09-41-28", files: [{ name: "10.10.20.30.json", lastModified: Date.UTC(2026, 5, 2, 9, 41, 28), text: JSON.stringify(second) }] });
     assertEqual(imported.state.pollingResults.length, 2);
     assertEqual(imported.state.pollingResults[0].matchStatus, "matched");
     assertEqual(imported.state.pollingResults[0].detectedCategory, "controller");
@@ -1048,6 +1121,7 @@
       return {
         name: `${ip}.json`,
         relativePath: `root/2026-07-${day}_09-00-00/${ip}.json`,
+        lastModified: Date.UTC(2026, 6, runIndex + 1, 9, 0, 0),
         text: JSON.stringify({ ok: true, ping: { ok: true }, webBlocks: { Firmware: { version: `${runIndex}.${deviceIndex}` } } })
       };
     });
@@ -1058,6 +1132,8 @@
     state.inventoryDevices = Array.from({ length: deviceCount }, (_, index) => ({
       id: `scalable-device-${index}`,
       category: "controller",
+      manufacturerRaw: "Extron",
+      manufacturerNormalized: "extron",
       ipNormalized: `10.40.${Math.floor(index / 250)}.${(index % 250) + 1}`,
       ipHistory: [],
       inCurrentSr: true,
@@ -1144,17 +1220,34 @@
     const state = scalablePollingState(1);
     const payload = (version) => JSON.stringify({ ok: true, ping: { ok: true }, webBlocks: { Firmware: { version } } });
     const first = await api.processPollingImportBatches(state, { files: [
-      { name: "10.40.0.1.json", relativePath: "root/2026-07-01_09-00-00/10.40.0.1.json", text: payload("1") },
-      { name: "10.40.0.1.json", relativePath: "root/2026-07-03_09-00-00/10.40.0.1.json", text: payload("3") }
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-01_09-00-00/10.40.0.1.json", lastModified: Date.UTC(2026, 6, 1, 9), text: payload("1") },
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-03_09-00-00/10.40.0.1.json", lastModified: Date.UTC(2026, 6, 3, 9), text: payload("3") }
     ], yieldControl: async () => {} });
     assert(first.state.deviceChanges.some((change) => change.oldValue === "1" && change.newValue === "3"));
     const late = await api.processPollingImportBatches(first.state, { files: [
-      { name: "10.40.0.1.json", relativePath: "root/2026-07-02_09-00-00/10.40.0.1.json", text: payload("2") }
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-02_09-00-00/10.40.0.1.json", lastModified: Date.UTC(2026, 6, 2, 9), text: payload("2") }
     ], context: first.context, yieldControl: async () => {} });
     assert(!late.state.deviceChanges.some((change) => change.oldValue === "1" && change.newValue === "3"));
     assert(late.state.deviceChanges.some((change) => change.oldValue === "1" && change.newValue === "2"));
     assert(late.state.deviceChanges.some((change) => change.oldValue === "2" && change.newValue === "3"));
     assertEqual(late.metrics.diffPairs, 2);
+  });
+
+  test("Одинаковое и отсутствующее время результата обрабатывается детерминированно без folder fallback", async () => {
+    const state = scalablePollingState(1);
+    const sameTime = Date.UTC(2026, 6, 1, 9, 0, 0);
+    const payload = (version) => JSON.stringify({ ok: true, ping: { ok: true }, webBlocks: { Firmware: { version } } });
+    const imported = await api.processPollingImportBatches(state, { files: [
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-01_09-00-00/10.40.0.1.json", lastModified: sameTime, text: payload("1") },
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-02_09-00-00/10.40.0.1.json", lastModified: sameTime, text: payload("2") },
+      { name: "10.40.0.1.json", relativePath: "root/2026-07-03_09-00-00/10.40.0.1.json", text: payload("3") }
+    ], yieldControl: async () => {} });
+    const unknown = imported.state.pollingResults.find((result) => result.capturedAtSource === "unavailable");
+    assertEqual(unknown.capturedAt, null);
+    const history = imported.context.historyByDevice.get("scalable-device-0");
+    assertEqual(history.length, 2);
+    assert(history[0].id.localeCompare(history[1].id) < 0, "Tie-break должен быть стабильным по id");
+    assert(!imported.state.deviceChanges.some((change) => change.toPollingResultId === unknown.id || change.fromPollingResultId === unknown.id));
   });
 
   test("Ежедневный импорт 1000 результатов переиспользует индекс истории 50000", async () => {

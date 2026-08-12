@@ -108,8 +108,10 @@ test("Polling success без verified protocol fail-closed и не читает 
 
 test("Target navigation и загрузка соответствуют единственному файловому режиму", () => {
   const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
-  const routes = productCatalog.buildNavigation().map((item) => item.route);
-  equal(routes.join(","), "dashboard,vcs,controllers,panels,upload,settings,reference");
+  const navigation = productCatalog.buildNavigation();
+  const routes = navigation.map((item) => item.route);
+  equal(routes.join(","), "dashboard,equipment,upload,settings,reference");
+  equal(navigation.find((item) => item.route === "equipment").children.map((item) => item.route).join(","), "vcs,controllers,panels,switches,matrix-switches,scalers,audio-processors");
   assert(!routes.some((route) => ["projects", "events", "matches", "snapshots"].includes(route)));
   assert(source.includes("PRODUCT_CATALOG.buildNavigation()"));
   assert(source.includes("PRODUCT_CATALOG.buildModuleHelpSection()"));

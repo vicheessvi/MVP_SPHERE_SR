@@ -2,6 +2,15 @@
 
 Этот журнал фиксирует только значимые изменения проекта.
 
+## 2026-08-12 — Feature 010: Оборудование, время опроса и SR performance
+
+- Добавлены родитель «Оборудование» и семь category routes на общем renderer.
+- Добавлены SR types: Коммутатор, Матричный коммутатор, Скалер, Аудио процессор.
+- Разделены folder run time и per-file `lastModified/unavailable` result time.
+- Добавлены evidence-based statuses и selective Extron parameter rules.
+- SR import переведён на indexes/batches/progress; 25k benchmark: 128,86 s → 1,87 s.
+- Обновлены Dashboard, Справочник, tests, benchmark и ADR-0010.
+
 Мелкие правки текста, стилей и локальные багфиксы не нужно логировать, если они не влияют на архитектуру, workflow, продуктовое поведение или важные соглашения.
 
 ## 2026-08-01 — Инициализирован project workflow

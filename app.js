@@ -51,7 +51,8 @@
 
   const PRODUCT_CATALOG = global.MVP_PRODUCT_CATALOG || (typeof module === "object" && module.exports ? require("./product-catalog") : null);
   if (!PRODUCT_CATALOG) throw new Error("Каталог продукта не загружен");
-  const { MODULE_CATALOG, UI_TERMS } = PRODUCT_CATALOG;
+  const { MODULE_CATALOG, UI_TERMS, EQUIPMENT_CATEGORY_CATALOG, ANALYZED_PARAMETER_RULES } = PRODUCT_CATALOG;
+  const EQUIPMENT_CATEGORY_IDS = Object.freeze(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id));
   const catalogValidation = PRODUCT_CATALOG.validateProductCatalog();
   if (!catalogValidation.ok) throw new Error(`Каталог продукта содержит ошибки: ${catalogValidation.errors.join("; ")}`);
   const HELP_TOPIC_BY_ROUTE = PRODUCT_CATALOG.buildHelpTopicByRoute();
@@ -59,7 +60,7 @@
   const HELP_SECTIONS = Object.freeze([
     {
       id: "about", title: "1. Об инструменте", description: "Назначение и границы безопасной работы.", entries: [
-        { id: "about-tool", title: "MVP_SPHERE_SR", summary: "Инструмент предназначен для учёта, опроса и анализа состояния оборудования мультимедийной инфраструктуры.", details: "Перечень оборудования формируется по выгрузке SR, а состояние — по результатам опросов Терминалов ВКС, Контроллеров и Панелей управления.", keywords: ["назначение", "оборудование"] },
+        { id: "about-tool", title: "MVP_SPHERE_SR", summary: "Инструмент предназначен для учёта, опроса и анализа состояния оборудования мультимедийной инфраструктуры.", details: "Перечень оборудования формируется по выгрузке SR и включает семь категорий: Терминалы ВКС, Контроллеры, Панели управления, Коммутаторы, Матричные коммутаторы, Скалеры и Аудио процессоры. Состояние появляется только из фактически импортированных результатов опросов.", keywords: ["назначение", "оборудование"] },
         { id: "about-local", title: "Запуск и хранение", summary: "Инструмент имеет один режим: прямое открытие index.html для анализа в текущей вкладке.", details: "Импортированные данные находятся только в памяти страницы и удаляются при перезагрузке или закрытии. Файлы логинов и паролей интерфейс не читает.", keywords: ["index.html", "сеанс", "безопасность", "локально"] }
       ]
     },
@@ -122,6 +123,7 @@
     {
       id: "polling", title: "8. Опрос оборудования", description: "Как формируется и выполняется опрос.", entries: [
         { id: "logic-folders", title: "Папки запусков опроса", summary: "Общая папка может содержать несколько сеансов; имя каждого сеанса имеет формат YYYY-MM-DD_HH-MM-SS.", details: "Инструмент рекурсивно находит JSON, создаёт отдельный запуск на каждую датированную папку и обрабатывает запуски по времени.", keywords: ["папка", "пакетный импорт", "дата"] },
+        { id: "logic-result-time", title: "Дата и время опроса", summary: "Для отдельного JSON используется доступное браузеру время последнего изменения файла.", details: "Это не время создания файла. Если File API не предоставляет валидное значение, время результата остаётся неизвестным; дата папки используется только для группировки запуска.", keywords: ["lastModified", "время файла", "время опроса"] },
         { id: "logic-batch-progress", title: "Массовая загрузка результатов", summary: "Результаты опросов обрабатываются пакетно. Во время загрузки отображается количество найденных и обработанных файлов, ошибки, скорость обработки и примерное оставшееся время.", details: "Повторно уже загруженные результаты пропускаются, если инструмент может надёжно определить, что они уже были импортированы. Активную загрузку можно остановить без удаления уже обработанных результатов.", keywords: ["прогресс", "скорость", "оставшееся время", "дубликат", "отмена"] },
         { id: "logic-matching", title: "Сопоставление с SR", summary: "IP-адрес из имени файла результата сравнивается с IP-адресами выгрузки SR.", details: "При единственном совпадении результат связывается с оборудованием и локацией; иначе сохраняется как требующий проверки.", keywords: ["matching", "unmatched"] },
         { id: "logic-no-network", title: "Как определяется отсутствие ответа", summary: "Перед получением данных инструмент может проверить сетевую доступность; отсутствие ответа отмечается статусом «Нет ответа по сети».", keywords: ["failedStage", "Ping.ok", "ping"] },
@@ -133,7 +135,7 @@
     {
       id: "history", title: "9. История и изменения", description: "Как сохраняются результаты и обнаруживаются различия.", entries: [
         { id: "logic-history", title: "Сохранение истории", summary: "Каждый новый результат добавляется к истории устройства и не заменяет предыдущие результаты.", keywords: ["история опросов"] },
-        { id: "logic-changes", title: "Определение изменений", summary: "Инструмент сравнивает последовательные результаты одного устройства и сохраняет предыдущее и новое значения изменившегося параметра.", keywords: ["было", "стало", "change detection"] },
+        { id: "logic-changes", title: "Определение значимых изменений", summary: "Инструмент сравнивает только централизованно утверждённые параметры для категории, производителя и модели.", details: "Служебные timestamps и остальные поля raw JSON историю не теряют, но событий не создают. Если утверждённого перечня нет, изменения не выдумываются.", keywords: ["было", "стало", "selective change detection", "значимые параметры"] },
         { id: "logic-data-errors", title: "Ошибки данных", summary: "Необработанный файл или результат без однозначного устройства сохраняется отдельно и не превращается в ошибку оборудования.", keywords: ["malformed", "unmatched", "качество данных"] }
       ]
     },
@@ -869,12 +871,8 @@
   }
 
   function classifySrDevice(row) {
-    const modelType = normalizeText(getSrValue(row, "Тип модели"));
-    const equipmentType = normalizeText(getSrValue(row, "Тип оборудования"));
-    if (modelType === "video conference") return "vcs";
-    if (equipmentType === "controller") return "controller";
-    if (modelType === "панель управления") return "panel";
-    return "other";
+    const descriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => normalizeText(getSrValue(row, item.srField)) === normalizeText(item.srValue));
+    return descriptor?.id || "other";
   }
 
   function normalizeIpv4(value) {
@@ -994,14 +992,28 @@
     if (failedStage === "ping" && pingOk === false) pingStatus = "failed";
     else if (pingOk === true) pingStatus = "ok";
     const explicitOk = getCaseInsensitive(payload, "ok");
-    const pollStatus = explicitOk === true ? "success" : explicitOk === false ? "error" : "unknown";
+    const authFailure = ["authorization", "authentication", "auth"].includes(failedStage) && explicitOk === false;
+    let pollStatus = "unknown";
+    if (authFailure) pollStatus = "authorization_error";
+    else if (pingStatus === "failed") pollStatus = "network_unreachable";
+    else if (explicitOk === true) pollStatus = "success";
+    else if (explicitOk === false) pollStatus = "processing_error";
     return {
-      pollStatus: pingStatus === "failed" ? "error" : pollStatus,
+      pollStatus,
       pingStatus,
-      authorizationStatus: "unknown",
+      authorizationStatus: authFailure ? "failed" : "unknown",
       rebootCount: null,
       gcPlus: null
     };
+  }
+
+  function resolvePollingResultTimestamp(input) {
+    const lastModified = Number(input?.lastModified);
+    if (Number.isFinite(lastModified) && lastModified > 0) {
+      const date = new Date(lastModified);
+      if (Number.isFinite(date.getTime())) return { capturedAt: date.toISOString(), source: "file_last_modified", sourceLastModified: lastModified };
+    }
+    return { capturedAt: null, source: "unavailable", sourceLastModified: null };
   }
 
   function resolvePollingCapability(device) {
@@ -1053,6 +1065,43 @@
       return;
     }
     output.push({ path: currentPath, oldValue: before === undefined ? null : deepClone(before), newValue: after === undefined ? null : deepClone(after) });
+  }
+
+  function getJsonPathValue(value, path) {
+    const segments = String(path || "").replace(/^\$\.?/, "").split(".").filter(Boolean);
+    let current = value;
+    for (const segment of segments) {
+      if (!current || typeof current !== "object" || !(segment in current)) return undefined;
+      current = current[segment];
+    }
+    return current;
+  }
+
+  function getAnalyzedParameterRules(device) {
+    const category = normalizeText(device?.category);
+    const manufacturer = normalizeManufacturer(device?.manufacturerNormalized || device?.manufacturerRaw);
+    const model = normalizeText(device?.modelNormalized || device?.modelRaw);
+    return ANALYZED_PARAMETER_RULES.filter((rule) => rule.category === category
+      && (!rule.manufacturerNormalized || normalizeManufacturer(rule.manufacturerNormalized) === manufacturer)
+      && (!rule.modelNormalized || normalizeText(rule.modelNormalized) === model));
+  }
+
+  function diffAnalyzedParameters(device, before, after) {
+    const changes = [];
+    for (const rule of getAnalyzedParameterRules(device)) {
+      const oldValue = getJsonPathValue(before, rule.path);
+      const newValue = getJsonPathValue(after, rule.path);
+      if (JSON.stringify(oldValue) === JSON.stringify(newValue)) continue;
+      changes.push({
+        ruleId: rule.id,
+        path: rule.path,
+        parameterLabel: rule.label,
+        rationale: rule.rationale,
+        oldValue: oldValue === undefined ? null : deepClone(oldValue),
+        newValue: newValue === undefined ? null : deepClone(newValue)
+      });
+    }
+    return changes;
   }
 
   function createInventoryIssue(input) {
@@ -1189,6 +1238,166 @@
     return { ok: true, outcome: srImport.status, state: next, srImportId: srImport.id, acceptedCount: srImport.acceptedCount, rejectedCount: srImport.rejectedCount, errors: [] };
   }
 
+  const DEFAULT_SR_IMPORT_BATCH_SIZE = 256;
+
+  function addSrIndexValue(index, key, device) {
+    if (!key) return;
+    if (!index.has(key)) index.set(key, []);
+    const values = index.get(key);
+    if (!values.includes(device)) values.push(device);
+  }
+
+  function removeSrIndexValue(index, key, device) {
+    if (!key || !index.has(key)) return;
+    const values = index.get(key).filter((item) => item !== device);
+    if (values.length) index.set(key, values); else index.delete(key);
+  }
+
+  function srDeviceIndexKeys(device) {
+    return {
+      inventory: normalizeText(device?.inventoryNumber),
+      serialManufacturer: device?.serialNumber && device?.manufacturerNormalized ? `${normalizeText(device.serialNumber)}|${device.manufacturerNormalized}` : null,
+      mac: device?.macNormalized || null,
+      ips: [...new Set([device?.ipNormalized, ...(device?.ipHistory || [])].filter(Boolean))]
+    };
+  }
+
+  function createSrImportContext(candidateState) {
+    const context = {
+      locationsByIdentity: new Map(candidateState.locations.map((location) => [location.identityKey, location])),
+      byInventory: new Map(), bySerialManufacturer: new Map(), byMac: new Map(), byIp: new Map()
+    };
+    for (const device of candidateState.inventoryDevices) {
+      const keys = srDeviceIndexKeys(device);
+      addSrIndexValue(context.byInventory, keys.inventory, device);
+      addSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
+      addSrIndexValue(context.byMac, keys.mac, device);
+      keys.ips.forEach((ip) => addSrIndexValue(context.byIp, ip, device));
+    }
+    return context;
+  }
+
+  function removeSrDeviceFromContext(context, device) {
+    const keys = srDeviceIndexKeys(device);
+    removeSrIndexValue(context.byInventory, keys.inventory, device);
+    removeSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
+    removeSrIndexValue(context.byMac, keys.mac, device);
+    keys.ips.forEach((ip) => removeSrIndexValue(context.byIp, ip, device));
+  }
+
+  function addSrDeviceToContext(context, device) {
+    const keys = srDeviceIndexKeys(device);
+    addSrIndexValue(context.byInventory, keys.inventory, device);
+    addSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
+    addSrIndexValue(context.byMac, keys.mac, device);
+    keys.ips.forEach((ip) => addSrIndexValue(context.byIp, ip, device));
+  }
+
+  function findIndexedSrCandidates(context, row) {
+    const levels = [
+      row.inventoryNumber ? context.byInventory.get(normalizeText(row.inventoryNumber)) : null,
+      row.serialNumber && row.manufacturerNormalized ? context.bySerialManufacturer.get(`${normalizeText(row.serialNumber)}|${row.manufacturerNormalized}`) : null,
+      row.macNormalized ? context.byMac.get(row.macNormalized) : null,
+      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized ? context.byIp.get(row.ipNormalized) : null
+    ];
+    return levels.find((candidates) => candidates?.length) || [];
+  }
+
+  async function processSrImportRows(currentState, input) {
+    const rows = Array.isArray(input.rows) ? input.rows : [];
+    const headers = input.headers || Object.keys(rows[0] || {});
+    const missingHeaders = SR_REQUIRED_HEADERS.filter((required) => !headers.some((header) => normalizeSrHeader(header) === normalizeSrHeader(required)));
+    if (missingHeaders.length) return { ok: false, outcome: "failed", state: deepClone(currentState), errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
+    if (input.rawSha256 && currentState.srImports.some((item) => item.rawSha256 === input.rawSha256)) return { ok: true, outcome: "duplicate", state: currentState, errors: [] };
+
+    const startedAt = monotonicNow();
+    const metrics = { normalizedRows: 0, locationLookups: 0, identityLookups: 0, yields: 0, batches: 0, stagesMs: { clone: 0, processing: 0, inventory: 0, uiOverhead: 0 } };
+    const onProgress = typeof input.onProgress === "function" ? input.onProgress : () => {};
+    const yieldControl = input.yieldControl || cooperativeBrowserYield;
+    const batchSize = Math.max(1, Number(input.batchSize) || DEFAULT_SR_IMPORT_BATCH_SIZE);
+    const emitProgress = (stage, processed, status) => {
+      const progressStarted = monotonicNow();
+      onProgress(Object.freeze({ stage, processed, total: rows.length, accepted: srImport.acceptedCount, rejected: srImport.rejectedCount, status: status || "running", elapsedMs: monotonicNow() - startedAt }));
+      metrics.stagesMs.uiOverhead += monotonicNow() - progressStarted;
+    };
+
+    const cloneStarted = monotonicNow();
+    const next = deepClone(currentState);
+    metrics.stagesMs.clone = monotonicNow() - cloneStarted;
+    const importedAt = input.importedAt || nowIso();
+    const srImport = { id: createId("sr-import"), filename: input.filename || "inventory.xlsx", sheetName: input.sheetName || "", rawSha256: input.rawSha256 || null, importedAt, importedById: input.actorId || "system", rowCount: rows.length, acceptedCount: 0, rejectedCount: 0, status: "processing" };
+    next.inventoryDevices.forEach((device) => { device.inCurrentSr = false; });
+    next.locations.forEach((location) => { location.inCurrentSr = false; });
+    const contextStarted = monotonicNow();
+    const context = createSrImportContext(next);
+    metrics.stagesMs.inventory += monotonicNow() - contextStarted;
+    emitProgress("Обработка строк", 0);
+
+    for (let offset = 0; offset < rows.length; offset += batchSize) {
+      const processingStarted = monotonicNow();
+      const limit = Math.min(rows.length, offset + batchSize);
+      for (let index = offset; index < limit; index += 1) {
+        const rawRow = rows[index];
+        const rowNumber = index + 2;
+        try {
+          const row = normalizedSrRow(rawRow);
+          metrics.normalizedRows += 1;
+          const hasIdentity = row.inventoryNumber || row.serialNumber || row.macNormalized || row.ipNormalized;
+          if (!hasIdentity) {
+            srImport.rejectedCount += 1;
+            next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Строка не содержит пригодного inventory/serial/MAC/IP", details: { rawRow } }));
+            continue;
+          }
+          const locationKey = `${normalizeText(row.roomName) || ""}|${normalizeText(row.roomAddress) || ""}`;
+          metrics.locationLookups += 1;
+          let location = context.locationsByIdentity.get(locationKey);
+          if (!location) {
+            location = { id: createId("location"), identityKey: locationKey, name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain, inCurrentSr: true, firstSeenAt: importedAt, lastSeenAt: importedAt };
+            next.locations.push(location);
+            context.locationsByIdentity.set(locationKey, location);
+          } else {
+            Object.assign(location, { name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain || location.domain || null, inCurrentSr: true, lastSeenAt: importedAt });
+          }
+          metrics.identityLookups += 1;
+          const candidates = findIndexedSrCandidates(context, row);
+          let device = candidates.length === 1 ? candidates[0] : null;
+          if (candidates.length > 1) next.inventoryIssues.push(createInventoryIssue({ kind: "ambiguous_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Найдено несколько кандидатов; создана отдельная запись", details: { candidateIds: candidates.map((item) => item.id) } }));
+          const oldIp = device?.ipNormalized || null;
+          if (!device) {
+            device = { id: createId("inventory-device"), firstSeenAt: importedAt, ipHistory: [] };
+            next.inventoryDevices.push(device);
+          } else {
+            removeSrDeviceFromContext(context, device);
+          }
+          if (oldIp && oldIp !== row.ipNormalized && !device.ipHistory.includes(oldIp)) device.ipHistory.push(oldIp);
+          Object.assign(device, row, { locationId: location.id, inCurrentSr: true, lastSeenAt: importedAt, lastSrImportId: srImport.id, sourceRowNumber: rowNumber, pollingCapability: resolvePollingCapability(row) });
+          addSrDeviceToContext(context, device);
+          if (row.ipRaw && !row.ipNormalized) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_ip", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: `Некорректный IP: ${row.ipRaw}` }));
+          if (row.category === "other") next.inventoryIssues.push(createInventoryIssue({ kind: "unknown_category", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Строка не относится ни к одной утверждённой категории оборудования" }));
+          srImport.acceptedCount += 1;
+        } catch (error) {
+          srImport.rejectedCount += 1;
+          next.inventoryIssues.push(createInventoryIssue({ kind: "data_quality", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Строку SR не удалось обработать", details: { error: error.message || String(error) } }));
+        }
+      }
+      metrics.stagesMs.processing += monotonicNow() - processingStarted;
+      metrics.batches += 1;
+      emitProgress("Обработка строк", limit);
+      if (limit < rows.length) {
+        await yieldControl();
+        metrics.yields += 1;
+      }
+    }
+
+    emitProgress("Формирование перечня оборудования", rows.length);
+    srImport.status = srImport.rejectedCount || next.inventoryIssues.some((issue) => issue.sourceId === srImport.id) ? "partial" : "processed";
+    next.srImports.push(srImport);
+    next.history.push(makeHistoryEntry({ actorId: input.actorId || "system", action: "Импортирована выгрузка SR", entityType: "sr_import", entityId: srImport.id, details: `${srImport.filename}: ${srImport.acceptedCount}/${srImport.rowCount}` }));
+    emitProgress("Обновление аналитики", rows.length);
+    emitProgress("Готово", rows.length, "complete");
+    return { ok: true, outcome: srImport.status, state: next, srImportId: srImport.id, acceptedCount: srImport.acceptedCount, rejectedCount: srImport.rejectedCount, metrics, errors: [] };
+  }
+
   async function sha256Bytes(value) {
     const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
     if (global.crypto?.subtle) {
@@ -1199,9 +1408,10 @@
   }
 
   async function importSrWorkbook(currentState, input) {
+    input.onProgress?.(Object.freeze({ stage: "Чтение выгрузки SR", processed: 0, total: 0, accepted: 0, rejected: 0, status: "running", elapsedMs: 0 }));
     const parsed = rowsFromWorkbook(input.arrayBuffer);
     if (!parsed.ok) return { ok: false, outcome: "failed", state: deepClone(currentState), errors: parsed.errors };
-    return importSrRows(currentState, { ...input, ...parsed, rawSha256: await sha256Bytes(input.arrayBuffer) });
+    return processSrImportRows(currentState, { ...input, ...parsed, rawSha256: await sha256Bytes(input.arrayBuffer) });
   }
 
   function ensurePollingRun(next, input, capturedAt) {
@@ -1218,7 +1428,7 @@
 
   function createPollingPlan(currentState, input) {
     const category = normalizeText(input.category);
-    if (!["vcs", "controller", "panel"].includes(category)) return { ok: false, state: deepClone(currentState), errors: ["Категория плана не поддерживается"] };
+    if (!EQUIPMENT_CATEGORY_IDS.includes(category)) return { ok: false, state: deepClone(currentState), errors: ["Категория плана не поддерживается"] };
     const scheduledAt = normalizeDate(input.scheduledAt);
     if (!scheduledAt) return { ok: false, state: deepClone(currentState), errors: ["Дата и время плана обязательны"] };
     const manufacturer = normalizeManufacturer(input.manufacturer);
@@ -1288,7 +1498,7 @@
     if (capability === "unknown") return "UNKNOWN";
     if (!latestResult) return "NOT_POLLED";
     if (latestResult.pollStatus === "success") return "SUCCESS";
-    if (latestResult.pollStatus === "error") return "FAILED";
+    if (["authorization_error", "network_unreachable", "processing_error", "error"].includes(latestResult.operationalStatus || latestResult.pollStatus)) return "FAILED";
     return "UNKNOWN";
   }
 
@@ -1311,7 +1521,7 @@
     const filters = { ...(inputFilters || {}) };
     const settings = options || {};
     const limit = Math.max(1, Math.min(Number(settings.limit) || DASHBOARD_LIST_LIMIT, 50));
-    const currentDevices = candidateState.inventoryDevices.filter((device) => device.inCurrentSr !== false && ["vcs", "controller", "panel"].includes(device.category));
+    const currentDevices = candidateState.inventoryDevices.filter((device) => device.inCurrentSr !== false && EQUIPMENT_CATEGORY_IDS.includes(device.category));
     const locationsById = new Map(candidateState.locations.map((location) => [location.id, location]));
     const latestResults = new Map();
     const everPolledIds = new Set();
@@ -1345,7 +1555,7 @@
         && (!filters.pollStatus || ({ success: "SUCCESS", failed: "FAILED", not_polled: "NOT_POLLED", unsupported: "UNSUPPORTED", unknown: "UNKNOWN" }[filters.pollStatus] || "") === item.operationalStatus);
     });
     const scopedIds = new Set(states.map((item) => item.device.id));
-    const categoryCounts = { vcs: 0, controller: 0, panel: 0 };
+    const categoryCounts = Object.fromEntries(EQUIPMENT_CATEGORY_IDS.map((category) => [category, 0]));
     const manufacturerCounts = new Map();
     const modelCounts = new Map();
     const scopedLocationIds = new Set();
@@ -1389,7 +1599,7 @@
     const latestTimestamp = [...latestResults.values()].filter((result) => scopedIds.has(result.deviceId)).sort((left, right) => compareTimedEntities(right, left, "capturedAt"))[0]?.capturedAt || null;
     const runStatus = latestRun ? latestRun.status || (latestRun.errorCount ? (latestRun.successCount ? "partial" : "failed") : latestRun.kind === "plan" ? "planned" : "completed") : null;
     const latestRunCategories = new Set((latestRun?.deviceIds || []).map((id) => currentDevices.find((device) => device.id === id)?.category).filter(Boolean));
-    const drilldownByCategory = Object.fromEntries(["vcs", "controller", "panel"].map((category) => {
+    const drilldownByCategory = Object.fromEntries(EQUIPMENT_CATEGORY_IDS.map((category) => {
       const rows = states.filter((item) => item.device.category === category);
       return [category, {
         total: rows.length,
@@ -1410,12 +1620,12 @@
       coverage: { everPolled: states.filter((item) => everPolledIds.has(item.device.id)).length, notPolled: states.filter((item) => item.operationalStatus === "NOT_POLLED").length, success: states.filter((item) => item.operationalStatus === "SUCCESS").length, failed: states.filter((item) => item.operationalStatus === "FAILED").length, unsupported: states.filter((item) => item.operationalStatus === "UNSUPPORTED").length, unknown: states.filter((item) => item.operationalStatus === "UNKNOWN").length, inLatestRun: states.filter((item) => latestRunResultIds.has(item.device.id)).length },
       health: { normal: states.filter((item) => item.operationalStatus === "SUCCESS" && !item.hasChanges).length, warning: states.filter((item) => item.operationalStatus === "SUCCESS" && item.hasChanges).length, error: states.filter((item) => item.operationalStatus === "FAILED").length, noData: states.filter((item) => item.operationalStatus === "NOT_POLLED").length, unsupported: states.filter((item) => item.operationalStatus === "UNSUPPORTED").length, unknown: states.filter((item) => item.operationalStatus === "UNKNOWN").length },
       problems: { currentPingFailures: states.filter((item) => item.hasCurrentPingFailure).length, currentFailures: states.filter((item) => item.operationalStatus === "FAILED").length, unmatched: unmatchedResults.length, dataErrors: openDataIssues.length },
-      periodMetrics: { results: periodResults.length, failedResults: periodResults.filter((result) => result.pollStatus === "error").length, pingFailures: new Set(periodResults.filter((result) => result.pingStatus === "failed").map((result) => result.deviceId || result.id)).size, changedDevices: new Set(periodChanges.map((change) => change.deviceId)).size, changes: periodChanges.length, dataErrors: periodIssues.filter((issue) => dataIssueKinds.has(issue.kind)).length },
-      changes: { changedDevices: changedDeviceIds.size, total: scopedChanges.length, recent: recentChanges, newInLatestSr: latestSr ? states.filter((item) => item.device.firstSeenAt === latestSr.importedAt).length : 0, missingFromLatestSr: candidateState.inventoryDevices.filter((device) => device.inCurrentSr === false && ["vcs", "controller", "panel"].includes(device.category)).length },
+      periodMetrics: { results: periodResults.length, failedResults: periodResults.filter((result) => ["authorization_error", "network_unreachable", "processing_error", "error"].includes(result.operationalStatus || result.pollStatus)).length, pingFailures: new Set(periodResults.filter((result) => result.pingStatus === "failed").map((result) => result.deviceId || result.id)).size, changedDevices: new Set(periodChanges.map((change) => change.deviceId)).size, changes: periodChanges.length, dataErrors: periodIssues.filter((issue) => dataIssueKinds.has(issue.kind)).length },
+      changes: { changedDevices: changedDeviceIds.size, total: scopedChanges.length, recent: recentChanges, newInLatestSr: latestSr ? states.filter((item) => item.device.firstSeenAt === latestSr.importedAt).length : 0, missingFromLatestSr: candidateState.inventoryDevices.filter((device) => device.inCurrentSr === false && EQUIPMENT_CATEGORY_IDS.includes(device.category)).length },
       vip: { devices: vipStates.length, locations: new Set(vipStates.map((item) => item.device.locationId).filter(Boolean)).size, problems: vipStates.filter((item) => item.isProblem).length, noData: vipStates.filter((item) => ["NOT_POLLED", "UNSUPPORTED", "UNKNOWN"].includes(item.operationalStatus)).length },
       locations, latestProblems, recentChanges,
       drilldown: { byCategory: drilldownByCategory },
-      distributions: { categories: distributionRows(new Map([["Терминалы ВКС", categoryCounts.vcs], ["Контроллеры", categoryCounts.controller], ["Панели управления", categoryCounts.panel]]), 3), manufacturers: distributionRows(manufacturerCounts, limit), models: distributionRows(modelCounts, limit) },
+      distributions: { categories: distributionRows(new Map(EQUIPMENT_CATEGORY_IDS.map((category) => [formatCategoryLabel(category), categoryCounts[category]])), EQUIPMENT_CATEGORY_IDS.length), manufacturers: distributionRows(manufacturerCounts, limit), models: distributionRows(modelCounts, limit) },
       freshness: { latestTimestamp, noData: states.filter((item) => !item.latestResult).length, outdated: null },
       blockedAnalytics: { authorization: null, reboots: null, gcPlus: null, freshnessThreshold: null }
     };
@@ -1423,14 +1633,14 @@
 
   function getInventoryAnalytics(candidateState, category) {
     const devices = candidateState.inventoryDevices.filter((device) => device.inCurrentSr !== false && (!category || device.category === category));
-    const latest = devices.map((device) => candidateState.pollingResults.filter((result) => result.deviceId === device.id).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))[0]).filter(Boolean);
+    const latest = devices.map((device) => candidateState.pollingResults.filter((result) => result.deviceId === device.id).sort(comparePollingResultsNewest)[0]).filter(Boolean);
     const deviceIds = new Set(devices.map((device) => device.id));
     const changes = candidateState.deviceChanges.filter((change) => change.status === "active" && deviceIds.has(change.deviceId));
     const changedDeviceIds = new Set(changes.map((change) => change.deviceId));
     return {
       total: devices.length, polled: latest.length, unpolled: devices.length - latest.length,
       success: latest.filter((result) => result.pollStatus === "success").length,
-      errors: latest.filter((result) => result.pollStatus === "error").length,
+      errors: latest.filter((result) => ["authorization_error", "network_unreachable", "processing_error", "error"].includes(result.operationalStatus || result.pollStatus)).length,
       pingFailures: latest.filter((result) => result.pingStatus === "failed").length,
       changedDevices: changedDeviceIds.size, changes: changes.length,
       authorizationFailures: null, rebootCount: null, gcPlusLocations: null
@@ -1442,14 +1652,14 @@
     return candidateState.inventoryDevices.filter((device) => {
       if (device.category !== category) return false;
       const location = candidateState.locations.find((item) => item.id === device.locationId);
-      const latest = candidateState.pollingResults.filter((item) => item.deviceId === device.id).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))[0];
+      const latest = candidateState.pollingResults.filter((item) => item.deviceId === device.id).sort(comparePollingResultsNewest)[0];
       const hasChanges = candidateState.deviceChanges.some((item) => item.deviceId === device.id && item.status === "active");
       const support = dashboardCapability(device);
       const haystack = [device.nameRaw, device.modelRaw, device.manufacturerRaw, device.ipRaw, device.serialNumber, device.inventoryNumber, location?.name, location?.address].map((item) => normalizeText(item) || "").join(" ");
       return (!filters.search || haystack.includes(normalizeText(filters.search)))
         && (!filters.manufacturer || device.manufacturerNormalized === normalizeManufacturer(filters.manufacturer))
         && (!filters.current || (filters.current === "yes" ? device.inCurrentSr !== false : device.inCurrentSr === false))
-        && (!filters.pollStatus || (latest?.pollStatus || "never") === filters.pollStatus)
+        && (!filters.pollStatus || (latest?.operationalStatus || latest?.pollStatus || "never") === filters.pollStatus)
         && (!filters.vip || String(Boolean(device.deviceVip || location?.vip)) === filters.vip)
         && (!filters.ping || (latest?.pingStatus || "unknown") === filters.ping)
         && (!filters.changed || String(hasChanges) === filters.changed)
@@ -1461,21 +1671,21 @@
 
   function rebuildDeviceChanges(next, deviceId) {
     next.deviceChanges = next.deviceChanges.filter((item) => item.deviceId !== deviceId);
-    const ignored = (next.settings.ignoredPollingPaths || []).map((item) => String(item).startsWith("$") ? String(item) : `$.${item}`);
-    const results = next.pollingResults.filter((item) => item.deviceId === deviceId && item.parseStatus === "parsed")
-      .sort((a, b) => new Date(a.capturedAt) - new Date(b.capturedAt) || a.id.localeCompare(b.id));
+    const device = next.inventoryDevices.find((item) => item.id === deviceId);
+    const results = next.pollingResults.filter((item) => item.deviceId === deviceId && item.parseStatus === "parsed" && normalizeDate(item.capturedAt))
+      .sort(pollingResultOrder);
     for (let index = 1; index < results.length; index += 1) {
-      const differences = [];
-      flattenPollingChanges(results[index - 1].normalizedData, results[index].normalizedData, "$", ignored, differences);
-      differences.forEach((difference) => next.deviceChanges.push({ id: createId("device-change"), deviceId, fromPollingResultId: results[index - 1].id, toPollingResultId: results[index].id, detectedAt: nowIso(), status: "active", ...difference }));
+      const differences = diffAnalyzedParameters(device, results[index - 1].normalizedData, results[index].normalizedData);
+      differences.forEach((difference) => next.deviceChanges.push({ id: createId("device-change"), deviceId, fromPollingResultId: results[index - 1].id, toPollingResultId: results[index].id, detectedAt: results[index].capturedAt, status: "active", ...difference }));
     }
   }
 
   async function ingestPollingResultText(currentState, input) {
     let next = deepClone(currentState);
-    const timestamp = input.capturedAt ? { ok: Boolean(normalizeDate(input.capturedAt)), capturedAt: normalizeDate(input.capturedAt), source: input.capturedAtSource || "manual" } : parseRunFolderTimestamp(input.folderName || "");
-    if (!timestamp.ok) return { ok: false, outcome: "failed", state: next, errors: [timestamp.error || "Некорректная дата запуска"] };
-    const run = ensurePollingRun(next, input, timestamp.capturedAt);
+    const runTimestamp = input.runCapturedAt || input.capturedAt ? { ok: true, capturedAt: normalizeDate(input.runCapturedAt || input.capturedAt), source: input.runCapturedAtSource || input.capturedAtSource || "manual" } : parseRunFolderTimestamp(input.folderName || "");
+    if (!runTimestamp.ok || !runTimestamp.capturedAt) return { ok: false, outcome: "failed", state: next, errors: [runTimestamp.error || "Некорректная дата запуска"] };
+    const resultTimestamp = resolvePollingResultTimestamp(input);
+    const run = ensurePollingRun(next, input, runTimestamp.capturedAt);
     if (!run) return { ok: false, outcome: "failed", state: next, errors: ["Polling run не найден"] };
     const rawText = String(input.text || "");
     const rawSha256 = await sha256Text(rawText);
@@ -1487,19 +1697,20 @@
     const candidates = ipInfo.ip ? next.inventoryDevices.filter((device) => device.ipNormalized === ipInfo.ip || (device.ipHistory || []).includes(ipInfo.ip)) : [];
     const device = candidates.length === 1 ? candidates[0] : null;
     const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
-    const status = payload ? derivePollingStatus(payload) : { pollStatus: "error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
+    const status = payload ? derivePollingStatus(payload) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
     const result = {
       id: createId("polling-result"), runId: run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
-      deviceId: device?.id || null, capturedAt: timestamp.capturedAt, importedAt: input.importedAt || nowIso(),
+      deviceId: device?.id || null, capturedAt: resultTimestamp.capturedAt, capturedAtSource: resultTimestamp.source, sourceLastModified: resultTimestamp.sourceLastModified, importedAt: input.importedAt || nowIso(),
       rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
       detectedCategory, matchStatus: device ? "matched" : candidates.length > 1 ? "ambiguous" : "unmatched",
       classificationConflict: Boolean(device && detectedCategory !== "unknown" && device.category !== detectedCategory),
       normalizedData: payload ? pollingPayloadProjection(payload) : {}, ...status
     };
+    result.operationalStatus = parseError ? "processing_error" : !device ? "unmatched" : status.pollStatus;
     next.pollingResults.push(result);
     run.fileCount += 1;
-    if (parseError || status.pollStatus === "error") run.errorCount += 1; else run.successCount += 1;
+    if (result.operationalStatus === "success") run.successCount += 1; else run.errorCount += 1;
     if (parseError) next.inventoryIssues.push(createInventoryIssue({ kind: "malformed_json", sourceType: "polling_result", sourceId: result.id, message: `JSON не прочитан: ${parseError}` }));
     if (!ipInfo.ok) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_filename_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.error }));
     if (!device) next.inventoryIssues.push(createInventoryIssue({ kind: candidates.length > 1 ? "ambiguous_ip" : "unmatched_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.ip ? `IP ${ipInfo.ip} не сопоставлен однозначно` : "IP отсутствует" }));
@@ -1516,7 +1727,7 @@
     const run = ensurePollingRun(next, { ...input, capturedAtSource: folderTimestamp.source }, folderTimestamp.capturedAt);
     const results = [];
     for (const file of input.files || []) {
-      const imported = await ingestPollingResultText(next, { ...input, ...file, runId: run.id, capturedAt: folderTimestamp.capturedAt, capturedAtSource: folderTimestamp.source });
+      const imported = await ingestPollingResultText(next, { ...input, ...file, runId: run.id, runCapturedAt: folderTimestamp.capturedAt, runCapturedAtSource: folderTimestamp.source });
       next = imported.state;
       results.push({ name: file.name, relativePath: file.relativePath || file.name, outcome: imported.outcome, errors: imported.errors });
     }
@@ -1611,7 +1822,21 @@
   }
 
   function pollingResultOrder(left, right) {
-    return new Date(left.capturedAt) - new Date(right.capturedAt) || String(left.id).localeCompare(String(right.id));
+    const leftTime = normalizeDate(left?.capturedAt) ? new Date(left.capturedAt).getTime() : null;
+    const rightTime = normalizeDate(right?.capturedAt) ? new Date(right.capturedAt).getTime() : null;
+    if (leftTime !== null && rightTime !== null) return leftTime - rightTime || String(left.id).localeCompare(String(right.id));
+    if (leftTime !== null) return -1;
+    if (rightTime !== null) return 1;
+    return timeValue(left?.importedAt) - timeValue(right?.importedAt) || String(left?.id || "").localeCompare(String(right?.id || ""));
+  }
+
+  function comparePollingResultsNewest(left, right) {
+    const leftKnown = Boolean(normalizeDate(left?.capturedAt));
+    const rightKnown = Boolean(normalizeDate(right?.capturedAt));
+    if (leftKnown && rightKnown) return pollingResultOrder(right, left);
+    if (leftKnown) return -1;
+    if (rightKnown) return 1;
+    return timeValue(right?.importedAt) - timeValue(left?.importedAt) || String(right?.id || "").localeCompare(String(left?.id || ""));
   }
 
   function pollingPairKey(deviceId, fromResultId, toResultId) {
@@ -1635,7 +1860,7 @@
     const duplicateKeys = new Set(candidateState.pollingResults.map((result) => pollingDuplicateKey(result.runId, result.filename, result.rawSha256)));
     const historyByDevice = new Map();
     for (const result of candidateState.pollingResults) {
-      if (!result.deviceId || result.parseStatus !== "parsed") continue;
+      if (!result.deviceId || result.parseStatus !== "parsed" || !normalizeDate(result.capturedAt)) continue;
       if (!historyByDevice.has(result.deviceId)) historyByDevice.set(result.deviceId, []);
       historyByDevice.get(result.deviceId).push(result);
     }
@@ -1697,15 +1922,14 @@
 
   function addIndexedPollingPair(context, deviceId, fromResult, toResult, metrics) {
     if (!fromResult || !toResult) return;
-    const differences = [];
-    const ignored = (context.state.settings.ignoredPollingPaths || []).map((item) => String(item).startsWith("$") ? String(item) : `$.${item}`);
-    flattenPollingChanges(fromResult.normalizedData, toResult.normalizedData, "$", ignored, differences);
+    const device = context.state.inventoryDevices.find((item) => item.id === deviceId);
+    const differences = diffAnalyzedParameters(device, fromResult.normalizedData, toResult.normalizedData);
     const changes = differences.map((difference) => ({
       id: createId("device-change"),
       deviceId,
       fromPollingResultId: fromResult.id,
       toPollingResultId: toResult.id,
-      detectedAt: nowIso(),
+      detectedAt: toResult.capturedAt,
       status: "active",
       ...difference
     }));
@@ -1715,7 +1939,7 @@
   }
 
   function insertIndexedPollingHistory(context, result, metrics) {
-    if (!result.deviceId || result.parseStatus !== "parsed") return;
+    if (!result.deviceId || result.parseStatus !== "parsed" || !normalizeDate(result.capturedAt)) return;
     let history = context.historyByDevice.get(result.deviceId);
     if (!history) {
       history = [];
@@ -1766,24 +1990,26 @@
 
     const normalizationStarted = monotonicNow();
     const detectedCategory = payload ? detectExtronJsonDeviceType(payload) : "unknown";
-    const status = payload ? derivePollingStatus(payload) : { pollStatus: "error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
+    const status = payload ? derivePollingStatus(payload) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", rebootCount: null, gcPlus: null };
     const normalizedData = payload ? pollingPayloadProjection(payload) : {};
+    const timestamp = resolvePollingResultTimestamp(input);
     metrics.normalized += 1;
     metrics.stagesMs.normalization += monotonicNow() - normalizationStarted;
 
     const result = {
       id: createId("polling-result"), runId: input.run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
-      deviceId: device?.id || null, capturedAt: input.capturedAt, importedAt: input.importedAt || nowIso(),
+      deviceId: device?.id || null, capturedAt: timestamp.capturedAt, capturedAtSource: timestamp.source, sourceLastModified: timestamp.sourceLastModified, importedAt: input.importedAt || nowIso(),
       rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
       detectedCategory, matchStatus: device ? "matched" : candidates.length > 1 ? "ambiguous" : "unmatched",
       classificationConflict: Boolean(device && detectedCategory !== "unknown" && device.category !== detectedCategory),
       normalizedData, ...status
     };
+    result.operationalStatus = parseError ? "processing_error" : !device ? "unmatched" : status.pollStatus;
 
     context.state.pollingResults.push(result);
     input.run.fileCount += 1;
-    if (parseError || status.pollStatus === "error") input.run.errorCount += 1; else input.run.successCount += 1;
+    if (result.operationalStatus === "success") input.run.successCount += 1; else input.run.errorCount += 1;
     if (parseError) context.state.inventoryIssues.push(createInventoryIssue({ kind: "malformed_json", sourceType: "polling_result", sourceId: result.id, message: `JSON не прочитан: ${parseError}` }));
     if (!ipInfo.ok) context.state.inventoryIssues.push(createInventoryIssue({ kind: "invalid_filename_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.error }));
     if (!device) context.state.inventoryIssues.push(createInventoryIssue({ kind: candidates.length > 1 ? "ambiguous_ip" : "unmatched_ip", sourceType: "polling_result", sourceId: result.id, message: ipInfo.ip ? `IP ${ipInfo.ip} не сопоставлен однозначно` : "IP отсутствует" }));
@@ -1879,7 +2105,6 @@
             ...preparedFile.descriptor,
             text: preparedFile.text,
             run,
-            capturedAt: runGroup.capturedAt,
             importedAt: input.importedAt,
             actorId: input.actorId || "system"
           }, metrics);
@@ -3415,6 +3640,9 @@
     PRODUCT_CATALOG,
     MODULE_CATALOG,
     UI_TERMS,
+    EQUIPMENT_CATEGORY_CATALOG,
+    EQUIPMENT_CATEGORY_IDS,
+    ANALYZED_PARAMETER_RULES,
     HELP_SECTIONS,
     HELP_TOPIC_BY_ROUTE,
     STATE_ARRAY_KEYS,
@@ -3435,6 +3663,7 @@
     deepClone,
     deriveLegacyMetadata,
     derivePollingStatus,
+    resolvePollingResultTimestamp,
     detectExtronJsonDeviceType,
     detectSecrets,
     detectSnapshotProfile,
@@ -3463,6 +3692,8 @@
     importBackupText,
     importSrRows,
     importSrWorkbook,
+    processSrImportRows,
+    createSrImportContext,
     ingestPollingResultText,
     ingestPollingFolderTree,
     ingestPollingRunFiles,
@@ -3484,6 +3715,8 @@
     parsePollingFilenameIp,
     parseRunFolderTimestamp,
     pollingPayloadProjection,
+    getAnalyzedParameterRules,
+    diffAnalyzedParameters,
     processPollingImportBatches,
     createPollingImportContext,
     cooperativeBrowserYield,
@@ -3571,11 +3804,13 @@
     eventFilters: {},
     inventoryFilters: {},
     srImportResults: [],
+    srProgress: null,
     pollingImportResults: [],
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
     inventoryBusy: false,
+    equipmentExpanded: true,
     dashboardFilters: { period: "latest_run" },
     helpQuery: "",
     helpTopicId: null
@@ -3690,7 +3925,7 @@
         <aside class="sidebar">
           <div class="sidebar-brand">MVP_SPHERE_SR</div>
           <nav class="nav-list" aria-label="Основная навигация">
-            ${PRODUCT_CATALOG.buildNavigation().map((item) => navButton(item.route, item.title)).join("")}
+            ${PRODUCT_CATALOG.buildNavigation().map((item) => item.children?.length ? renderNavigationGroup(item) : navButton(item.route, item.title)).join("")}
           </nav>
         </aside>
         <div class="workspace">
@@ -3714,6 +3949,7 @@
     if (descriptor.renderer === "reference") return renderReference();
     if (descriptor.renderer === "settings") return renderSettings(user);
     if (descriptor.renderer === "upload") return renderUpload();
+    if (descriptor.renderer === "equipment") return renderEquipmentOverview();
     if (descriptor.renderer === "inventory") return renderInventoryRoute(descriptor.route);
     return renderDashboard();
   }
@@ -3721,6 +3957,17 @@
   function navButton(route, label) {
     const active = ui.route === route ? " active" : "";
     return `<button class="nav-button${active}" type="button" data-route="${route}">${escapeHtml(label)}</button>`;
+  }
+
+  function renderNavigationGroup(item) {
+    const childActive = item.children.some((child) => child.route === ui.route);
+    const expanded = ui.equipmentExpanded || childActive;
+    return `<div class="nav-group"><button class="nav-button nav-parent${childActive || ui.route === item.route ? " active" : ""}" type="button" data-equipment-toggle aria-expanded="${expanded}"><span>${escapeHtml(item.title)}</span><span aria-hidden="true">${expanded ? "▾" : "▸"}</span></button><div class="nav-children"${expanded ? "" : " hidden"}>${item.children.map((child) => `<button class="nav-button nav-child${ui.route === child.route ? " active" : ""}" type="button" data-route="${child.route}">${escapeHtml(child.title)}</button>`).join("")}</div></div>`;
+  }
+
+  function renderEquipmentOverview() {
+    const counts = Object.fromEntries(EQUIPMENT_CATEGORY_IDS.map((category) => [category, state.inventoryDevices.filter((device) => device.inCurrentSr !== false && device.category === category).length]));
+    return `<header class="page-header"><div><p class="eyebrow">Перечень SR</p><h1>Оборудование</h1><p class="page-subtitle">Семь категорий используют общие фильтры, карточки, историю опросов и аналитику.</p></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.equipment}">О модуле</button></header><section class="equipment-category-grid">${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<article class="card"><h2>${escapeHtml(item.title)}</h2><strong class="stat-value">${counts[item.id]}</strong><p class="muted">Устройств в актуальной SR</p><button class="button secondary" type="button" data-route="${item.route}">Открыть</button></article>`).join("")}</section>`;
   }
 
   function renderMessage() {
@@ -3746,11 +3993,9 @@
       </section>
       ${filterPanel}${noPolling}
       <section class="dashboard-section" aria-labelledby="inventory-kpi"><div class="section-heading"><div><p class="eyebrow">Последнее состояние</p><h2 id="inventory-kpi">Инвентарь</h2></div><span class="badge info">${summary.inventory.locations} локаций</span></div>
-        <div class="dashboard-kpi-grid">
-          ${dashboardRouteKpi("Всего оборудования", summary.inventory.total, "Актуальные контролируемые устройства", null)}
-          ${dashboardRouteKpi("Терминалы ВКС", summary.inventory.byCategory.vcs, "Оборудование видеоконференцсвязи", "vcs")}
-          ${dashboardRouteKpi("Контроллеры", summary.inventory.byCategory.controller, "Устройства управления мультимедийной системой", "controllers")}
-          ${dashboardRouteKpi("Панели управления", summary.inventory.byCategory.panel, "Пользовательские устройства управления", "panels")}
+        <div class="dashboard-kpi-grid equipment-dashboard-grid">
+          ${dashboardRouteKpi("Всего оборудования", summary.inventory.total, "Актуальные устройства семи категорий", "equipment")}
+          ${EQUIPMENT_CATEGORY_CATALOG.map((item) => dashboardRouteKpi(item.title, summary.inventory.byCategory[item.id], "Устройств в актуальной SR", item.route)).join("")}
         </div>
       </section>
       <section class="dashboard-section" aria-labelledby="coverage-kpi"><div class="section-heading"><div><p class="eyebrow">Последнее состояние</p><h2 id="coverage-kpi">Покрытие опросом</h2></div><span class="muted">Каждое устройство учитывается один раз по последним данным</span></div>
@@ -3799,7 +4044,7 @@
   }
 
   function renderDashboardFilters(filters) {
-    const devices = state.inventoryDevices.filter((item) => item.inCurrentSr !== false && ["vcs", "controller", "panel"].includes(item.category));
+    const devices = state.inventoryDevices.filter((item) => item.inCurrentSr !== false && EQUIPMENT_CATEGORY_IDS.includes(item.category));
     const manufacturers = devices.map((item) => item.manufacturerNormalized).filter(Boolean);
     const models = devices.map((item) => item.modelRaw).filter(Boolean);
     const locationIds = new Set(devices.map((item) => item.locationId).filter(Boolean));
@@ -3807,7 +4052,7 @@
     return `<section class="card dashboard-filters"><div class="section-heading"><div><p class="eyebrow">Область анализа</p><h2>Фильтры Дашборда</h2></div><button class="button secondary" type="button" data-clear-dashboard-filters>Сбросить фильтры</button></div><form class="filter-grid dashboard-filter-grid" data-dashboard-filters>
       <div class="field"><label>Период событий</label><select name="period"><option value="latest_run"${filters.period === "latest_run" || !filters.period ? " selected" : ""}>Последний запуск</option><option value="today"${filters.period === "today" ? " selected" : ""}>Сегодня</option><option value="7d"${filters.period === "7d" ? " selected" : ""}>7 дней</option><option value="30d"${filters.period === "30d" ? " selected" : ""}>30 дней</option><option value="custom"${filters.period === "custom" ? " selected" : ""}>Произвольный</option><option value="all"${filters.period === "all" ? " selected" : ""}>Вся история</option></select></div>
       <div class="field"><label>Дата от</label><input type="date" name="dateFrom" value="${escapeHtml(filters.dateFrom || "")}"></div><div class="field"><label>Дата до</label><input type="date" name="dateTo" value="${escapeHtml(filters.dateTo || "")}"></div>
-      <div class="field"><label>Категория</label><select name="category"><option value="">Все</option><option value="vcs"${filters.category === "vcs" ? " selected" : ""}>${UI_TERMS.categories.vcs}</option><option value="controller"${filters.category === "controller" ? " selected" : ""}>${UI_TERMS.categories.controller}</option><option value="panel"${filters.category === "panel" ? " selected" : ""}>${UI_TERMS.categories.panel}</option></select></div>
+      <div class="field"><label>Категория</label><select name="category"><option value="">Все</option>${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<option value="${item.id}"${filters.category === item.id ? " selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}</select></div>
       <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(manufacturers, filters.manufacturer)}</select></div><div class="field"><label>Модель</label><select name="model">${filterOptions(models, filters.model)}</select></div>
       <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${locations.map((item) => `<option value="${escapeHtml(item.id)}"${filters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
       <div class="field"><label>VIP</label><select name="vip"><option value="">Все</option><option value="true"${filters.vip === "true" ? " selected" : ""}>VIP</option><option value="false"${filters.vip === "false" ? " selected" : ""}>Не VIP</option></select></div>
@@ -3827,7 +4072,7 @@
 
   function dashboardMetricKpi(title, value, note, tone, summary, metric, titleIsHtml) {
     const config = { success: ["pollStatus", "success"], failed: ["pollStatus", "error"], pingFailures: ["ping", "failed"], notPolled: ["pollStatus", "never", "support", "supported"], unsupported: ["support", "unsupported"] }[metric] || [];
-    const routeNames = { vcs: "vcs", controller: "controllers", panel: "panels" };
+    const routeNames = Object.fromEntries(EQUIPMENT_CATEGORY_CATALOG.map((item) => [item.id, item.route]));
     const buttons = Object.entries(summary.drilldown.byCategory).filter(([, counts]) => counts[metric] > 0).map(([category, counts]) => {
       const attrs = [`data-dashboard-route="${routeNames[category]}"`];
       for (let index = 0; index < config.length; index += 2) attrs.push(`data-filter-${config[index].replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${config[index + 1]}"`);
@@ -3843,7 +4088,7 @@
   }
 
   function renderVipSummary(summary) {
-    return `<section class="card vip-card"><p class="eyebrow">Приоритет</p><h2>Приоритетная инфраструктура</h2><ul class="data-list"><li><span>VIP-локации</span><strong>${summary.vip.locations}</strong></li><li><span>VIP-оборудование</span><strong>${summary.vip.devices}</strong></li><li><span>С текущими проблемами</span><strong>${summary.vip.problems}</strong></li><li><span>Нет данных или опрос не поддерживается</span><strong>${summary.vip.noData}</strong></li></ul>${summary.vip.problems ? `<div class="metric-drilldowns">${Object.entries(summary.drilldown.byCategory).filter(([, row]) => row.vipProblems).map(([category, row]) => `<button class="metric-link" type="button" data-dashboard-route="${category === "vcs" ? "vcs" : category === "controller" ? "controllers" : "panels"}" data-filter-vip="true" data-filter-poll-status="error">${escapeHtml(formatCategoryLabel(category))}: ${row.vipProblems}</button>`).join("")}</div>` : `<p class="success-text">Известных VIP-проблем нет.</p>`}</section>`;
+    return `<section class="card vip-card"><p class="eyebrow">Приоритет</p><h2>Приоритетная инфраструктура</h2><ul class="data-list"><li><span>VIP-локации</span><strong>${summary.vip.locations}</strong></li><li><span>VIP-оборудование</span><strong>${summary.vip.devices}</strong></li><li><span>С текущими проблемами</span><strong>${summary.vip.problems}</strong></li><li><span>Нет данных или опрос не поддерживается</span><strong>${summary.vip.noData}</strong></li></ul>${summary.vip.problems ? `<div class="metric-drilldowns">${Object.entries(summary.drilldown.byCategory).filter(([, row]) => row.vipProblems).map(([category, row]) => `<button class="metric-link" type="button" data-dashboard-route="${EQUIPMENT_CATEGORY_CATALOG.find((item) => item.id === category)?.route || "equipment"}" data-filter-vip="true" data-filter-poll-status="error">${escapeHtml(formatCategoryLabel(category))}: ${row.vipProblems}</button>`).join("")}</div>` : `<p class="success-text">Известных VIP-проблем нет.</p>`}</section>`;
   }
 
   function renderDashboardProblems(summary) {
@@ -3890,7 +4135,7 @@
   const INVENTORY_ROUTE = PRODUCT_CATALOG.buildInventoryRoutes();
 
   function latestPollingResult(deviceId) {
-    return state.pollingResults.filter((item) => item.deviceId === deviceId).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))[0] || null;
+    return state.pollingResults.filter((item) => item.deviceId === deviceId).sort(comparePollingResultsNewest)[0] || null;
   }
 
   function filteredInventory(category) {
@@ -3918,7 +4163,7 @@
         <div class="field"><label>Модель</label><select name="model">${filterOptions(models, ui.inventoryFilters.model)}</select></div>
         <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${categoryLocations.map((item) => `<option value="${escapeHtml(item.id)}"${ui.inventoryFilters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
         <div class="field"><label>Актуальность SR</label><select name="current"><option value="">Все</option><option value="yes"${ui.inventoryFilters.current === "yes" ? " selected" : ""}>В актуальной SR</option><option value="no"${ui.inventoryFilters.current === "no" ? " selected" : ""}>Исторические</option></select></div>
-        <div class="field"><label>Статус последнего опроса</label><select name="pollStatus">${filterOptions(["success", "error", "unknown", "never"], ui.inventoryFilters.pollStatus, { success: formatPollStatus("success"), error: formatPollStatus("error"), unknown: formatPollStatus("unknown"), never: formatPollStatus("never") })}</select></div>
+        <div class="field"><label>Статус последнего опроса</label><select name="pollStatus">${filterOptions(["success", "authorization_error", "network_unreachable", "processing_error", "unmatched", "unknown", "never"], ui.inventoryFilters.pollStatus, Object.fromEntries(["success", "authorization_error", "network_unreachable", "processing_error", "unmatched", "unknown", "never"].map((status) => [status, formatPollStatus(status)])))}</select></div>
         <div class="field"><label>Сетевая доступность</label><select name="ping">${filterOptions(["ok", "failed", "unknown"], ui.inventoryFilters.ping, { ok: formatPingStatus("ok"), failed: formatPingStatus("failed"), unknown: formatPingStatus("unknown") })}</select></div>
         <div class="field"><label>Изменения</label><select name="changed"><option value="">Все</option><option value="true"${ui.inventoryFilters.changed === "true" ? " selected" : ""}>Есть</option><option value="false"${ui.inventoryFilters.changed === "false" ? " selected" : ""}>Нет</option></select></div>
         <div class="field"><label>Поддержка автоматического опроса</label><select name="support"><option value="">Все</option><option value="supported"${ui.inventoryFilters.support === "supported" ? " selected" : ""}>${formatCapabilityStatus("supported")}</option><option value="unsupported"${ui.inventoryFilters.support === "unsupported" ? " selected" : ""}>${formatCapabilityStatus("unsupported")}</option><option value="unknown"${ui.inventoryFilters.support === "unknown" ? " selected" : ""}>${formatCapabilityStatus("unknown")}</option></select></div>
@@ -3933,21 +4178,22 @@
     return `<div class="table-wrap"><table><thead><tr><th>Локация</th><th>Устройство</th><th>Производитель / модель</th><th>IP-адрес</th><th>Данные SR</th><th>Статус последнего опроса</th><th></th></tr></thead><tbody>${devices.map((device) => {
       const location = state.locations.find((item) => item.id === device.locationId);
       const latest = latestPollingResult(device.id);
-      return `<tr><td><strong>${escapeHtml(location?.name || "—")}</strong><br><span class="muted">${escapeHtml(location?.address || "")}</span></td><td>${escapeHtml(device.nameRaw || device.modelTypeRaw || "—")}<br><span class="muted">${device.deviceVip ? "VIP · " : ""}${escapeHtml(device.inventoryNumber || device.serialNumber || "")}</span></td><td>${escapeHtml(device.manufacturerRaw || "—")}<br><span class="muted">${escapeHtml(device.modelRaw || "—")}</span></td><td class="mono">${escapeHtml(device.ipNormalized || device.ipRaw || "—")}</td><td><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Исторические данные" : "Актуально"}</span></td><td><span class="badge ${latest?.pollStatus === "success" ? "success" : latest?.pollStatus === "error" ? "critical" : "info"}">${escapeHtml(latest ? formatPollStatus(latest.pollStatus) : formatPollStatus("never"))}</span><br><span class="muted">${escapeHtml(formatDateTime(latest?.capturedAt))}</span></td><td><button class="button secondary compact-button" type="button" data-view-inventory="${escapeHtml(device.id)}">Открыть устройство</button></td></tr>`;
+      const status = latest?.operationalStatus || latest?.pollStatus;
+      return `<tr><td><strong>${escapeHtml(location?.name || "—")}</strong><br><span class="muted">${escapeHtml(location?.address || "")}</span></td><td>${escapeHtml(device.nameRaw || device.modelTypeRaw || "—")}<br><span class="muted">${device.deviceVip ? "VIP · " : ""}${escapeHtml(device.inventoryNumber || device.serialNumber || "")}</span></td><td>${escapeHtml(device.manufacturerRaw || "—")}<br><span class="muted">${escapeHtml(device.modelRaw || "—")}</span></td><td class="mono">${escapeHtml(device.ipNormalized || device.ipRaw || "—")}</td><td><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Исторические данные" : "Актуально"}</span></td><td><span class="badge ${status === "success" ? "success" : ["authorization_error", "network_unreachable", "processing_error"].includes(status) ? "critical" : "info"}">${escapeHtml(latest ? formatPollStatus(status) : formatPollStatus("never"))}</span><br><span class="muted">${escapeHtml(formatDateTime(latest?.capturedAt))}</span></td><td><button class="button secondary compact-button" type="button" data-view-inventory="${escapeHtml(device.id)}">Открыть устройство</button></td></tr>`;
     }).join("")}</tbody></table></div>`;
   }
 
   function renderInventoryDetail(device, route) {
     const location = state.locations.find((item) => item.id === device.locationId);
-    const results = state.pollingResults.filter((item) => item.deviceId === device.id).sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt));
+    const results = state.pollingResults.filter((item) => item.deviceId === device.id).sort(comparePollingResultsNewest);
     const changes = state.deviceChanges.filter((item) => item.deviceId === device.id && item.status === "active").sort((a, b) => new Date(b.detectedAt) - new Date(a.detectedAt));
     const capability = resolvePollingCapability(device);
     return `<header class="page-header"><div><button class="text-button" type="button" data-back-inventory="${route}">← К списку</button><h1>${escapeHtml(device.nameRaw || device.modelRaw || "Устройство")}</h1><p class="page-subtitle">${escapeHtml(location?.name || "Без локации")} · ${escapeHtml(device.ipNormalized || "IP не задан")}</p></div><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Не в актуальной SR" : "В актуальной SR"}</span></header>
       <div class="detail-grid"><section class="card"><h2>Карточка SR</h2><dl class="definition-list">
         <div><dt>Производитель / модель</dt><dd>${escapeHtml(device.manufacturerRaw || "—")} / ${escapeHtml(device.modelRaw || "—")}</dd></div><div><dt>IP / MAC</dt><dd>${escapeHtml(device.ipNormalized || "—")} / ${escapeHtml(device.macNormalized || device.macRaw || "—")}</dd></div><div><dt>SIP URI / домен</dt><dd>${escapeHtml(device.sipUri || "—")} / ${escapeHtml(device.domain || location?.domain || "—")}</dd></div><div><dt>Инвентарный / серийный</dt><dd>${escapeHtml(device.inventoryNumber || "—")} / ${escapeHtml(device.serialNumber || "—")}</dd></div>
       </dl></section><section class="card"><h2>Поддержка автоматического опроса</h2><span class="badge warning">${escapeHtml(formatCapabilityStatus(capability.support))}</span><p>Механизм опроса: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">Подтверждённый протокол подключения отсутствует; реальный сетевой опрос заблокирован. Учётные данные хранятся отдельно.</p><button class="button secondary" type="button" disabled>Запустить опрос</button></section></div>
-      <section class="card section-gap"><h2>История опросов (${results.length})</h2><ul class="result-list">${results.map((result) => `<li><div><strong>${escapeHtml(formatDateTime(result.capturedAt))}</strong><br><span class="muted">${escapeHtml(result.filename)} · ${escapeHtml(formatCategoryLabel(result.detectedCategory))} · ${escapeHtml(formatPingStatus(result.pingStatus))}</span></div><span class="badge ${result.pollStatus === "success" ? "success" : "critical"}">${escapeHtml(formatPollStatus(result.pollStatus))}</span></li>`).join("") || "<li>Результатов пока нет</li>"}</ul></section>
-      <section class="card section-gap"><h2>Обнаруженные изменения (${changes.length})</h2><ul class="result-list">${changes.slice(0, 200).map((change) => `<li><div><strong>${escapeHtml(formatChangePath(change.path))}</strong><br><span class="muted">${escapeHtml(displayValue(change.oldValue))} → ${escapeHtml(displayValue(change.newValue))}</span></div><span class="badge info">Изменение</span></li>`).join("") || "<li>Изменений не выявлено</li>"}</ul></section>`;
+      <section class="card section-gap"><h2>История опросов (${results.length})</h2><p class="muted">«Дата и время опроса» берётся из времени последнего изменения выбранного JSON-файла. Это не время создания файла и не время папки запуска.</p><ul class="result-list">${results.map((result) => `<li><div><strong>Дата и время опроса: ${escapeHtml(formatDateTime(result.capturedAt))}</strong><br><span class="muted">${result.capturedAtSource === "file_last_modified" ? "Время последнего изменения файла" : "Время файла недоступно"} · ${escapeHtml(result.filename)} · ${escapeHtml(formatCategoryLabel(result.detectedCategory))} · ${escapeHtml(formatPingStatus(result.pingStatus))}</span></div><span class="badge ${(result.operationalStatus || result.pollStatus) === "success" ? "success" : "critical"}">${escapeHtml(formatPollStatus(result.operationalStatus || result.pollStatus))}</span></li>`).join("") || "<li>Результатов пока нет</li>"}</ul></section>
+      <section class="card section-gap"><h2>Обнаруженные изменения (${changes.length})</h2><ul class="result-list">${changes.slice(0, 200).map((change) => `<li><div><strong>${escapeHtml(change.parameterLabel || formatChangePath(change.path))}</strong><br><span class="muted">${escapeHtml(displayValue(change.oldValue))} → ${escapeHtml(displayValue(change.newValue))}</span></div><span class="badge info">Изменение</span></li>`).join("") || "<li>Изменений не выявлено</li>"}</ul></section>`;
   }
 
   function statCard(label, value) {
@@ -4128,6 +4374,7 @@
   function renderUpload() {
     const pollingProgress = ui.pollingProgress;
     const pollingPercent = pollingProgress?.total ? Math.min(100, Math.round((pollingProgress.processed / pollingProgress.total) * 100)) : 0;
+    const srPercent = ui.srProgress?.total ? Math.min(100, Math.round((ui.srProgress.processed / ui.srProgress.total) * 100)) : 0;
     return `
       <header class="page-header">
         <div>
@@ -4138,6 +4385,7 @@
       <div class="card-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR (.xlsx)</h2><p class="muted">Первый непустой лист; «Домен» необязателен. Повторный импорт обновляет устройства без потери истории.</p>
           <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file">Файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить выгрузку SR</button></form>
+          ${ui.srProgress ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(ui.srProgress.stage)}</span><strong>${ui.srProgress.processed || 0} из ${ui.srProgress.total || 0} строк</strong></div><strong>${srPercent}%</strong></div><progress max="100" value="${srPercent}">${srPercent}%</progress><p class="muted">Принято: ${ui.srProgress.accepted || 0} · отклонено: ${ui.srProgress.rejected || 0}</p></section>` : ""}
           ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
         <section class="card upload-card"><h2>2. Общая папка результатов опросов</h2><p class="muted">Выберите одну общую папку целиком. Внутри неё могут находиться несколько папок сеансов вида YYYY-MM-DD_HH-MM-SS; все JSON будут найдены рекурсивно и импортированы как отдельные запуски.</p>
@@ -4154,7 +4402,7 @@
         </section>
       </div>
       <section class="card section-gap"><h2>3. План будущего опроса</h2><p class="muted">План сохраняет только выбранные устройства и время. Автоматическое фоновое выполнение заблокировано, пока нет подтверждённого механизма подключения.</p>
-        <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required><option value="vcs">${UI_TERMS.categories.vcs}</option><option value="controller">${UI_TERMS.categories.controller}</option><option value="panel">${UI_TERMS.categories.panel}</option></select></div><div class="field"><label>Производитель, необязательно</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Запланировать опрос</button><button class="button secondary" type="button" disabled>Сетевой запуск недоступен</button></form>
+        <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required>${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<option value="${item.id}">${escapeHtml(item.title)}</option>`).join("")}</select></div><div class="field"><label>Производитель, необязательно</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Запланировать опрос</button><button class="button secondary" type="button" disabled>Сетевой запуск недоступен</button></form>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(formatCategoryLabel(ui.pollingPlanResult.category))}, устройств ${ui.pollingPlanResult.total}; поддерживаемых механизмов ${ui.pollingPlanResult.implemented}; ожидают реализации ${ui.pollingPlanResult.notImplemented}. Учётные данные не изменялись.</div>` : ""}
       </section>
       `;
@@ -4395,6 +4643,11 @@
   }
 
   function handleClick(event) {
+    if (event.target.closest("[data-equipment-toggle]")) {
+      ui.equipmentExpanded = !ui.equipmentExpanded;
+      render();
+      return;
+    }
     if (event.target.closest("[data-cancel-polling-import]")) {
       ui.pollingCancelRequested = true;
       if (ui.pollingProgress) ui.pollingProgress.cancelRequested = true;
@@ -4434,7 +4687,7 @@
 
     const dashboardDevice = event.target.closest("[data-dashboard-device]");
     if (dashboardDevice) {
-      ui.route = { vcs: "vcs", controller: "controllers", panel: "panels" }[dashboardDevice.dataset.dashboardCategory] || "dashboard";
+      ui.route = Object.fromEntries(EQUIPMENT_CATEGORY_CATALOG.map((item) => [item.id, item.route]))[dashboardDevice.dataset.dashboardCategory] || "dashboard";
       ui.selectedInventoryDeviceId = dashboardDevice.dataset.dashboardDevice;
       setMessage(null);
       render();
@@ -4980,13 +5233,12 @@
     if (!file) return;
     ui.inventoryBusy = true;
     ui.srImportResults = [];
+    ui.srProgress = { stage: "Чтение выгрузки SR", processed: 0, total: 0, accepted: 0, rejected: 0 };
     render();
     try {
-      const result = await importSrWorkbook(state, { filename: file.name, arrayBuffer: await readFileArrayBuffer(file), actorId: currentUser()?.id || "system" });
+      const result = await importSrWorkbook(state, { filename: file.name, arrayBuffer: await readFileArrayBuffer(file), actorId: currentUser()?.id || "system", onProgress(progress) { ui.srProgress = progress; render(); } });
       if (result.ok && result.outcome !== "duplicate") {
-        const saved = saveState(result.state, persistenceStorage);
-        if (!saved.ok) throw new Error(saved.errors.join("; "));
-        state = deepClone(result.state);
+        state = result.state;
         pollingImportContextCache = null;
       }
       ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
@@ -5010,7 +5262,7 @@
     ui.pollingProgress = { stage: "Поиск файлов", total: selectedFiles.length, processed: 0, succeeded: 0, errors: 0, duplicates: 0, currentRun: null, filesPerSecond: 0, etaSeconds: null, status: "running" };
     render();
     try {
-      const descriptors = selectedFiles.map((file) => ({ name: file.name, relativePath: file.webkitRelativePath || file.name, sourceFile: file }));
+      const descriptors = selectedFiles.map((file) => ({ name: file.name, relativePath: file.webkitRelativePath || file.name, lastModified: file.lastModified, sourceFile: file }));
       const result = await processPollingImportBatches(state, {
         actorId: currentUser()?.id || "system",
         files: descriptors,
