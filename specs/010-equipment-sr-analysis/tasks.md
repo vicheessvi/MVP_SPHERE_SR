@@ -78,3 +78,10 @@ Tasks с `[P]` независимы по смыслу, но в текущем с
 - [x] T040 [US2] Добавить русскую диагностику конфликтов и правило current SR в `product-catalog.js`, `app.js`.
 - [x] T041 Обновить ADR/architecture/README/log и matching contracts без удаления `ipHistory`.
 - [x] T042 Выполнить syntax, regression, runtime/server/reference, matching performance, secret scan и `git diff --check`; не выполнять commit/push/deploy.
+
+## Phase 9 — Повторное исправление lifecycle навигации
+
+- [x] T043 [P] [US1] Заменить source-string проверки на полный production render/click/render regression для начального состояния, трёх кликов, всех дочерних routes и повторного render.
+- [x] T044 [US1] Централизовать navigation state/reducer/resolver в `app.js`, сохранить active route при ручном collapse и добавить нативный `hidden`.
+- [x] T045 [US1] Зафиксировать одинаковое базовое начертание всех `.nav-button` без отдельного bold для родителя.
+- [x] T046 Выполнить syntax, regression, runtime/server/reference, secret scan и `git diff --check`; не выполнять commit/push/deploy.

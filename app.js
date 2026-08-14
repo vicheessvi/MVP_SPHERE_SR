@@ -3751,6 +3751,42 @@
     });
   }
 
+  function createNavigationState(input = {}) {
+    const requestedRoute = typeof input.route === "string" ? input.route : "dashboard";
+    const route = MODULE_CATALOG.some((item) => item.route === requestedRoute) ? requestedRoute : "dashboard";
+    return Object.freeze({
+      route,
+      equipmentExpanded: input.equipmentExpanded === true
+    });
+  }
+
+  function reduceNavigationState(current, action = {}) {
+    const state = createNavigationState(current);
+    if (action.type === "toggle_equipment") {
+      return createNavigationState({ route: state.route, equipmentExpanded: !state.equipmentExpanded });
+    }
+    if (action.type === "navigate") {
+      return createNavigationState({ route: action.route, equipmentExpanded: state.equipmentExpanded });
+    }
+    return state;
+  }
+
+  function resolveNavigationAction(target) {
+    if (!target || typeof target.closest !== "function") return null;
+    if (target.closest("[data-equipment-toggle]")) return Object.freeze({ type: "toggle_equipment" });
+    const routeButton = target.closest("[data-route]");
+    if (!routeButton) return null;
+    return Object.freeze({ type: "navigate", route: routeButton.dataset.route });
+  }
+
+  function renderEquipmentNavigationGroup(item, navigationState) {
+    const navigation = createNavigationState(navigationState);
+    const childActive = item.children.some((child) => child.route === navigation.route);
+    const expanded = navigation.equipmentExpanded;
+    const childrenId = `nav-children-${item.route}`;
+    return `<div class="nav-group"><button class="nav-button nav-parent${childActive || navigation.route === item.route ? " active" : ""}" type="button" data-equipment-toggle aria-expanded="${expanded}" aria-controls="${childrenId}"><span>${escapeHtml(item.title)}</span><span aria-hidden="true">${expanded ? "▾" : "▸"}</span></button><div id="${childrenId}" class="nav-children${expanded ? "" : " hidden"}"${expanded ? "" : " hidden"}>${item.children.map((child) => `<button class="nav-button nav-child${navigation.route === child.route ? " active" : ""}" type="button" data-route="${child.route}">${escapeHtml(child.title)}</button>`).join("")}</div></div>`;
+  }
+
   // ---------------------------------------------------------------------------
   // Public test surface (pure foundational primitives only)
   // ---------------------------------------------------------------------------
@@ -3862,6 +3898,10 @@
     sha256Bytes,
     sha256Text,
     createVolatileStorage,
+    createNavigationState,
+    reduceNavigationState,
+    resolveNavigationAction,
+    renderEquipmentNavigationGroup,
     validateBackup,
     validateExtronV1,
     validateState,
@@ -3920,8 +3960,9 @@
       }
     }
   }
+  const initialNavigationState = createNavigationState();
   const ui = {
-    route: "dashboard",
+    route: initialNavigationState.route,
     message: startupMessage,
     uploadResults: [],
     uploadBusy: false,
@@ -3939,7 +3980,7 @@
     pollingCancelRequested: false,
     pollingPlanResult: null,
     inventoryBusy: false,
-    equipmentExpanded: false,
+    equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
     helpQuery: "",
     helpTopicId: null
@@ -4089,9 +4130,7 @@
   }
 
   function renderNavigationGroup(item) {
-    const childActive = item.children.some((child) => child.route === ui.route);
-    const expanded = ui.equipmentExpanded;
-    return `<div class="nav-group"><button class="nav-button nav-parent${childActive || ui.route === item.route ? " active" : ""}" type="button" data-equipment-toggle aria-expanded="${expanded}"><span>${escapeHtml(item.title)}</span><span aria-hidden="true">${expanded ? "▾" : "▸"}</span></button><div class="nav-children"${expanded ? "" : " hidden"}>${item.children.map((child) => `<button class="nav-button nav-child${ui.route === child.route ? " active" : ""}" type="button" data-route="${child.route}">${escapeHtml(child.title)}</button>`).join("")}</div></div>`;
+    return renderEquipmentNavigationGroup(item, ui);
   }
 
   function renderEquipmentOverview() {
@@ -4772,8 +4811,11 @@
   }
 
   function handleClick(event) {
-    if (event.target.closest("[data-equipment-toggle]")) {
-      ui.equipmentExpanded = !ui.equipmentExpanded;
+    const navigationAction = resolveNavigationAction(event.target);
+    if (navigationAction?.type === "toggle_equipment") {
+      const navigation = reduceNavigationState(ui, navigationAction);
+      ui.route = navigation.route;
+      ui.equipmentExpanded = navigation.equipmentExpanded;
       render();
       return;
     }
@@ -4844,9 +4886,10 @@
       return;
     }
 
-    const routeButton = event.target.closest("[data-route]");
-    if (routeButton) {
-      ui.route = routeButton.dataset.route;
+    if (navigationAction?.type === "navigate") {
+      const navigation = reduceNavigationState(ui, navigationAction);
+      ui.route = navigation.route;
+      ui.equipmentExpanded = navigation.equipmentExpanded;
       if (ui.route === "reference") {
         ui.helpQuery = "";
         ui.helpTopicId = null;

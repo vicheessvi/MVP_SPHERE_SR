@@ -119,10 +119,14 @@ test("Target navigation и загрузка соответствуют един�
   assert(source.includes('data-polling-import-form'));
   assert(source.includes('webkitdirectory directory multiple'));
   assert(!source.includes('data-import-credentials'));
-  assert(source.includes('equipmentExpanded: false'), "Оборудование должно быть свёрнуто при старте");
+  assert(source.includes('const initialNavigationState = createNavigationState()'), "Production UI должен использовать проверяемый navigation lifecycle");
+  assert(source.includes('reduceNavigationState(ui, navigationAction)'), "Click-handler должен использовать navigation reducer");
   assert(!source.includes('ui.equipmentExpanded || childActive'), "Active child не должен блокировать сворачивание");
   const parentStyle = styles.match(/\.nav-parent\s*\{([^}]*)\}/)?.[1] || "";
   assert(!/font-weight\s*:/.test(parentStyle), "Родитель Оборудование не должен иметь отдельное усиление шрифта");
+  const buttonStyle = styles.match(/\.nav-button\s*\{([^}]*)\}/)?.[1] || "";
+  assert(/font-weight\s*:\s*400/.test(buttonStyle), "Все верхнеуровневые кнопки должны иметь одинаковое начертание");
+  assert(source.includes('${expanded ? "" : " hidden"}>'), "Collapsed navigation должна использовать нативный hidden");
 });
 
 test("Прямой index.html использует непостоянный file mode и не показывает удалённые уведомления", () => {

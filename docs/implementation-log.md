@@ -750,3 +750,15 @@ UI переведён на индексированный pipeline с пакет
 - `specs/008-batch-polling-folder-import/`, ADR-0008.
 
 Commit и push для feature 008 не выполнялись.
+
+## 2026-08-14 — Повторное исправление навигации «Оборудование»
+
+Предыдущее исправление меняло начальное значение и условие render, но regression проверял только наличие/отсутствие строк в исходниках. Полный production lifecycle `render → click → render → child route → collapse/expand` не выполнялся, поэтому повторный дефект не был защищён тестом.
+
+Navigation state вынесен в единый reducer/resolver, который использует сам browser click-handler. Начальное состояние всегда collapsed; переход по дочернему route сохраняет ручное состояние группы; active child не выполняет auto-expand. Скрытие дочерних пунктов подтверждается классом и нативным `hidden`, а общее правило `.nav-button` задаёт одинаковое базовое начертание родителя и других верхнеуровневых модулей.
+
+Автоматический production regression покрывает collapsed → expanded → collapsed → expanded, все семь дочерних routes, collapse при active child и повторный render. Browser-control не может открыть `file://` из-за политики URL; обход не выполнялся.
+
+Проверки: JavaScript syntax — PASS; regression — 126/126 PASS; runtime contracts — 13/13 PASS; server integration — 1/1 PASS; product catalog/reference — 12 модулей, 12 модульных карточек и 10 статусных карточек PASS; secret/artifact scan и `git diff --check` — PASS.
+
+Commit, push и deploy не выполнялись.

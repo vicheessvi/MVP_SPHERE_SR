@@ -34,6 +34,18 @@ Input включает rows, headers, metadata, optional `onProgress` и batch s
 - только configured paths;
 - каждое изменение содержит Russian label/rationale;
 - no rules → empty array;
+
+## Equipment navigation lifecycle
+
+`createNavigationState() -> { route: "dashboard", equipmentExpanded: false }`
+
+`reduceNavigationState(state, action) -> state`
+
+- `toggle_equipment` меняет только `equipmentExpanded`;
+- `navigate` меняет только `route` и сохраняет ручное состояние группы;
+- active child не раскрывает группу автоматически;
+- collapsed render использует одновременно `aria-expanded="false"`, класс `hidden` и нативный атрибут `hidden`;
+- повторный render не создаёт и не сбрасывает navigation state.
 - raw payload не модифицируется.
 
 ## Status evidence

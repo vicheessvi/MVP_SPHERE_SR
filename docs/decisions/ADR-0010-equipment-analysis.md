@@ -35,4 +35,11 @@
 - Индекс разделён на current и historical semantics; historical candidates никогда не создают `deviceId`.
 - Подтверждённые внутренние IP paths `$.ip` и `$.webBlocks['LAN Settings']['IP Address']` проверяются против IP имени файла.
 - Надёжный конфликт внутреннего IP или категории изолирует результат без связи с SR-устройством, поэтому он не меняет историю, последний статус, Dashboard или DeviceChange.
+
+## Уточнение lifecycle навигации
+
+- Начальное и последующее состояние группы «Оборудование» управляется единым navigation reducer; render не вычисляет раскрытие из active route.
+- `toggle_equipment` изменяет только раскрытие, а переход по дочернему route сохраняет выбранное пользователем состояние группы.
+- Production click-handler использует тот же reducer/resolver, который покрыт полным `render → click → render` regression для всех семи дочерних routes.
+- Collapsed render использует `aria-expanded="false"` и нативный `hidden`; родитель получает то же базовое начертание, что остальные `.nav-button`.
 - При duplicate current IP надёжная категория JSON может выбрать единственного кандидата; иначе matching остаётся неоднозначным.

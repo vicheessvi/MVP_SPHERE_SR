@@ -115,6 +115,61 @@
     assertEqual(state.users.filter((user) => user.active).length, 1);
   });
 
+  test("Навигация Оборудование проходит полный render-click-render lifecycle", () => {
+    const equipment = api.PRODUCT_CATALOG.buildNavigation().find((item) => item.route === "equipment");
+    const toggleTarget = { closest(selector) { return selector === "[data-equipment-toggle]" ? this : null; } };
+    const routeTarget = (route) => ({
+      dataset: { route },
+      closest(selector) { return selector === "[data-route]" ? this : null; }
+    });
+    let navigation = api.createNavigationState();
+    let html = api.renderEquipmentNavigationGroup(equipment, navigation);
+    const click = (target) => {
+      const action = api.resolveNavigationAction(target);
+      assert(action, "Клик должен распознаваться production resolver");
+      navigation = api.reduceNavigationState(navigation, action);
+      html = api.renderEquipmentNavigationGroup(equipment, navigation);
+    };
+    const assertCollapsed = () => {
+      assertEqual(navigation.equipmentExpanded, false);
+      assert(html.includes('aria-expanded="false"'));
+      assert(html.includes('class="nav-children hidden" hidden'));
+    };
+    const assertExpanded = () => {
+      assertEqual(navigation.equipmentExpanded, true);
+      assert(html.includes('aria-expanded="true"'));
+      assert(html.includes('class="nav-children"'));
+      assert(!html.includes('class="nav-children hidden"'));
+      api.EQUIPMENT_CATEGORY_CATALOG.forEach((item) => assert(html.includes(`data-route="${item.route}"`), `${item.title} отсутствует`));
+    };
+
+    assertCollapsed();
+    click(toggleTarget);
+    assertExpanded();
+    click(toggleTarget);
+    assertCollapsed();
+    click(toggleTarget);
+    assertExpanded();
+
+    ["vcs", "controllers", "panels", "switches", "matrix-switches", "scalers", "audio-processors"].forEach((route) => {
+      click(routeTarget(route));
+      assertEqual(navigation.route, route);
+      assertExpanded();
+      assert(html.includes(`nav-child active" type="button" data-route="${route}"`), `${route} должен быть активным`);
+      click(toggleTarget);
+      assertCollapsed();
+      assertEqual(navigation.route, route, "Ручное сворачивание не должно менять active route");
+      html = api.renderEquipmentNavigationGroup(equipment, navigation);
+      assertCollapsed();
+      click(toggleTarget);
+      assertExpanded();
+    });
+
+    navigation = api.createNavigationState({ route: "controllers", equipmentExpanded: false });
+    html = api.renderEquipmentNavigationGroup(equipment, navigation);
+    assertCollapsed();
+  });
+
   test("Migration принимает v1 и отклоняет неизвестную будущую версию", () => {
     const current = api.migrateState(api.createDemoState());
     assert(current.ok);
