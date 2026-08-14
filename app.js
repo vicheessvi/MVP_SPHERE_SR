@@ -14,6 +14,7 @@
   const DEFAULT_MAX_STATE_BYTES = Number.MAX_SAFE_INTEGER;
   const DEFAULT_MAX_RAW_INPUT_BYTES = Number.MAX_SAFE_INTEGER;
   const DASHBOARD_LIST_LIMIT = 8;
+  const DEFAULT_INVENTORY_FILTERS = Object.freeze({ current: "yes" });
 
   const COMMON_ACTIONS = Object.freeze([
     "view",
@@ -175,6 +176,8 @@
       invalid_ip: "В выгрузке SR указан некорректный IP-адрес. Проверьте исходную строку.",
       missing_identity: "Устройство сохранено в перечне, но в строке SR нет inventory/serial/MAC/IP. Для повторного импорта используется локальная составная идентичность по помещению и описанию.",
       ambiguous_identity: "Строка SR может относиться к нескольким устройствам. Требуется проверка идентификаторов.",
+      identity_collision: "Совпавший идентификатор уже используется другой строкой текущей SR. Обе строки сохранены отдельными устройствами и требуют проверки исходных идентификаторов.",
+      duplicate_sr_row: "Строка является точным повтором уже обработанной строки SR с теми же идентификаторами и техническим описанием.",
       unknown_category: "Не удалось определить категорию оборудования по данным SR. Проверьте тип оборудования и тип модели."
     }[issue?.kind] || "Обнаружена ошибка данных. Проверьте исходный файл и повторите импорт.";
   }
@@ -873,12 +876,24 @@
     return key === undefined ? null : row[key];
   }
 
+  function normalizeSrCategoryValue(value) {
+    if (value === null || value === undefined) return null;
+    return normalizeText(String(value).replace(/[\u200B-\u200D\u2060\uFEFF]/g, ""));
+  }
+
+  function matchesSrCategoryRule(row, descriptor) {
+    return normalizeSrCategoryValue(getSrValue(row, descriptor.srField)) === normalizeSrCategoryValue(descriptor.srValue);
+  }
+
   function classifySrDevice(row) {
-    const modelDescriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => normalizeSrHeader(item.srField) === normalizeSrHeader("Тип модели")
-      && normalizeText(getSrValue(row, item.srField)) === normalizeText(item.srValue));
+    const controllerDescriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => item.id === "controller");
+    if (controllerDescriptor && matchesSrCategoryRule(row, controllerDescriptor)) return controllerDescriptor.id;
+    const modelDescriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => item.id !== "controller"
+      && normalizeSrHeader(item.srField) === normalizeSrHeader("Тип модели")
+      && matchesSrCategoryRule(row, item));
     if (modelDescriptor) return modelDescriptor.id;
     const descriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => normalizeSrHeader(item.srField) !== normalizeSrHeader("Тип модели")
-      && normalizeText(getSrValue(row, item.srField)) === normalizeText(item.srValue));
+      && matchesSrCategoryRule(row, item));
     return descriptor?.id || "other";
   }
 
@@ -1255,12 +1270,12 @@
       roomAddress: normalizeDisplay(get("Адрес комнаты")),
       roomVip: normalizeBoolean(get("VIP комната")),
       equipmentTypeRaw: normalizeDisplay(get("Тип оборудования")),
-      equipmentTypeNormalized: normalizeText(get("Тип оборудования")),
+      equipmentTypeNormalized: normalizeSrCategoryValue(get("Тип оборудования")),
       nameRaw: normalizeDisplay(get("Наименование")),
       modelRaw: normalizeDisplay(get("Модель")),
       modelNormalized: normalizeText(get("Модель")),
       modelTypeRaw: normalizeDisplay(get("Тип модели")),
-      modelTypeNormalized: normalizeText(get("Тип модели")),
+      modelTypeNormalized: normalizeSrCategoryValue(get("Тип модели")),
       manufacturerRaw,
       manufacturerNormalized: normalizeManufacturer(manufacturerRaw),
       ipRaw: normalizeDisplay(get("IP")),
@@ -1281,6 +1296,51 @@
     return [row.roomName, row.roomAddress, row.category, row.equipmentTypeNormalized, row.modelTypeNormalized, row.manufacturerNormalized, row.modelNormalized, row.nameRaw]
       .map((value) => normalizeText(value) || "")
       .join("|");
+  }
+
+  function srRecordFingerprint(record) {
+    return JSON.stringify([
+      record.roomName, record.roomAddress, record.category, record.equipmentTypeNormalized,
+      record.nameRaw, record.modelNormalized, record.modelTypeNormalized, record.manufacturerNormalized,
+      record.ipNormalized, record.macNormalized, record.sipUri, record.inventoryNumber,
+      record.serialNumber, Boolean(record.deviceVip), record.domain
+    ].map((value) => normalizeText(value) || ""));
+  }
+
+  function srIdentityMatchKind(device, row) {
+    if (row.inventoryNumber && normalizeText(device?.inventoryNumber) === normalizeText(row.inventoryNumber)) return "inventory";
+    if (row.serialNumber && row.manufacturerNormalized
+      && normalizeText(device?.serialNumber) === normalizeText(row.serialNumber)
+      && device?.manufacturerNormalized === row.manufacturerNormalized) return "serial_manufacturer";
+    if (row.macNormalized && device?.macNormalized === row.macNormalized) return "mac";
+    if (!row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized
+      && (device?.ipNormalized === row.ipNormalized || (device?.ipHistory || []).includes(row.ipNormalized))) return "ip";
+    if (!row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized
+      && row.sourceFallbackKey && device?.sourceFallbackKey === row.sourceFallbackKey) return "fallback";
+    return "unknown";
+  }
+
+  function resolveSrImportCandidate(candidates, row, srImportId, fingerprintCandidates) {
+    const values = Array.isArray(candidates) ? candidates : [];
+    const fingerprint = srRecordFingerprint(row);
+    const exactValues = fingerprintCandidates || values.filter((device) => srRecordFingerprint(device) === fingerprint);
+    const exact = exactValues.length === 1 ? exactValues[0] : null;
+    if (values.length > 1) {
+      if (exact) return { device: exact, outcome: exact.lastSrImportId === srImportId ? "confirmed_duplicate" : "matched", matchKind: srIdentityMatchKind(exact, row), sameFingerprint: true };
+      if (values.some((device) => device.lastSrImportId === srImportId && device.inCurrentSr !== false)) {
+        return { device: null, outcome: "identity_collision", matchKind: srIdentityMatchKind(values[0], row), sameFingerprint: false };
+      }
+      return { device: null, outcome: "ambiguous", matchKind: srIdentityMatchKind(values[0], row), sameFingerprint: false };
+    }
+    if (values.length === 1) {
+      const candidate = values[0];
+      if (candidate.lastSrImportId === srImportId && candidate.inCurrentSr !== false) {
+        if (srRecordFingerprint(candidate) === fingerprint) return { device: candidate, outcome: "confirmed_duplicate", matchKind: srIdentityMatchKind(candidate, row), sameFingerprint: true };
+        return { device: null, outcome: "identity_collision", matchKind: srIdentityMatchKind(candidate, row), sameFingerprint: false };
+      }
+      return { device: candidate, outcome: "matched", matchKind: srIdentityMatchKind(candidate, row), sameFingerprint: srRecordFingerprint(candidate) === fingerprint };
+    }
+    return { device: null, outcome: "new", matchKind: "none", sameFingerprint: false };
   }
 
   function findInventoryCandidates(devices, row) {
@@ -1331,8 +1391,11 @@
         Object.assign(location, { name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain || location.domain || null, inCurrentSr: true, lastSeenAt: importedAt });
       }
       const candidates = findInventoryCandidates(next.inventoryDevices, row);
-      let device = candidates.length === 1 ? candidates[0] : null;
-      if (candidates.length > 1) next.inventoryIssues.push(createInventoryIssue({ kind: "ambiguous_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Найдено несколько кандидатов; создана отдельная запись", details: { candidateIds: candidates.map((item) => item.id) } }));
+      const resolution = resolveSrImportCandidate(candidates, row, srImport.id);
+      let device = resolution.device;
+      if (resolution.outcome === "ambiguous") next.inventoryIssues.push(createInventoryIssue({ kind: "ambiguous_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Найдено несколько кандидатов; создана отдельная запись", details: { matchKind: resolution.matchKind, candidateIds: candidates.slice(0, 10).map((item) => item.id) } }));
+      if (resolution.outcome === "identity_collision") next.inventoryIssues.push(createInventoryIssue({ kind: "identity_collision", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Совпавший идентификатор уже занят другой строкой текущей SR; создана отдельная запись", details: { matchKind: resolution.matchKind, candidateIds: candidates.slice(0, 10).map((item) => item.id) } }));
+      if (resolution.outcome === "confirmed_duplicate") next.inventoryIssues.push(createInventoryIssue({ kind: "duplicate_sr_row", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Подтверждён точный повтор строки SR", details: { matchKind: resolution.matchKind } }));
       const oldIp = device?.ipNormalized || null;
       if (!device) {
         device = { id: createId("inventory-device"), firstSeenAt: importedAt, ipHistory: [] };
@@ -1356,8 +1419,7 @@
   function addSrIndexValue(index, key, device) {
     if (!key) return;
     if (!index.has(key)) index.set(key, []);
-    const values = index.get(key);
-    if (!values.includes(device)) values.push(device);
+    index.get(key).push(device);
   }
 
   function removeSrIndexValue(index, key, device) {
@@ -1372,14 +1434,15 @@
       serialManufacturer: device?.serialNumber && device?.manufacturerNormalized ? `${normalizeText(device.serialNumber)}|${device.manufacturerNormalized}` : null,
       mac: device?.macNormalized || null,
       ips: [...new Set([device?.ipNormalized, ...(device?.ipHistory || [])].filter(Boolean))],
-      fallback: device?.sourceFallbackKey || null
+      fallback: device?.sourceFallbackKey || null,
+      fingerprint: srRecordFingerprint(device)
     };
   }
 
   function createSrImportContext(candidateState) {
     const context = {
       locationsByIdentity: new Map(candidateState.locations.map((location) => [location.identityKey, location])),
-      byInventory: new Map(), bySerialManufacturer: new Map(), byMac: new Map(), byIp: new Map(), byFallback: new Map()
+      byInventory: new Map(), bySerialManufacturer: new Map(), byMac: new Map(), byIp: new Map(), byFallback: new Map(), byFingerprint: new Map()
     };
     for (const device of candidateState.inventoryDevices) {
       const keys = srDeviceIndexKeys(device);
@@ -1388,6 +1451,7 @@
       addSrIndexValue(context.byMac, keys.mac, device);
       keys.ips.forEach((ip) => addSrIndexValue(context.byIp, ip, device));
       addSrIndexValue(context.byFallback, keys.fallback, device);
+      addSrIndexValue(context.byFingerprint, keys.fingerprint, device);
     }
     return context;
   }
@@ -1399,6 +1463,7 @@
     removeSrIndexValue(context.byMac, keys.mac, device);
     keys.ips.forEach((ip) => removeSrIndexValue(context.byIp, ip, device));
     removeSrIndexValue(context.byFallback, keys.fallback, device);
+    removeSrIndexValue(context.byFingerprint, keys.fingerprint, device);
   }
 
   function addSrDeviceToContext(context, device) {
@@ -1408,6 +1473,7 @@
     addSrIndexValue(context.byMac, keys.mac, device);
     keys.ips.forEach((ip) => addSrIndexValue(context.byIp, ip, device));
     addSrIndexValue(context.byFallback, keys.fallback, device);
+    addSrIndexValue(context.byFingerprint, keys.fingerprint, device);
   }
 
   function findIndexedSrCandidates(context, row) {
@@ -1480,18 +1546,21 @@
           }
           metrics.identityLookups += 1;
           const candidates = findIndexedSrCandidates(context, row);
-          let device = candidates.length === 1 ? candidates[0] : null;
-          if (candidates.length > 1) next.inventoryIssues.push(createInventoryIssue({ kind: "ambiguous_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Найдено несколько кандидатов; создана отдельная запись", details: { candidateIds: candidates.map((item) => item.id) } }));
+          const resolution = resolveSrImportCandidate(candidates, row, srImport.id, context.byFingerprint.get(srRecordFingerprint(row)) || []);
+          let device = resolution.device;
+          if (resolution.outcome === "ambiguous") next.inventoryIssues.push(createInventoryIssue({ kind: "ambiguous_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Найдено несколько кандидатов; создана отдельная запись", details: { matchKind: resolution.matchKind, candidateIds: candidates.slice(0, 10).map((item) => item.id) } }));
+          if (resolution.outcome === "identity_collision") next.inventoryIssues.push(createInventoryIssue({ kind: "identity_collision", sourceType: "sr_row", sourceId: srImport.id, rowNumber, message: "Совпавший идентификатор уже занят другой строкой текущей SR; создана отдельная запись", details: { matchKind: resolution.matchKind, candidateIds: candidates.slice(0, 10).map((item) => item.id) } }));
+          if (resolution.outcome === "confirmed_duplicate") next.inventoryIssues.push(createInventoryIssue({ kind: "duplicate_sr_row", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Подтверждён точный повтор строки SR", details: { matchKind: resolution.matchKind } }));
           const oldIp = device?.ipNormalized || null;
           if (!device) {
             device = { id: createId("inventory-device"), firstSeenAt: importedAt, ipHistory: [] };
             next.inventoryDevices.push(device);
-          } else {
+          } else if (!resolution.sameFingerprint) {
             removeSrDeviceFromContext(context, device);
           }
           if (oldIp && oldIp !== row.ipNormalized && !device.ipHistory.includes(oldIp)) device.ipHistory.push(oldIp);
           Object.assign(device, row, { locationId: location.id, inCurrentSr: true, lastSeenAt: importedAt, lastSrImportId: srImport.id, sourceRowNumber: rowNumber, pollingCapability: resolvePollingCapability(row) });
-          addSrDeviceToContext(context, device);
+          if (!resolution.sameFingerprint) addSrDeviceToContext(context, device);
           if (!hasIdentity) next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Устройство сохранено без inventory/serial/MAC/IP; используется локальная составная идентичность", details: { sourceFallbackKey: row.sourceFallbackKey } }));
           if (row.ipRaw && !row.ipNormalized) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_ip", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: `Некорректный IP: ${row.ipRaw}` }));
           if (row.category === "other") next.inventoryIssues.push(createInventoryIssue({ kind: "unknown_category", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Строка не относится ни к одной утверждённой категории оборудования" }));
@@ -1694,7 +1763,7 @@
     const periodChanges = scopedChanges.filter((change) => period.includes(change.detectedAt));
     const issueTime = (issue) => issue.timestamp || issue.createdAt || candidateState.pollingResults.find((result) => result.id === issue.sourceId)?.importedAt;
     const periodIssues = candidateState.inventoryIssues.filter((issue) => issue.status !== "closed" && period.includes(issueTime(issue)) && (!issue.deviceId || scopedIds.has(issue.deviceId)));
-    const dataIssueKinds = new Set(["malformed_json", "invalid_filename_ip", "unmatched_ip", "ambiguous_ip", "polling_ip_conflict", "classification_conflict", "invalid_ip", "missing_identity", "ambiguous_identity", "unknown_category"]);
+    const dataIssueKinds = new Set(["malformed_json", "invalid_filename_ip", "unmatched_ip", "ambiguous_ip", "polling_ip_conflict", "classification_conflict", "invalid_ip", "missing_identity", "ambiguous_identity", "identity_collision", "duplicate_sr_row", "unknown_category"]);
     const openDataIssues = candidateState.inventoryIssues.filter((issue) => issue.status !== "closed" && dataIssueKinds.has(issue.kind) && (!issue.deviceId || scopedIds.has(issue.deviceId)));
     const unmatchedResults = candidateState.pollingResults.filter((result) => result.matchStatus === "unmatched" && (period.kind === "all" || result.runId === latestRun?.id || period.includes(result.capturedAt)));
     const locationAgg = new Map();
@@ -1770,6 +1839,7 @@
 
   function filterInventoryDevices(candidateState, category, inputFilters) {
     const filters = inputFilters || {};
+    const currentScope = filters.current || DEFAULT_INVENTORY_FILTERS.current;
     return candidateState.inventoryDevices.filter((device) => {
       if (device.category !== category) return false;
       const location = candidateState.locations.find((item) => item.id === device.locationId);
@@ -1779,7 +1849,7 @@
       const haystack = [device.nameRaw, device.modelRaw, device.manufacturerRaw, device.ipRaw, device.serialNumber, device.inventoryNumber, location?.name, location?.address].map((item) => normalizeText(item) || "").join(" ");
       return (!filters.search || haystack.includes(normalizeText(filters.search)))
         && (!filters.manufacturer || device.manufacturerNormalized === normalizeManufacturer(filters.manufacturer))
-        && (!filters.current || (filters.current === "yes" ? device.inCurrentSr !== false : device.inCurrentSr === false))
+        && (currentScope === "all" || (currentScope === "yes" ? device.inCurrentSr !== false : device.inCurrentSr === false))
         && (!filters.pollStatus || (latest?.operationalStatus || latest?.pollStatus || "never") === filters.pollStatus)
         && (!filters.vip || String(Boolean(device.deviceVip || location?.vip)) === filters.vip)
         && (!filters.ping || (latest?.pingStatus || "unknown") === filters.ping)
@@ -1788,6 +1858,34 @@
         && (!filters.model || normalizeText(device.modelRaw) === normalizeText(filters.model))
         && (!filters.locationId || device.locationId === filters.locationId);
     });
+  }
+
+  function diagnoseSrCategoryPipeline(rows, candidateState) {
+    const categories = EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id);
+    const emptyCounts = () => Object.fromEntries(categories.map((category) => [category, 0]));
+    const report = {
+      ruleRows: emptyCounts(), normalizedRows: emptyCounts(), classifiedRows: emptyCounts(),
+      identityRows: emptyCounts(), inventoryRows: emptyCounts(), tableRows: emptyCounts()
+    };
+    for (const rawRow of Array.isArray(rows) ? rows : []) {
+      const normalized = normalizedSrRow(rawRow);
+      for (const descriptor of EQUIPMENT_CATEGORY_CATALOG) {
+        if (matchesSrCategoryRule(rawRow, descriptor)) report.ruleRows[descriptor.id] += 1;
+        const normalizedValue = normalizeSrHeader(descriptor.srField) === normalizeSrHeader("Тип оборудования")
+          ? normalized.equipmentTypeNormalized : normalized.modelTypeNormalized;
+        if (normalizedValue === normalizeSrCategoryValue(descriptor.srValue)) report.normalizedRows[descriptor.id] += 1;
+      }
+      if (categories.includes(normalized.category)) report.classifiedRows[normalized.category] += 1;
+    }
+    if (candidateState) {
+      for (const category of categories) {
+        const inventoryCount = candidateState.inventoryDevices.filter((device) => device.inCurrentSr !== false && device.category === category).length;
+        report.identityRows[category] = inventoryCount;
+        report.inventoryRows[category] = inventoryCount;
+        report.tableRows[category] = filterInventoryDevices(candidateState, category, DEFAULT_INVENTORY_FILTERS).length;
+      }
+    }
+    return report;
   }
 
   function rebuildDeviceChanges(next, deviceId) {
@@ -3800,6 +3898,7 @@
     DEFAULT_MAX_STATE_BYTES,
     DEFAULT_MAX_RAW_INPUT_BYTES,
     DASHBOARD_LIST_LIMIT,
+    DEFAULT_INVENTORY_FILTERS,
     PRODUCT_CATALOG,
     MODULE_CATALOG,
     UI_TERMS,
@@ -3826,6 +3925,7 @@
     deepClone,
     deriveLegacyMetadata,
     derivePollingStatus,
+    diagnoseSrCategoryPipeline,
     extractPollingInternalIpEvidence,
     resolvePollingInventoryMatch,
     resolvePollingResultTimestamp,
@@ -3972,7 +4072,7 @@
     selectedEventId: null,
     selectedInventoryDeviceId: null,
     eventFilters: {},
-    inventoryFilters: {},
+    inventoryFilters: { ...DEFAULT_INVENTORY_FILTERS },
     srImportResults: [],
     srProgress: null,
     pollingImportResults: [],
@@ -4330,7 +4430,7 @@
         <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(manufacturers, ui.inventoryFilters.manufacturer)}</select></div>
         <div class="field"><label>Модель</label><select name="model">${filterOptions(models, ui.inventoryFilters.model)}</select></div>
         <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${categoryLocations.map((item) => `<option value="${escapeHtml(item.id)}"${ui.inventoryFilters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
-        <div class="field"><label>Актуальность SR</label><select name="current"><option value="">Все</option><option value="yes"${ui.inventoryFilters.current === "yes" ? " selected" : ""}>В актуальной SR</option><option value="no"${ui.inventoryFilters.current === "no" ? " selected" : ""}>Исторические</option></select></div>
+        <div class="field"><label>Актуальность SR</label><select name="current"><option value="yes"${ui.inventoryFilters.current === "yes" ? " selected" : ""}>В актуальной SR</option><option value="all"${ui.inventoryFilters.current === "all" ? " selected" : ""}>Все</option><option value="no"${ui.inventoryFilters.current === "no" ? " selected" : ""}>Исторические</option></select></div>
         <div class="field"><label>Статус последнего опроса</label><select name="pollStatus">${filterOptions(["success", "authorization_error", "network_unreachable", "processing_error", "unmatched", "unknown", "never"], ui.inventoryFilters.pollStatus, Object.fromEntries(["success", "authorization_error", "network_unreachable", "processing_error", "unmatched", "unknown", "never"].map((status) => [status, formatPollStatus(status)])))}</select></div>
         <div class="field"><label>Сетевая доступность</label><select name="ping">${filterOptions(["ok", "failed", "unknown"], ui.inventoryFilters.ping, { ok: formatPingStatus("ok"), failed: formatPingStatus("failed"), unknown: formatPingStatus("unknown") })}</select></div>
         <div class="field"><label>Изменения</label><select name="changed"><option value="">Все</option><option value="true"${ui.inventoryFilters.changed === "true" ? " selected" : ""}>Есть</option><option value="false"${ui.inventoryFilters.changed === "false" ? " selected" : ""}>Нет</option></select></div>
@@ -4869,7 +4969,7 @@
     if (dashboardRoute) {
       ui.route = dashboardRoute.dataset.dashboardRoute;
       ui.selectedInventoryDeviceId = null;
-      ui.inventoryFilters = {};
+      ui.inventoryFilters = { ...DEFAULT_INVENTORY_FILTERS };
       Object.entries(dashboardRoute.dataset).forEach(([key, value]) => {
         if (!key.startsWith("filter") || !value) return;
         const filterKey = key.slice(6);
@@ -4922,7 +5022,7 @@
     }
 
     if (event.target.closest("[data-clear-inventory-filters]")) {
-      ui.inventoryFilters = {};
+      ui.inventoryFilters = { ...DEFAULT_INVENTORY_FILTERS };
       render();
       return;
     }

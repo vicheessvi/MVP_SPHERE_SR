@@ -216,7 +216,10 @@
     assertEqual(api.classifySrDevice({ "Тип модели": "Аудио процессор" }), "audio_processor");
     assertEqual(api.classifySrDevice({ "Тип модели": "Неизвестно" }), "other");
     assertEqual(new Set(api.EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id)).size, 7);
-    assertEqual(api.classifySrDevice({ "Тип оборудования": "controller", "Тип модели": "Коммутатор" }), "switch", "Более конкретный Тип модели должен иметь приоритет");
+    assertEqual(api.classifySrDevice({ "Тип оборудования": "controller", "Тип модели": "Коммутатор" }), "controller", "Контроллер определяется только утверждённым полем Тип оборудования");
+    assertEqual(api.classifySrDevice({ "Тип модели": "\u00A0Video\u200B Conference\u00A0" }), "vcs", "Скрытые Excel-пробелы должны нормализоваться без substring matching");
+    assertEqual(api.classifySrDevice({ "Тип оборудования": "\u00A0 Controller \uFEFF" }), "controller");
+    assertEqual(api.classifySrDevice({ "Тип модели": "Video Conference endpoint" }), "other", "Substring matching запрещён");
   });
 
   test("Время результата использует только lastModified конкретного файла", () => {
@@ -1028,6 +1031,117 @@
       "Серийный номер": "SER-1", "VIP оборудование": "Нет", ...(overrides || {})
     };
   }
+
+  function categoryRows(category, count, prefix) {
+    const descriptor = api.EQUIPMENT_CATEGORY_CATALOG.find((item) => item.id === category);
+    return Array.from({ length: count }, (_, index) => srRow({
+      "Название комнаты": `${prefix} ${index + 1}`,
+      "Тип оборудования": category === "controller" ? (index % 2 ? " Controller " : "controller") : "device",
+      "Тип модели": category === "controller" ? "Control Unit" : (index === 1 ? ` ${descriptor.srValue} ` : descriptor.srValue),
+      "Наименование": `${prefix} устройство ${index + 1}`,
+      "Модель": `${prefix} Model`, "Производитель": "Synthetic Vendor",
+      "Инвентарный номер": `${prefix}-INV-${index + 1}`,
+      "Серийный номер": `${prefix}-SER-${index + 1}`,
+      MAC: `02-00-${String(category.length).padStart(2, "0")}-00-${String(Math.floor(index / 100)).padStart(2, "0")}-${String(index % 100).padStart(2, "0")}`,
+      IP: `192.0.2.${index + 1}`
+    }));
+  }
+
+  test("Контрольные количества ВКС, Контроллеров и Скалеров проходят все этапы без потерь", async () => {
+    for (const [category, prefix] of [["vcs", "VCS"], ["controller", "CTRL"], ["scaler", "SCALE"]]) {
+      const rows = categoryRows(category, 10, prefix);
+      const imported = await api.processSrImportRows(api.createDemoState(), {
+        filename: `${prefix}.xlsx`, headers: srHeaders(), rawSha256: `count-${category}`, rows, yieldControl: async () => {}
+      });
+      const report = api.diagnoseSrCategoryPipeline(rows, imported.state);
+      assertEqual(report.ruleRows[category], 10, `${category}: строки SR по правилу`);
+      assertEqual(report.normalizedRows[category], 10, `${category}: normalization`);
+      assertEqual(report.classifiedRows[category], 10, `${category}: classification`);
+      assertEqual(report.identityRows[category], 10, `${category}: identity/dedup`);
+      assertEqual(report.inventoryRows[category], 10, `${category}: inventory`);
+      assertEqual(report.tableRows[category], 10, `${category}: table`);
+      assertEqual(api.getInventoryAnalytics(imported.state, category).unpolled, 10, `${category}: отсутствие JSON не уменьшает inventory`);
+    }
+  });
+
+  test("Пять Скалеров сохраняются при неполных идентификаторах и конфликте IP", async () => {
+    const scaler = (index, overrides) => srRow({
+      "Название комнаты": `Scaler room ${index}`, "Тип оборудования": "device", "Тип модели": "Скалер",
+      "Наименование": `Scaler ${index}`, "Модель": "Synthetic Scaler", "Производитель": "Synthetic Vendor",
+      "Инвентарный номер": `SC-INV-${index}`, "Серийный номер": `SC-SER-${index}`,
+      MAC: `02-10-00-00-00-0${index}`, IP: `192.0.2.${100 + index}`, ...(overrides || {})
+    });
+    const rows = [
+      scaler(1),
+      scaler(2),
+      scaler(3, { IP: "" }),
+      scaler(4, { MAC: "" }),
+      scaler(5, { "Наименование": "Отдельный скалер с тем же IP", "Инвентарный номер": "", "Серийный номер": "", MAC: "", IP: "192.0.2.104" })
+    ];
+    const imported = await api.processSrImportRows(api.createDemoState(), {
+      filename: "scaler-minus-one.xlsx", headers: srHeaders(), rawSha256: "scaler-minus-one", rows, yieldControl: async () => {}
+    });
+    assertEqual(imported.state.inventoryDevices.filter((item) => item.inCurrentSr !== false && item.category === "scaler").length, 5);
+    assert(imported.state.inventoryIssues.some((item) => item.kind === "identity_collision" && item.rowNumber === 6));
+  });
+
+  test("Одинаковые модели и пустые идентификаторы не объединяют разные строки", async () => {
+    const rows = [
+      ...categoryRows("vcs", 2, "SAME-VCS"),
+      ...categoryRows("controller", 2, "SAME-CTRL"),
+      ...categoryRows("scaler", 2, "SAME-SCALER"),
+      srRow({ "Название комнаты": "Без ID", "Тип оборудования": "device", "Тип модели": "Скалер", "Наименование": "No ID", "Инвентарный номер": "", "Серийный номер": "", MAC: "", IP: "", "SIP URI": "" }),
+      srRow({ "Название комнаты": "Без ID", "Тип оборудования": "device", "Тип модели": "Скалер", "Наименование": "No ID", "Инвентарный номер": "", "Серийный номер": "", MAC: "", IP: "", "SIP URI": "" })
+    ];
+    const imported = await api.processSrImportRows(api.createDemoState(), {
+      filename: "same-models.xlsx", headers: srHeaders(), rawSha256: "same-models", rows, yieldControl: async () => {}
+    });
+    assertEqual(imported.state.inventoryDevices.filter((item) => item.category === "vcs").length, 2);
+    assertEqual(imported.state.inventoryDevices.filter((item) => item.category === "controller").length, 2);
+    assertEqual(imported.state.inventoryDevices.filter((item) => item.category === "scaler").length, 4);
+    assertEqual(new Set(imported.state.inventoryDevices.map((item) => item.id)).size, 8);
+  });
+
+  test("Надёжный точный duplicate объединяется, а конфликт strong identity сохраняется отдельно", async () => {
+    const original = srRow({ "Тип оборудования": "device", "Тип модели": "Скалер", "Инвентарный номер": "DUP-INV", "Серийный номер": "DUP-SER" });
+    const collision = srRow({ "Тип оборудования": "device", "Тип модели": "Скалер", "Наименование": "Другой скалер", "Инвентарный номер": "DUP-INV", "Серийный номер": "OTHER-SER", MAC: "00-11-22-33-55-99", IP: "192.0.2.220" });
+    const imported = await api.processSrImportRows(api.createDemoState(), {
+      filename: "dedup.xlsx", headers: srHeaders(), rawSha256: "dedup", rows: [original, { ...original }, collision], yieldControl: async () => {}
+    });
+    assertEqual(imported.state.inventoryDevices.filter((item) => item.category === "scaler").length, 2);
+    assert(imported.state.inventoryIssues.some((item) => item.kind === "duplicate_sr_row" && item.details?.matchKind === "inventory"));
+    assert(imported.state.inventoryIssues.some((item) => item.kind === "identity_collision" && item.details?.matchKind === "inventory"));
+  });
+
+  test("Массовые identity collisions сохраняют линейный indexed pipeline", async () => {
+    const rows = Array.from({ length: 1500 }, (_, index) => srRow({
+      "Название комнаты": `Collision room ${index}`, "Тип оборудования": "device", "Тип модели": "Скалер",
+      "Наименование": `Collision scaler ${index}`, "Инвентарный номер": "SHARED-INVENTORY",
+      "Серийный номер": `COLLISION-SERIAL-${index}`, MAC: "", IP: "", "SIP URI": ""
+    }));
+    const startedAt = Date.now();
+    const imported = await api.processSrImportRows(api.createDemoState(), {
+      filename: "collision-scale.xlsx", headers: srHeaders(), rawSha256: "collision-scale", rows, yieldControl: async () => {}
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assertEqual(imported.state.inventoryDevices.filter((item) => item.category === "scaler").length, 1500);
+    assertEqual(imported.state.inventoryIssues.filter((item) => item.kind === "identity_collision").length, 1499);
+    assert(elapsedMs < 5000, `Collision pipeline занял ${elapsedMs} ms`);
+  });
+
+  test("Карточка и таблица без пользовательских фильтров считают только актуальную SR", async () => {
+    const first = await api.processSrImportRows(api.createDemoState(), {
+      filename: "current-1.xlsx", headers: srHeaders(), rawSha256: "current-1", rows: categoryRows("vcs", 2, "CURRENT"), yieldControl: async () => {}
+    });
+    const second = await api.processSrImportRows(first.state, {
+      filename: "current-2.xlsx", headers: srHeaders(), rawSha256: "current-2", rows: categoryRows("vcs", 1, "CURRENT"), yieldControl: async () => {}
+    });
+    const cardCount = api.getInventoryAnalytics(second.state, "vcs").total;
+    const tableCount = api.filterInventoryDevices(second.state, "vcs", {}).length;
+    assertEqual(cardCount, 1);
+    assertEqual(tableCount, cardCount);
+    assertEqual(api.filterInventoryDevices(second.state, "vcs", { current: "all" }).length, 2);
+  });
 
   test("SR import принимает optional Домен, классифицирует категории и сохраняет raw", () => {
     const result = api.importSrRows(api.createDemoState(), {

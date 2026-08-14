@@ -83,7 +83,8 @@ README.md
 6. Chronology использует known result time, стабильный tie-breaker и отдельное размещение unknown; unknown result не образует ложных chronological changes.
 7. Dashboard category counts и drill-down строятся из catalog IDs в одном проходе; UI показывает компактный список семи категорий.
 8. SR-строки без strong/network identity не отбрасываются: им назначается детерминированный fallback key из локации и технического описания с ordinal для одинаковых строк; предупреждение сохраняется.
-9. Классификация сначала проверяет все утверждённые значения «Тип модели», затем использует `Тип оборудования = controller` как fallback.
+9. Классификация сначала проверяет точное `Тип оборудования = controller`, затем шесть утверждённых значений «Тип модели»; отдельная category-normalization удаляет невидимые Excel-пробелы без изменения raw SR.
+10. Identity index дополняется эфемерным fingerprint: внутри текущего импорта точный повтор объединяется, а несовпадающая строка с занятым identity сохраняется отдельно с диагностикой. Default inventory scope — актуальная SR.
 10. Навигационное состояние не зависит от active child: initial `false`, последующие toggle отражают только действие пользователя.
 11. Exact Extron marker `error = No credentials were accepted` является единственным новым auth evidence; IP lookup охватывает весь актуальный inventory без ограничения открытой категорией.
 12. Polling context разделяет `currentInventoryByIp` (только `inCurrentSr !== false` и текущий `ipNormalized`) и `historicalInventoryByIp` (только диагностика); automatic matching никогда не читает historical index.

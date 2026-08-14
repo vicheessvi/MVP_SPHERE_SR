@@ -68,3 +68,6 @@ Rule matches when category equals and all supplied specializations equal. Бол
 - Основа: normalized локация, категория, тип оборудования, тип модели, производитель, модель и наименование.
 - Ordinal различает несколько одинаково описанных экземпляров одной выгрузки.
 - Отсутствие strong/network identity создаёт warning `missing_identity`, но не исключает устройство из inventory.
+- Эфемерный `srRecordFingerprint` включает нормализованную локацию, категорию, техническое описание и доступные identifiers; в persisted state не записывается.
+- `identity_collision`: совпавший precedence-key уже занят несовпадающей строкой текущего импорта; обе строки остаются отдельными устройствами.
+- `duplicate_sr_row`: fingerprint и identifiers совпадают; повтор использует существующее устройство.

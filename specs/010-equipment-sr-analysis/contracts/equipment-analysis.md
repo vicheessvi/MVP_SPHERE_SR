@@ -6,7 +6,8 @@
 
 - один взаимоисключающий result;
 - normalized exact comparisons;
-- утверждённое значение «Тип модели» имеет приоритет над fallback по «Тип оборудования»;
+- точное `Тип оборудования = controller` имеет приоритет; остальные категории используют точное `Тип модели`;
+- регистр, внешние, неразрывные и zero-width Excel-пробелы нормализуются, substring matching не используется;
 - raw row не изменяется.
 
 ## SR import pipeline
@@ -16,6 +17,10 @@
 Input включает rows, headers, metadata, optional `onProgress` и batch size. Callback получает immutable snapshot не чаще batch boundary. Success возвращает согласованный state и metrics; одна rejected row не отменяет остальные.
 
 Строка без inventory/serial/MAC/IP принимается с `missing_identity` warning и получает deterministic fallback key; одинаковые экземпляры различаются ordinal.
+
+Внутри одного SR import identity precedence остаётся `inventory → serial+manufacturer → MAC → IP → fallback`, но найденный кандидат переиспользуется только для точного fingerprint строки. Несовпадающая строка сохраняется отдельным устройством с `identity_collision`; точный повтор получает `duplicate_sr_row`. Fingerprint существует только в import context.
+
+`diagnoseSrCategoryPipeline(rows, state)` возвращает dev/test counts `ruleRows → normalizedRows → classifiedRows → identityRows → inventoryRows → tableRows` без изменения state.
 
 ## Result timestamp
 

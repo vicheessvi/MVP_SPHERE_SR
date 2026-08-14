@@ -85,3 +85,12 @@ Tasks с `[P]` независимы по смыслу, но в текущем с
 - [x] T044 [US1] Централизовать navigation state/reducer/resolver в `app.js`, сохранить active route при ручном collapse и добавить нативный `hidden`.
 - [x] T045 [US1] Зафиксировать одинаковое базовое начертание всех `.nav-button` без отдельного bold для родителя.
 - [x] T046 Выполнить syntax, regression, runtime/server/reference, secret scan и `git diff --check`; не выполнять commit/push/deploy.
+
+## Phase 10 — Полнота Контроллеров, Терминалов ВКС и Скалеров
+
+- [x] T047 [P] [US1] Добавить stage-count regression 10/10/10 и отдельный fixture «5 Скалеров → 5» с неполными identifiers.
+- [x] T048 [P] [US1] Добавить exact/whitespace/zero-width classification tests и закрепить controller-rule по `Тип оборудования`.
+- [x] T049 [US1] Реализовать fail-safe identity collision и эфемерный fingerprint index без изменения JSON matching.
+- [x] T050 [US1] Согласовать default current-SR scope карточки и таблицы, добавить duplicate/collision diagnostics.
+- [x] T051 Обновить Справочник, spec/plan/contracts/data model, ADR/architecture/README/log.
+- [x] T052 Выполнить regression, SR performance, navigation, syntax, runtime/server/reference, secret scan и `git diff --check`; не выполнять commit/push/deploy.

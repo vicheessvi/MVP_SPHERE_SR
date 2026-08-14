@@ -762,3 +762,15 @@ Navigation state вынесен в единый reducer/resolver, который
 Проверки: JavaScript syntax — PASS; regression — 126/126 PASS; runtime contracts — 13/13 PASS; server integration — 1/1 PASS; product catalog/reference — 12 модулей, 12 модульных карточек и 10 статусных карточек PASS; secret/artifact scan и `git diff --check` — PASS.
 
 Commit, push и deploy не выполнялись.
+
+## 2026-08-14 — Полнота Контроллеров, Терминалов ВКС и Скалеров
+
+Ручное расхождение локализовано в трёх местах. Классификатор ошибочно давал всем утверждённым значениям «Тип модели» приоритет над `Тип оборудования = controller`. Identity pipeline переиспользовал уже занятое в текущем импорте устройство по первому совпавшему precedence-key и перезаписывал его другой строкой; synthetic «Скалеры −1» воспроизводился как 5 SR rows → 4 inventory. Таблица без фильтра включала historical devices, тогда как карточка считала только актуальную SR.
+
+Controller-rule сделан первичным и точным; ВКС/Скалеры используют точное `Тип модели` с безопасной обработкой Excel-пробелов без substring matching. Эфемерный fingerprint index различает точный duplicate и identity collision: duplicate использует одну запись, конфликт сохраняет обе строки. Default inventory scope установлен в актуальную SR, JSON availability не участвует в count.
+
+Synthetic stage matrix: ВКС `10 → 10 → 10 → 10 → 10 → 10`, Контроллеры `10 → 10 → 10 → 10 → 10 → 10`, Скалеры `10 → 10 → 10 → 10 → 10 → 10`; отдельный scaler regression после исправления `5 → 5`. Реальная пользовательская SR в репозитории и fixtures отсутствует, поэтому реальные raw counts не копировались и не фиксировались.
+
+Проверки: JavaScript syntax — PASS; regression/navigation/SR — 132/132 PASS; runtime contracts — 13/13 PASS; server integration — 1/1 PASS; Справочник — 12 модулей, 12 модульных карточек и 10 статусных карточек PASS. SR benchmark сохранил линейный рост: 1k — 95 мс, 5k — 508 мс, 10k — 1,01 с, 25k — 2,54 с; worst-case 1 500 строк с общим inventory key сохранил 1 500 устройств быстрее 5 секунд. Secret/artifact scan и `git diff --check` — PASS.
+
+Commit, push и deploy не выполнялись.

@@ -7,7 +7,8 @@
 - Время run берётся из имени папки, а время результата — только из `File.lastModified`; при отсутствии evidence хранится `null/unavailable`.
 - SR import строит неперсистентные location/identity indexes, обрабатывает строки batches и yield-ит browser event loop.
 - Polling raw history сохраняется полностью, но DeviceChange строится только по утверждённым rules.
-- Все SR-строки участвуют в inventory: при отсутствии inventory/serial/MAC/IP применяется локальная fallback identity, а не отбрасывание строки.
+- Все SR-строки участвуют в inventory: при отсутствии inventory/serial/MAC/IP применяется локальная fallback identity, а не отбрасывание строки. Внутри одной актуальной SR совпавший identity-кандидат переиспользуется только для точного повтора нормализованной строки; конфликт сохраняет отдельное устройство и `identity_collision`. Эфемерный fingerprint-index сохраняет O(1) lookup без возврата к O(N²).
+- Controller-rule имеет явный приоритет и использует только точное `Тип оборудования = controller`; остальные категории используют точные значения `Тип модели`. Карточки и таблицы по умолчанию ограничены актуальной SR.
 - Polling matching строит `currentInventoryByIp` только из актуальных `ipNormalized` и отдельный `historicalInventoryByIp` только для диагностики. `ipHistory` никогда не назначает `deviceId` новому результату.
 - После current-IP lookup подтверждённые `$.ip` и `$.webBlocks['LAN Settings']['IP Address']` проверяются на согласованность с именем файла; надёжный конфликт категории также блокирует привязку. Raw result и issue сохраняются без влияния на device history, latest state и Dashboard equipment metrics.
 - Статус Extron authorization подтверждается exact `error = No credentials were accepted` для однозначно связанного устройства Extron любой категории.
