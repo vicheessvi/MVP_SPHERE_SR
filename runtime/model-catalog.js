@@ -20,7 +20,15 @@ const CATALOG = Object.freeze([
   { key: "panel/elo", category: "panel", manufacturer: "elo touchsystems", aliases: ["elo"], models: ["2200L"] },
   { key: "panel/amx", category: "panel", manufacturer: "amx", aliases: [], models: ["MT-1002"] },
   { key: "panel/iridi", category: "panel", manufacturer: "iridi", aliases: ["iRidi"], models: ["P10-T"] }
-].map((item) => Object.freeze({ ...item, protocolStatus: "protocol_required", transport: null, credentialMode: "vault_by_ip" })));
+].map((item) => {
+  const extronWeb = item.manufacturer === "extron" && (item.category === "controller" || item.category === "panel");
+  return Object.freeze({
+    ...item,
+    protocolStatus: extronWeb ? "supported" : "protocol_required",
+    transport: extronWeb ? "extron_web_dynamic_resources_v1" : null,
+    credentialMode: "vault_by_ip"
+  });
+}));
 
 function normalize(value) { return String(value || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " "); }
 

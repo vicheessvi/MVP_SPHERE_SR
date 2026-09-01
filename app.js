@@ -52,7 +52,7 @@
 
   const PRODUCT_CATALOG = global.MVP_PRODUCT_CATALOG || (typeof module === "object" && module.exports ? require("./product-catalog") : null);
   if (!PRODUCT_CATALOG) throw new Error("Каталог продукта не загружен");
-  const { MODULE_CATALOG, UI_TERMS, EQUIPMENT_CATEGORY_CATALOG, ANALYZED_PARAMETER_RULES } = PRODUCT_CATALOG;
+  const { MODULE_CATALOG, UI_TERMS, EQUIPMENT_CATEGORY_CATALOG, ANALYZED_PARAMETER_RULES, POLLING_HELP_ENTRIES } = PRODUCT_CATALOG;
   const EQUIPMENT_CATEGORY_IDS = Object.freeze(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id));
   const catalogValidation = PRODUCT_CATALOG.validateProductCatalog();
   if (!catalogValidation.ok) throw new Error(`Каталог продукта содержит ошибки: ${catalogValidation.errors.join("; ")}`);
@@ -123,6 +123,7 @@
     },
     {
       id: "polling", title: "8. Опрос оборудования", description: "Как формируется и выполняется опрос.", entries: [
+        ...POLLING_HELP_ENTRIES,
         { id: "logic-folders", title: "Папки запусков опроса", summary: "Общая папка может содержать несколько сеансов; имя каждого сеанса имеет формат YYYY-MM-DD_HH-MM-SS.", details: "Инструмент рекурсивно находит JSON, создаёт отдельный запуск на каждую датированную папку и обрабатывает запуски по времени.", keywords: ["папка", "пакетный импорт", "дата"] },
         { id: "logic-result-time", title: "Дата и время опроса", summary: "Для отдельного JSON используется доступное браузеру время последнего изменения файла.", details: "Это не время создания файла. Если File API не предоставляет валидное значение, время результата остаётся неизвестным; дата папки используется только для группировки запуска.", keywords: ["lastModified", "время файла", "время опроса"] },
         { id: "logic-batch-progress", title: "Массовая загрузка результатов", summary: "Результаты опросов обрабатываются пакетно. Во время загрузки отображается количество найденных и обработанных файлов, ошибки, скорость обработки и примерное оставшееся время.", details: "Повторно уже загруженные результаты пропускаются, если инструмент может надёжно определить, что они уже были импортированы. Активную загрузку можно остановить без удаления уже обработанных результатов.", keywords: ["прогресс", "скорость", "оставшееся время", "дубликат", "отмена"] },
@@ -209,19 +210,19 @@
       key: "controller/extron",
       category: "controller",
       manufacturerNormalized: "extron",
-      support: "not_implemented",
-      transport: null,
+      support: "implemented",
+      transport: "extron_web_dynamic_resources_v1",
       normalizerKey: "extron-json-v1",
-      credentialMode: "not_configured"
+      credentialMode: "local_dpapi_by_device_scope"
     }),
     Object.freeze({
       key: "panel/extron",
       category: "panel",
       manufacturerNormalized: "extron",
-      support: "not_implemented",
-      transport: null,
+      support: "implemented",
+      transport: "extron_web_dynamic_resources_v1",
       normalizerKey: "extron-json-v1",
-      credentialMode: "not_configured"
+      credentialMode: "local_dpapi_by_device_scope"
     })
   ]);
 
@@ -1624,16 +1625,38 @@
     const manufacturer = normalizeManufacturer(input.manufacturer);
     const devices = currentState.inventoryDevices.filter((device) => device.inCurrentSr !== false && device.category === category && (!manufacturer || device.manufacturerNormalized === manufacturer));
     const capabilities = devices.map(resolvePollingCapability);
+    const implemented = devices.filter((device, index) => device.ipNormalized && capabilities[index].support === "implemented" && capabilities[index].transport).length;
     let next = deepClone(currentState);
     const plan = {
       id: createId("polling-run"), kind: "plan", identityKey: `plan|${scheduledAt}|${category}|${manufacturer || "all"}|${nowIso()}`,
       folderName: null, capturedAt: scheduledAt, capturedAtSource: "planned", importedAt: nowIso(), importedById: input.actorId || "system",
-      deviceIds: devices.map((device) => device.id), fileCount: 0, successCount: 0, errorCount: 0, status: "blocked_no_adapter",
-      selectionSummary: { category, manufacturer: manufacturer || null, total: devices.length, implemented: capabilities.filter((item) => item.support === "implemented" && item.transport).length, notImplemented: capabilities.filter((item) => item.support !== "implemented" || !item.transport).length }
+      deviceIds: devices.map((device) => device.id), fileCount: 0, successCount: 0, errorCount: 0, status: implemented > 0 ? "ready_for_local_cli" : "blocked_no_adapter",
+      selectionSummary: { category, manufacturer: manufacturer || null, total: devices.length, implemented, notImplemented: devices.length - implemented }
     };
     next.pollingRuns.push(plan);
-    next = appendHistory(next, { actorId: input.actorId || "system", action: "Сформирован план опроса", entityType: "polling_run", entityId: plan.id, details: `${category}: ${devices.length}; execution blocked` });
+    next = appendHistory(next, { actorId: input.actorId || "system", action: "Сформирован план опроса", entityType: "polling_run", entityId: plan.id, details: `${category}: ${devices.length}; ${implemented > 0 ? "local CLI ready" : "adapter unavailable"}` });
     return { ok: true, state: next, plan, errors: [] };
+  }
+
+  function buildPollingPlanExport(currentState, planId) {
+    const plan = currentState.pollingRuns.find((item) => item.id === planId && item.kind === "plan");
+    if (!plan) return { ok: false, errors: ["План опроса не найден"] };
+    const devices = (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).filter((device) => {
+      const capability = resolvePollingCapability(device);
+      return Boolean(device.ipNormalized && capability.support === "implemented" && capability.transport);
+    }).map((device) => ({
+      ip: device.ipNormalized,
+      category: device.category,
+      manufacturer: device.manufacturerRaw || device.manufacturerNormalized,
+      model: device.modelRaw || device.modelNormalized || "",
+      allowInsecureTls: false
+    }));
+    return {
+      ok: true,
+      payload: { schemaVersion: 1, scheduledAt: plan.capturedAt, devices },
+      filename: `extron-polling-plan-${String(plan.capturedAt || "").slice(0, 10) || "local"}.json`,
+      errors: []
+    };
   }
 
   function timeValue(value) {
@@ -3920,6 +3943,7 @@
     clearSessionUserId,
     createBackup,
     createDemoState,
+    buildPollingPlanExport,
     createPollingPlan,
     createSelectedComparison,
     deepClone,
@@ -4456,10 +4480,11 @@
     const results = state.pollingResults.filter((item) => item.deviceId === device.id).sort(comparePollingResultsNewest);
     const changes = state.deviceChanges.filter((item) => item.deviceId === device.id && item.status === "active").sort((a, b) => new Date(b.detectedAt) - new Date(a.detectedAt));
     const capability = resolvePollingCapability(device);
+    const pollingSupported = capability.support === "implemented" && Boolean(capability.transport);
     return `<header class="page-header"><div><button class="text-button" type="button" data-back-inventory="${route}">← К списку</button><h1>${escapeHtml(device.nameRaw || device.modelRaw || "Устройство")}</h1><p class="page-subtitle">${escapeHtml(location?.name || "Без локации")} · ${escapeHtml(device.ipNormalized || "IP не задан")}</p></div><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Не в актуальной SR" : "В актуальной SR"}</span></header>
       <div class="detail-grid"><section class="card"><h2>Карточка SR</h2><dl class="definition-list">
         <div><dt>Производитель / модель</dt><dd>${escapeHtml(device.manufacturerRaw || "—")} / ${escapeHtml(device.modelRaw || "—")}</dd></div><div><dt>IP / MAC</dt><dd>${escapeHtml(device.ipNormalized || "—")} / ${escapeHtml(device.macNormalized || device.macRaw || "—")}</dd></div><div><dt>SIP URI / домен</dt><dd>${escapeHtml(device.sipUri || "—")} / ${escapeHtml(device.domain || location?.domain || "—")}</dd></div><div><dt>Инвентарный / серийный</dt><dd>${escapeHtml(device.inventoryNumber || "—")} / ${escapeHtml(device.serialNumber || "—")}</dd></div>
-      </dl></section><section class="card"><h2>Поддержка автоматического опроса</h2><span class="badge warning">${escapeHtml(formatCapabilityStatus(capability.support))}</span><p>Механизм опроса: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">Подтверждённый протокол подключения отсутствует; реальный сетевой опрос заблокирован. Учётные данные хранятся отдельно.</p><button class="button secondary" type="button" disabled>Запустить опрос</button></section></div>
+      </dl></section><section class="card"><h2>Поддержка автоматического опроса</h2><span class="badge ${pollingSupported ? "success" : "warning"}">${escapeHtml(formatCapabilityStatus(capability.support))}</span><p>Механизм опроса: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">${pollingSupported ? "Устройство можно включить в JSON-план для отдельного локального polling-скрипта. Логины и пароли загружаются в скрипт из Excel и не попадают в страницу." : "Подтверждённый протокол подключения отсутствует; сетевой опрос не выполняется. Учётные данные хранятся отдельно."}</p>${pollingSupported ? `<button class="button secondary" type="button" data-route="upload">Сформировать план в модуле «Загрузка»</button>` : `<button class="button secondary" type="button" disabled>Опрос недоступен</button>`}</section></div>
       <section class="card section-gap"><h2>История опросов (${results.length})</h2><p class="muted">«Дата и время опроса» берётся из времени последнего изменения выбранного JSON-файла. Это не время создания файла и не время папки запуска.</p><ul class="result-list">${results.map((result) => `<li><div><strong>Дата и время опроса: ${escapeHtml(formatDateTime(result.capturedAt))}</strong><br><span class="muted">${result.capturedAtSource === "file_last_modified" ? "Время последнего изменения файла" : "Время файла недоступно"} · ${escapeHtml(result.filename)} · ${escapeHtml(formatCategoryLabel(result.detectedCategory))} · ${escapeHtml(formatPingStatus(result.pingStatus))}</span></div><span class="badge ${(result.operationalStatus || result.pollStatus) === "success" ? "success" : "critical"}">${escapeHtml(formatPollStatus(result.operationalStatus || result.pollStatus))}</span></li>`).join("") || "<li>Результатов пока нет</li>"}</ul></section>
       <section class="card section-gap"><h2>Обнаруженные изменения (${changes.length})</h2><ul class="result-list">${changes.slice(0, 200).map((change) => `<li><div><strong>${escapeHtml(change.parameterLabel || formatChangePath(change.path))}</strong><br><span class="muted">${escapeHtml(displayValue(change.oldValue))} → ${escapeHtml(displayValue(change.newValue))}</span></div><span class="badge info">Изменение</span></li>`).join("") || "<li>Изменений не выявлено</li>"}</ul></section>`;
   }
@@ -4669,9 +4694,9 @@
           ${ui.pollingImportResults.length ? `<ul class="result-list section-gap">${ui.pollingImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
       </div>
-      <section class="card section-gap"><h2>3. План будущего опроса</h2><p class="muted">План сохраняет только выбранные устройства и время. Автоматическое фоновое выполнение заблокировано, пока нет подтверждённого механизма подключения.</p>
-        <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required>${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<option value="${item.id}">${escapeHtml(item.title)}</option>`).join("")}</select></div><div class="field"><label>Производитель, необязательно</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Запланировать опрос</button><button class="button secondary" type="button" disabled>Сетевой запуск недоступен</button></form>
-        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(formatCategoryLabel(ui.pollingPlanResult.category))}, устройств ${ui.pollingPlanResult.total}; поддерживаемых механизмов ${ui.pollingPlanResult.implemented}; ожидают реализации ${ui.pollingPlanResult.notImplemented}. Учётные данные не изменялись.</div>` : ""}
+      <section class="card section-gap"><h2>3. План локального опроса</h2><p class="muted">Сформируйте из актуальной SR план для отдельного локального polling-скрипта. Страница не выполняет сетевой опрос и не читает файл паролей.</p>
+        <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required>${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<option value="${item.id}">${escapeHtml(item.title)}</option>`).join("")}</select></div><div class="field"><label>Производитель, необязательно</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Сформировать план</button></form>
+        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(formatCategoryLabel(ui.pollingPlanResult.category))}, устройств ${ui.pollingPlanResult.total}; готовы для локального опроса ${ui.pollingPlanResult.implemented}; без подтверждённого механизма ${ui.pollingPlanResult.notImplemented}. Учётные данные не загружались в страницу.</div>${ui.pollingPlanResult.implemented > 0 ? `<button class="button secondary section-gap" type="button" data-download-polling-plan="${escapeHtml(ui.pollingPlanResult.planId)}">Скачать план JSON</button>` : ""}` : ""}
       </section>
       `;
   }
@@ -4922,6 +4947,15 @@
     if (event.target.closest("[data-cancel-polling-import]")) {
       ui.pollingCancelRequested = true;
       if (ui.pollingProgress) ui.pollingProgress.cancelRequested = true;
+      render();
+      return;
+    }
+    const downloadPollingPlan = event.target.closest("[data-download-polling-plan]");
+    if (downloadPollingPlan) {
+      const exported = buildPollingPlanExport(state, downloadPollingPlan.dataset.downloadPollingPlan);
+      if (!exported.ok) { setMessage(exported.errors.join("; "), "error"); render(); return; }
+      downloadBlob(JSON.stringify(exported.payload, null, 2), exported.filename, "application/json;charset=utf-8");
+      setMessage(`План сохранён: ${exported.payload.devices.length} устройств. Файл не содержит логинов и паролей.`, "success");
       render();
       return;
     }
@@ -5223,8 +5257,8 @@
       const formData = new FormData(pollingPlanForm);
       const result = createPollingPlan(state, { category: String(formData.get("category") || ""), manufacturer: String(formData.get("manufacturer") || ""), scheduledAt: String(formData.get("scheduledAt") || ""), actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
-      ui.pollingPlanResult = result.plan.selectionSummary;
-      commitState(result.state, `План сохранён: ${result.plan.selectionSummary.total} устройств; сетевое выполнение заблокировано.`);
+      ui.pollingPlanResult = { ...result.plan.selectionSummary, planId: result.plan.id };
+      commitState(result.state, `План сохранён: ${result.plan.selectionSummary.implemented} устройств готовы для отдельного локального опроса.`);
       return;
     }
 

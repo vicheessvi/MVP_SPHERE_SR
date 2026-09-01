@@ -8,6 +8,17 @@ function normalizeHeader(value) {
   return String(value || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
 }
 
+function normalizeIdentity(value) {
+  return String(value || "").trim().toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
+}
+
+function normalizeCredentialCategory(value) {
+  const normalized = normalizeIdentity(value);
+  if (["controller", "controllers", "контроллер", "контроллеры"].includes(normalized)) return "controller";
+  if (["panel", "panels", "панель", "панель управления", "панели управления"].includes(normalized)) return "panel";
+  return null;
+}
+
 function normalizeIpv4(value) {
   const raw = String(value || "").trim();
   const parts = raw.split(".");
@@ -67,15 +78,29 @@ function normalizeCredentialRecords(records) {
   const seen = new Set();
   records.forEach((record, index) => {
     if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`Credential row ${index + 1} must be an object`);
-    const ip = normalizeIpv4(valueByAliases(record, ["ip", "ip-адрес", "ip адрес"]));
+    const rawIp = String(valueByAliases(record, ["ip", "ip-адрес", "ip адрес"]) || "").trim();
+    const ip = normalizeIpv4(rawIp);
+    const category = normalizeCredentialCategory(valueByAliases(record, ["category", "device type", "type", "тип", "тип устройства", "тип оборудования", "категория"]));
+    const manufacturerNormalized = normalizeIdentity(valueByAliases(record, ["manufacturer", "vendor", "производитель", "марка"]));
+    const modelNormalized = normalizeIdentity(valueByAliases(record, ["model", "модель"]));
     const username = String(valueByAliases(record, ["username", "login", "user", "логин", "имя пользователя"]) || "").trim();
     const password = String(valueByAliases(record, ["password", "pass", "пароль"]) || "");
-    if (!ip) throw new Error(`Credential row ${index + 1}: invalid or forbidden IP`);
+    if (rawIp && !ip) throw new Error(`Credential row ${index + 1}: invalid or forbidden IP`);
+    if (!ip && (!category || !manufacturerNormalized)) throw new Error(`Credential row ${index + 1}: specify IP or device type and manufacturer`);
     if (!username) throw new Error(`Credential row ${index + 1}: login is empty`);
     if (!password) throw new Error(`Credential row ${index + 1}: password is empty`);
-    if (seen.has(ip)) throw new Error(`Credential row ${index + 1}: duplicate IP ${ip}`);
-    seen.add(ip);
-    normalized.push({ ipNormalized: ip, username, password, importedAt: new Date().toISOString() });
+    const scope = ip ? "ip" : modelNormalized ? "device_model" : "device_type";
+    const scopeKey = ip ? `ip:${ip}` : `device:${category}:${manufacturerNormalized}:${modelNormalized || "*"}`;
+    if (seen.has(scopeKey)) throw new Error(`Credential row ${index + 1}: duplicate credential scope`);
+    seen.add(scopeKey);
+    normalized.push({
+      scope,
+      scopeKey,
+      ...(ip ? { ipNormalized: ip } : { category, manufacturerNormalized, ...(modelNormalized ? { modelNormalized } : {}) }),
+      username,
+      password,
+      importedAt: new Date().toISOString()
+    });
   });
   if (!normalized.length) throw new Error("Credential file contains no records");
   return normalized;
@@ -84,6 +109,11 @@ function normalizeCredentialRecords(records) {
 function maskIp(ip) {
   const parts = String(ip).split(".");
   return parts.length === 4 ? `${parts[0]}.${parts[1]}.*.${parts[3]}` : "***";
+}
+
+function maskScope(record) {
+  if (record.ipNormalized) return maskIp(record.ipNormalized);
+  return `${record.category}/${record.manufacturerNormalized}/${record.modelNormalized || "*"}`;
 }
 
 class CredentialVault {
@@ -97,14 +127,15 @@ class CredentialVault {
     const sourceSha256 = crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
     const payload = { version: 1, importedAt, sourceSha256, records };
     this.store.writeText(VAULT_KEY, JSON.stringify(payload));
-    return { recordCount: records.length, sourceSha256, importedAt, maskedIps: records.slice(0, 20).map((record) => maskIp(record.ipNormalized)) };
+    const maskedScopes = records.slice(0, 20).map(maskScope);
+    return { recordCount: records.length, sourceSha256, importedAt, maskedIps: records.filter((record) => record.ipNormalized).slice(0, 20).map((record) => maskIp(record.ipNormalized)), maskedScopes };
   }
 
   summary() {
     const text = this.store.readText(VAULT_KEY);
-    if (!text) return { recordCount: 0, sourceSha256: null, importedAt: null, maskedIps: [] };
+    if (!text) return { recordCount: 0, sourceSha256: null, importedAt: null, maskedIps: [], maskedScopes: [] };
     const payload = JSON.parse(text);
-    return { recordCount: payload.records.length, sourceSha256: payload.sourceSha256, importedAt: payload.importedAt, maskedIps: payload.records.slice(0, 20).map((record) => maskIp(record.ipNormalized)) };
+    return { recordCount: payload.records.length, sourceSha256: payload.sourceSha256, importedAt: payload.importedAt, maskedIps: payload.records.filter((record) => record.ipNormalized).slice(0, 20).map((record) => maskIp(record.ipNormalized)), maskedScopes: payload.records.slice(0, 20).map(maskScope) };
   }
 
   getForIp(ip) {
@@ -114,6 +145,20 @@ class CredentialVault {
     const record = JSON.parse(text).records.find((item) => item.ipNormalized === normalizedIp);
     return record ? { ipNormalized: record.ipNormalized, username: record.username, password: record.password } : null;
   }
+
+  getForDevice(device) {
+    const text = this.store.readText(VAULT_KEY);
+    if (!text) return null;
+    const records = JSON.parse(text).records || [];
+    const ip = normalizeIpv4(device && (device.ipNormalized || device.ip));
+    const category = normalizeCredentialCategory(device && device.category);
+    const manufacturer = normalizeIdentity(device && (device.manufacturerNormalized || device.manufacturerRaw || device.manufacturer));
+    const model = normalizeIdentity(device && (device.modelNormalized || device.modelRaw || device.model));
+    const record = records.find((item) => ip && item.ipNormalized === ip)
+      || records.find((item) => item.category === category && item.manufacturerNormalized === manufacturer && item.modelNormalized && item.modelNormalized === model)
+      || records.find((item) => item.category === category && item.manufacturerNormalized === manufacturer && !item.modelNormalized);
+    return record ? { ...(record.ipNormalized ? { ipNormalized: record.ipNormalized } : {}), username: record.username, password: record.password, scope: record.scope } : null;
+  }
 }
 
-module.exports = { CredentialVault, VAULT_KEY, maskIp, normalizeCredentialRecords, normalizeIpv4, parseCredentialText, parseCsv };
+module.exports = { CredentialVault, VAULT_KEY, maskIp, maskScope, normalizeCredentialCategory, normalizeCredentialRecords, normalizeIpv4, parseCredentialText, parseCsv };

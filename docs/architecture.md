@@ -1,5 +1,16 @@
 # Архитектура
 
+## Feature 011: локальный web-опрос Extron
+
+- `runtime/extron-web-poller.js` реализует один contract-based adapter для контроллеров и панелей управления Extron: login, in-memory `NortxeSession`, чтение `/www/main.js`, динамическое обнаружение resource URI и exact `/api/swis/resource<uri>` без query.
+- Поддержка не ограничена названиями моделей. Любая модель с подтверждённым bundle/resource contract использует adapter; неизвестный контракт завершается fail-closed без vendor-команд по догадке.
+- `runtime/polling.js` сохраняет explicit IPv4 allowlist и dispatch только для `controller/extron` и `panel/extron` после ping.
+- `CredentialVault` принимает exact IP или scope `category+manufacturer(+model)`. Resolver использует приоритет IP → модель → тип/производитель; duplicate scope блокируется.
+- `scripts/poll-devices.js` читает первую таблицу XLSX/XLS через локальный vendored SheetJS без выполнения формул и импортирует записи непосредственно в Windows DPAPI vault. Browser credential import не добавлен.
+- Default results: `%LOCALAPPDATA%\MVP_SPHERE_SR\poll-results\YYYY-MM-DD_HH-mm-ss\<IP>.json`; каждый файл пишется атомарно и проходит redaction.
+- `poll-extron.ps1` использует существующий проверенный Node bootstrap. UI формирует и скачивает безопасный plan JSON из актуальной SR, но не запускает Node и не выполняет сеть.
+- Ручной выбор общей папки опросов в `index.html` сохранён. Автоматизированный опрос лишь создаёт файлы для того же importer.
+
 ## Feature 010: единое оборудование и масштабируемый SR
 
 - `product-catalog.js` хранит семь category descriptors, вложенные routes, русские presentation terms и allowlist значимых analyzed parameters.
@@ -26,8 +37,9 @@
 - `app.js` содержит безопасные форматтеры внутренних кодов, объединяет генерируемые и явные разделы Справочника и выполняет чистый локальный поиск.
 - `product-catalog.js` является единым browser/CommonJS-источником модулей, presentation dictionary и генерируемых карточек модулей/статусов; `app.js` потребляет его проекции.
 - `runtime/model-catalog.js` маршрутизирует переданные производители/модели.
-- `runtime/polling.js` проверяет explicit allowlist, выполняет bounded ping и fail-closed останавливается без подтверждённого протокола.
-- `scripts/poll-devices.js` — CLI, формирующий безопасные per-IP результаты.
+- `runtime/polling.js` проверяет explicit allowlist, выполняет bounded ping, dispatch-ит подтверждённый Extron adapter и fail-closed останавливается для остальных протоколов.
+- `scripts/poll-devices.js` — CLI, импортирующий локальный Excel credentials в DPAPI vault и формирующий безопасные per-IP результаты.
+- `runtime/extron-web-poller.js` — изолированный HTTPS adapter с injectable transport для synthetic contract/security tests.
 - `vendor/xlsx.full.min.js` — локально vendored SheetJS без CDN.
 
 ## Security boundary
@@ -42,6 +54,13 @@ in-memory state for current page only
         +-- no credential import
         +-- no browser persistence
         +-- no product network requests
+
+separate poll-extron.ps1 / Node process
+        |
+        +-- explicit plan IP allowlist
+        +-- Excel credentials -> DPAPI vault (not browser)
+        +-- HTTPS only to planned Extron devices
+        +-- local atomic JSON -> poll-results
 ```
 
 Интерфейс загружает только относительные локальные assets и явно выбранные пользователем файлы, не выполняет storage/credential API requests и не читает прежние значения `localStorage`. Его состояние уничтожается при reload/close. HTTP/HTTPS не является вторым режимом и блокируется.
@@ -76,7 +95,7 @@ UI только форматирует эту проекцию. Переход �
 
 ## Polling boundary
 
-Ping — единственная подтверждённая реальная сетевая операция. Любой target должен быть валидным unicast IPv4 и присутствовать в явном плане. Модельный каталог не считается доказательством протокола: пока не получены vendor contracts, adapter возвращает `protocol_required` и не читает credentials.
+Любой target должен быть валидным unicast IPv4 и присутствовать в явном плане. Для Extron controller/panel подтверждён HTTPS web contract с динамическими resource URI; cookie и credentials живут только в памяти polling-процесса, а результат не содержит Authorization/cookie/password. Self-signed TLS допускается только явным флагом для plan targets. Другие vendor transports остаются `protocol_required` и не получают credentials.
 
 ## Ограничения защиты
 

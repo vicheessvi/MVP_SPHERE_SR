@@ -1,12 +1,12 @@
 # Карта контекста
 
-## Текущая feature 010
+## Текущая feature 011
 
-- Спецификация и план: `specs/010-equipment-sr-analysis/`.
-- Категории, модули, статусы и analyzed rules: `product-catalog.js`.
-- SR/polling/time/diff/UI: `app.js`.
-- Performance evidence: `benchmarks/sr-import-performance.js` и `specs/010-equipment-sr-analysis/research.md`.
-- Архитектурное решение: `docs/decisions/ADR-0010-equipment-analysis.md`.
+- Спецификация и план: `specs/011-extron-web-polling/`.
+- Extron adapter и orchestration: `runtime/extron-web-poller.js`, `runtime/polling.js`, `runtime/model-catalog.js`.
+- Excel credentials, DPAPI vault и output: `scripts/poll-devices.js`, `runtime/credential-vault.js`, `poll-extron.ps1`.
+- UI plan/manual import/reference: `app.js`, `product-catalog.js`.
+- Архитектурное решение: `docs/decisions/ADR-0011-extron-web-polling.md`.
 
 ## Постоянные инструкции
 
@@ -20,6 +20,7 @@
 - `docs/decisions/ADR-0005-secure-local-runtime.md`
 - `docs/decisions/ADR-0007-direct-index-session-mode.md`
 - `docs/decisions/ADR-0008-batch-folder-file-only.md`
+- `docs/decisions/ADR-0011-extron-web-polling.md`
 - `specs/003-secure-local-polling/`
 - `specs/004-analytics-dashboard/`
 - `specs/005-russian-ui-reference/`
@@ -32,7 +33,7 @@
 - UI/state/analytics/Dashboard projection, единственный direct-file memory mode, индексированный пакетный импорт папок, progress/cancel и Справочник: `index.html`, `runtime-config.js`, `styles.css`, `app.js`.
 - Performance regression и synthetic scale matrix: `tests.js`, `benchmarks/import-performance.js`, `specs/009-scalable-polling-import/benchmark-results.md`.
 - Product catalog/reference source: `product-catalog.js`, `scripts/validate-reference.js`.
-- Catalog/polling: `runtime/model-catalog.js`, `runtime/polling.js`, `scripts/poll-devices.js`.
+- Catalog/polling: `runtime/model-catalog.js`, `runtime/polling.js`, `runtime/extron-web-poller.js`, `scripts/poll-devices.js`, `poll-extron.ps1`.
 - XLSX runtime: `vendor/xlsx.full.min.js`, `vendor/LICENSE.sheetjs.txt`.
 - Regression: `tests.js`, `tests.html`, `tests/fixtures/`.
 - Исторические runtime regression suites: `runtime-tests.js`, `server-tests.js`; они не определяют поддерживаемый способ запуска интерфейса.
@@ -46,4 +47,4 @@
 - `specs/003-secure-local-polling/`–`specs/007-direct-index-launch/` — исторические security/polling, Dashboard, русская терминология, переносимый runtime/каталог и переход к прямому запуску.
 - `specs/008-batch-polling-folder-import/` — текущий контракт общей папки, нескольких сеансов и единственного запуска через HTML.
 
-Внешнего API, package manager, CDN или telemetry нет. Реальные vendor adapters остаются `protocol_required` до получения подтверждённых контрактов.
+Внешнего API, package manager, CDN или telemetry нет. Подтверждён только локальный динамический web contract Extron controller/panel; остальные vendor adapters остаются `protocol_required`.

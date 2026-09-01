@@ -688,6 +688,20 @@ Commit, push и deploy для этого этапа не выполнялись.
 
 Commit, push и deploy не выполнялись.
 
+## 2026-08-31 — Локальный web-опрос контроллеров и панелей Extron
+
+Выполнена feature `011-extron-web-polling`. Добавлен единый contract-based HTTPS adapter для контроллеров и панелей управления Extron. После login он сохраняет `NortxeSession` только в памяти процесса, читает текущий `/www/main.js`, извлекает динамические URI подтверждённых ресурсов и делает exact resource GET без query. Поддержка определяется контрактом, поэтому не ограничена каталогом моделей; неизвестный bundle/schema завершается fail-closed.
+
+`CredentialVault` расширен scopes: exact IP, тип+производитель+модель и тип+производитель с однозначным приоритетом. Локальный CLI принимает первую таблицу XLSX/XLS через vendored SheetJS без выполнения формул и импортирует credentials напрямую в DPAPI vault. Browser файл паролей не читает. UI формирует из актуальной SR скачиваемый plan JSON без secrets.
+
+Результаты по умолчанию атомарно сохраняются вне репозитория в `%LOCALAPPDATA%\MVP_SPHERE_SR\poll-results\YYYY-MM-DD_HH-mm-ss\<IP>.json`; explicit local output также поддерживается. Существующая ручная загрузка общей папки результатов в `index.html` сохранена и не зависит от polling CLI. Справочник дополнен через `product-catalog.js`.
+
+Добавлены synthetic tests dynamic URI, cookie isolation, exact resource URL, unknown contract, credential precedence, Excel import, redaction, timestamp folder и partial batch. Реальные IP, credentials, device payloads и runtime files в repository/fixtures не добавлялись.
+
+Проверки: main regression — 132/132 PASS; runtime/DPAPI — 20/20 PASS; historical loopback secure runtime — 1/1 PASS; product catalog/reference — PASS; PowerShell parser — PASS; secret/artifact/external-request/persistence scan и `git diff --check` — PASS.
+
+Commit, push и deploy не выполнялись.
+
 ## 2026-08-10 — Прямой запуск index.html с сохранением security boundary
 
 ### Итог

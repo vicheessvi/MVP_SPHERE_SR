@@ -38,6 +38,7 @@ objects/
 *.enc
 *.vault
 polling-output/
+poll-results/
 credentials*.csv
 credentials*.xlsx
 node_modules/

@@ -298,13 +298,13 @@
     assert(api.formatPollStatus("processing_error") !== api.formatPollStatus("authorization_error"));
   });
 
-  test("Polling registry не содержит фиктивных transports", () => {
+  test("Polling registry содержит подтверждённый локальный Extron transport без browser poll", () => {
     const controller = api.resolvePollingCapability({ category: "controller", manufacturerNormalized: "extron" });
     const panel = api.resolvePollingCapability({ category: "panel", manufacturerNormalized: "extron" });
-    assertEqual(controller.support, "not_implemented");
-    assertEqual(panel.support, "not_implemented");
+    assertEqual(controller.support, "implemented");
+    assertEqual(panel.support, "implemented");
     assertEqual(controller.poll, undefined);
-    assertEqual(panel.transport, null);
+    assertEqual(panel.transport, "extron_web_dynamic_resources_v1");
   });
 
   test("Первый load создаёт и сохраняет demo state", () => {
@@ -1628,10 +1628,10 @@
     assertEqual(result.state.pollingResults.length, 51000);
   });
 
-  test("Polling adapter registry честно блокирует реальный опрос", () => {
+  test("Polling adapter registry объявляет Extron CLI без сетевого poll в browser", () => {
     const capability = api.resolvePollingCapability({ category: "controller", manufacturerRaw: "Extron" });
-    assertEqual(capability.support, "not_implemented");
-    assertEqual(capability.transport, null);
+    assertEqual(capability.support, "implemented");
+    assertEqual(capability.transport, "extron_web_dynamic_resources_v1");
     assert(!Object.prototype.hasOwnProperty.call(capability, "poll"));
   });
 
@@ -1674,14 +1674,19 @@
     assert(result.state.inventoryIssues.some((item) => item.kind === "classification_conflict"));
   });
 
-  test("Polling plan сохраняет выборку и блокирует execution без credentials", () => {
+  test("Polling plan отмечает Extron готовым для локального CLI без credentials в browser", () => {
     const sr = api.importSrRows(api.createDemoState(), { filename: "plan.xlsx", headers: srHeaders(), rows: [srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron" }), srRow({ "Инвентарный номер": "INV-2", "Серийный номер": "SER-2", "MAC": "00-11-22-33-44-77", "IP": "10.10.20.77", "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Crestron" })] });
     const result = api.createPollingPlan(sr.state, { category: "controller", scheduledAt: "2026-06-10T10:00:00", actorId: "user-administrator" });
     assert(result.ok, result.errors?.join("; "));
     assertEqual(result.plan.selectionSummary.total, 2);
-    assertEqual(result.plan.selectionSummary.implemented, 0);
-    assertEqual(result.plan.status, "blocked_no_adapter");
+    assertEqual(result.plan.selectionSummary.implemented, 1);
+    assertEqual(result.plan.status, "ready_for_local_cli");
     assert(!JSON.stringify(result.plan).toLowerCase().includes("password"));
+    const exported = api.buildPollingPlanExport(result.state, result.plan.id);
+    assert(exported.ok);
+    assertEqual(exported.payload.devices.length, 1);
+    assertEqual(exported.payload.devices[0].manufacturer, "Extron");
+    assert(!/password|login|credential/i.test(JSON.stringify(exported.payload)));
   });
 
   function dashboardFixture() {

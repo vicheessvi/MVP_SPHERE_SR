@@ -6,10 +6,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { CredentialVault, parseCredentialText } = require("./runtime/credential-vault");
+const { extractResourceUris, pollExtronDevice } = require("./runtime/extron-web-poller");
 const { CATALOG, resolveManifest } = require("./runtime/model-catalog");
 const { probeDevice, runPlan } = require("./runtime/polling");
 const { decryptBuffer, encryptBuffer, getOrCreateMasterKey } = require("./runtime/security");
 const { SecureStore } = require("./runtime/secure-store");
+const { execute, formatCaptureFolder, readCredentialImport, resolveOutputDirectory, sanitizeResult } = require("./scripts/poll-devices");
 const productCatalog = require("./product-catalog");
 
 const tests = [];
@@ -79,7 +81,40 @@ test("Credential vault write-only summary не раскрывает secrets", ()
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("Model catalog routes supplied manufacturers and preserves protocol_required", () => {
+test("Credential Excel импортируется локально без выполнения формул", () => {
+  const directory = temporaryDirectory();
+  try {
+    const XLSX = require("./vendor/xlsx.full.min.js");
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet([{ "Тип устройства": "Контроллер", "Производитель": "Extron", "Логин": "synthetic-user", "Пароль": "SYNTHETIC-XLSX-SECRET" }]);
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Credentials");
+    const filename = path.join(directory, "credentials.xlsx");
+    fs.writeFileSync(filename, XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }));
+    const imported = readCredentialImport(filename);
+    equal(imported.format, "json");
+    const records = parseCredentialText(imported.text, imported.format);
+    equal(records.length, 1);
+    equal(records[0]["Логин"], "synthetic-user");
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("Credential vault выбирает IP, затем модель, затем тип и производителя", () => {
+  const directory = temporaryDirectory();
+  try {
+    const store = new SecureStore({ dataDir: directory, key: crypto.randomBytes(32) });
+    const vault = new CredentialVault(store);
+    vault.importText(JSON.stringify([
+      { "Тип устройства": "Контроллер", "Производитель": "Extron", "Логин": "type-user", "Пароль": "TYPE-SECRET" },
+      { "Тип устройства": "Контроллер", "Производитель": "Extron", "Модель": "Model A", "Логин": "model-user", "Пароль": "MODEL-SECRET" },
+      { IP: "10.1.2.3", "Логин": "ip-user", "Пароль": "IP-SECRET" }
+    ]), "json");
+    equal(vault.getForDevice({ ip: "10.1.2.3", category: "controller", manufacturer: "Extron", model: "Model A" }).username, "ip-user");
+    equal(vault.getForDevice({ ip: "10.1.2.4", category: "controller", manufacturer: "Extron", model: "Model A" }).username, "model-user");
+    equal(vault.getForDevice({ ip: "10.1.2.5", category: "controller", manufacturer: "Extron", model: "Model B" }).username, "type-user");
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("Model catalog routes supplied manufacturers and enables contract-based Extron", () => {
   assert(CATALOG.length >= 19);
   const huawei = resolveManifest({ category: "vcs", manufacturerRaw: "Huawey", modelRaw: "TE40" });
   equal(huawei.key, "vcs/huawei");
@@ -88,6 +123,11 @@ test("Model catalog routes supplied manufacturers and preserves protocol_require
   const tlp = resolveManifest({ category: "panel", manufacturerRaw: "Extron", modelRaw: "TLP Pro 725T" });
   equal(tlp.key, "panel/extron");
   assert(tlp.knownModel);
+  equal(tlp.protocolStatus, "supported");
+  equal(tlp.transport, "extron_web_dynamic_resources_v1");
+  const unknownExtron = resolveManifest({ category: "controller", manufacturerRaw: "Extron", modelRaw: "Future Synthetic Model" });
+  assert(!unknownExtron.knownModel);
+  equal(unknownExtron.protocolStatus, "supported", "Support must follow the verified web contract, not a model allowlist");
 });
 
 test("Polling ping failure имеет exact shape", async () => {
@@ -104,6 +144,137 @@ test("Polling success без verified protocol fail-closed и не читает 
   let rejected = false;
   try { await probeDevice({ ip: "10.1.2.4" }, { allowedIps: new Set(["10.1.2.3"]), ping: async () => ({ ok: true }) }); } catch { rejected = true; }
   assert(rejected, "non-plan target must be rejected");
+});
+
+test("Extron adapter извлекает session-bound URI и делает exact resource GET", async () => {
+  const uris = {
+    modelName: "/AAAAAAAAAAAAAAAAAAAAAA=",
+    serialNumber: "/BBBBBBBBBBBBBBBBBBBBBB=",
+    fwVersion: "/CCCCCCCCCCCCCCCCCCCCCC=",
+    allLan: "/DDDDDDDDDDDDDDDDDDDDDD=",
+    controllerConfig: "/EEEEEEEEEEEEEEEEEEEEEE=",
+    connectedDevices: "/FFFFFFFFFFFFFFFFFFFFFF=",
+    tlpProject: "/GGGGGGGGGGGGGGGGGGGGGG=",
+    date: "/HHHHHHHHHHHHHHHHHHHHHH=",
+    uptime: "/IIIIIIIIIIIIIIIIIIIIII=",
+    timeZone: "/JJJJJJJJJJJJJJJJJJJJJJ="
+  };
+  const bundle = `serialNumber: function(){return "${uris.serialNumber}"},this.unitInfo={modelName:"${uris.modelName}",fwVersion:"${uris.fwVersion}",allLan:"${uris.allLan}",controllerConfig:"${uris.controllerConfig}",connectedDevices:"${uris.connectedDevices}",tlpProject:"${uris.tlpProject}",date:"${uris.date}",uptime:"${uris.uptime}",timeZone:"${uris.timeZone}"}`;
+  const discovered = extractResourceUris(bundle);
+  equal(discovered.resources.modelName, uris.modelName);
+  equal(discovered.resources.serialNumber, uris.serialNumber);
+  const requests = [];
+  const payloads = {
+    [uris.modelName]: "Synthetic Extron Controller",
+    [uris.serialNumber]: "SERIAL-SYNTHETIC",
+    [uris.fwVersion]: "9.99.0000-b001*(Synthetic -Thu, 01 Jan 2026 00:00 UTC)",
+    [uris.allLan]: { ipAddress: "10.1.2.3", subnetMask: "255.255.255.0", gateway: "10.1.2.1", macAddress: "00-00-00-00-00-01" },
+    [uris.controllerConfig]: { filename: "synthetic.gs", projfilevers: "0.0.303.0", cdate: "01.01.2026 10:00:00", rdate: "02.01.2026 11:00:00", cfgapp: "Extron.Configuration.GS", cfgappvers: "2.22.0.4" },
+    [uris.connectedDevices]: [{ addr: "10.1.2.20", modelname: "Synthetic TLP", name: "Panel", partnum: "00-0000-00" }],
+    [uris.tlpProject]: { configured: "yes", systemdevs: [] },
+    [uris.date]: "Thu, 01 Jan 2026 12:00:00",
+    [uris.uptime]: 90061,
+    [uris.timeZone]: { id: "UTC", description: "UTC" }
+  };
+  const result = await pollExtronDevice(
+    { ip: "10.1.2.3", allowInsecureTls: true },
+    { username: "synthetic-user", password: "SYNTHETIC-SECRET" },
+    {
+      now: () => new Date("2026-08-31T12:00:00.000Z"),
+      request: async (request) => {
+        requests.push(request);
+        if (request.path.startsWith("/api/login?rnd=")) return { statusCode: 200, headers: { "set-cookie": ["NortxeSession=SYNTHETIC-COOKIE; Secure; HttpOnly"] }, body: "{}" };
+        if (request.path === "/www/main.js") return { statusCode: 200, headers: {}, body: bundle };
+        const uri = request.path.replace("/api/swis/resource", "");
+        return { statusCode: 200, headers: {}, body: JSON.stringify(payloads[uri]) };
+      }
+    }
+  );
+  assert(result.ok);
+  equal(result.webInterface.insecureTls, true);
+  equal(result.webBlocks["Device Info"].Model, "Synthetic Extron Controller");
+  equal(result.webBlocks["Device Info"]["Serial Number"], "SERIAL-SYNTHETIC");
+  equal(result.webBlocks["Project Info"].Version, "0.0.303");
+  equal(result.webBlocks["Project Info"]["Connected Devices"].length, 1);
+  equal(result.webBlocks["Device Status"]["Uptime Seconds"], 90061);
+  equal(result.webBlocks["LAN Settings"]["MAC Address"], "00-00-00-00-00-01");
+  equal(result.webBlocks["LAN Settings"]["IP Address"], "10.1.2.3");
+  requests.filter((item) => item.path.startsWith("/api/swis/resource")).forEach((item) => {
+    assert(!item.path.includes("?"), `Resource URL must remain exact: ${item.path}`);
+    equal(item.headers.Cookie, "NortxeSession=SYNTHETIC-COOKIE");
+  });
+  const serialized = JSON.stringify(result);
+  assert(!serialized.includes("SYNTHETIC-SECRET"));
+  assert(!serialized.includes("SYNTHETIC-COOKIE"));
+  assert(!serialized.includes("Basic "));
+});
+
+test("Extron adapter fail-closed отклоняет неизвестный bundle", async () => {
+  const result = await pollExtronDevice(
+    { ip: "10.1.2.3" },
+    { username: "synthetic-user", password: "SYNTHETIC-SECRET" },
+    {
+      request: async (request) => request.path.startsWith("/api/login")
+        ? { statusCode: 200, headers: { "set-cookie": "NortxeSession=SYNTHETIC" }, body: "" }
+        : { statusCode: 200, headers: {}, body: "window.app={unknown:true};" }
+    }
+  );
+  equal(result.safeError, "unsupported_web_contract");
+  equal(result.failedStage, "adapter");
+});
+
+test("Polling dispatch выдаёт credential только exact Extron IP", async () => {
+  const lookedUp = [];
+  const result = await probeDevice(
+    { ip: "10.1.2.3", category: "controller", manufacturer: "Extron", model: "Unlisted Contract Model" },
+    {
+      allowedIps: new Set(["10.1.2.3"]),
+      ping: async () => ({ ok: true, durationMs: 1 }),
+      getCredential: (ip) => { lookedUp.push(ip); return { username: "synthetic", password: "SYNTHETIC" }; },
+      extronAdapter: async (device, credential) => ({ ip: device.ipNormalized, ok: true, failedStage: null, successfulCredential: { username: credential.username }, vendorPolling: { status: "supported" }, webBlocks: {} })
+    }
+  );
+  assert(result.ok);
+  equal(lookedUp.join(","), "10.1.2.3");
+});
+
+test("Polling output использует timestamp folder, atomic per-IP JSON и redaction", async () => {
+  const directory = temporaryDirectory();
+  try {
+    const planPath = path.join(directory, "plan.json");
+    fs.writeFileSync(planPath, JSON.stringify({ devices: [{ ip: "10.1.2.3", category: "controller", manufacturer: "Extron" }, { ip: "10.1.2.4", category: "panel", manufacturer: "Extron" }] }));
+    const clock = new Date(2026, 7, 31, 19, 41, 28);
+    equal(formatCaptureFolder(clock), "2026-08-31_19-41-28");
+    const resolved = resolveOutputDirectory(["--plan", planPath, "--output-root", directory], { now: () => clock });
+    assert(resolved.endsWith(path.join("2026-08-31_19-41-28")));
+    const summary = await execute(["--plan", planPath, "--output-root", directory], {
+      now: () => clock,
+      secureRoot: path.join(directory, "vault"),
+      vault: { getForIp: () => null },
+      runPlan: async () => [
+        { ip: "10.1.2.3", ok: true, failedStage: null, note: "Basic SYNTHETIC", cookie: "NortxeSession=SYNTHETIC" },
+        { ip: "10.1.2.4", ok: false, failedStage: "authorization", password: "SYNTHETIC-SECRET", safeError: "authorization_failed" }
+      ]
+    });
+    equal(summary.total, 2);
+    equal(summary.failed, 1);
+    const files = fs.readdirSync(summary.outputDir).sort();
+    equal(files.join(","), "10.1.2.3.json,10.1.2.4.json");
+    const disk = files.map((name) => fs.readFileSync(path.join(summary.outputDir, name), "utf8")).join("\n");
+    assert(!disk.includes("SYNTHETIC-SECRET"));
+    assert(!disk.includes("NortxeSession="));
+    assert(!fs.readdirSync(summary.outputDir).some((name) => name.endsWith(".tmp")));
+    const sanitized = sanitizeResult({ headers: { Authorization: "Basic X" }, safe: "ok" });
+    equal(JSON.stringify(sanitized), '{"safe":"ok"}');
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("Manual polling import остаётся доступен вместе с local polling CLI", () => {
+  const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+  const gitignore = fs.readFileSync(path.join(__dirname, ".gitignore"), "utf8");
+  assert(source.includes("data-polling-import-form"));
+  assert(source.includes("webkitdirectory directory multiple"));
+  assert(gitignore.includes("poll-results/"));
 });
 
 test("Target navigation и загрузка соответствуют единственному файловому режиму", () => {

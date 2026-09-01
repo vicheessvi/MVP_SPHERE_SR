@@ -2,6 +2,7 @@
 
 const { spawn } = require("child_process");
 const { normalizeIpv4 } = require("./credential-vault");
+const { pollExtronDevice } = require("./extron-web-poller");
 const { resolveManifest } = require("./model-catalog");
 
 function pingDevice(ip, timeoutMs) {
@@ -29,6 +30,28 @@ async function probeDevice(device, options) {
   const manifest = resolveManifest(device);
   const ping = await (settings.ping || pingDevice)(ip, settings.timeoutMs);
   if (!ping.ok) return { ip, capturedAt, adapterKey: manifest.key, ok: false, failedStage: "ping", ping: { ok: false, durationMs: ping.durationMs }, vendorPolling: { status: "not_started" }, safeError: ping.safeError || "no_ping_response" };
+  if (manifest.transport === "extron_web_dynamic_resources_v1") {
+    const getCredential = typeof settings.getCredential === "function"
+      ? settings.getCredential
+      : settings.credentialVault && typeof settings.credentialVault.getForDevice === "function"
+        ? (_targetIp, targetDevice) => settings.credentialVault.getForDevice(targetDevice)
+        : settings.credentialVault && typeof settings.credentialVault.getForIp === "function"
+          ? (targetIp) => settings.credentialVault.getForIp(targetIp)
+        : () => null;
+    const credential = await getCredential(ip, { ...device, ipNormalized: ip });
+    const adapter = settings.extronAdapter || pollExtronDevice;
+    try {
+      const result = await adapter({ ...device, ipNormalized: ip, allowInsecureTls: device.allowInsecureTls === true || settings.allowInsecureTls === true }, credential, {
+        request: settings.request,
+        timeoutMs: settings.timeoutMs,
+        now: settings.now,
+        allowInsecureTls: settings.allowInsecureTls === true
+      });
+      return { ...result, ip, capturedAt: result.capturedAt || capturedAt, adapterKey: manifest.key, ping: { ok: true, durationMs: ping.durationMs } };
+    } catch {
+      return { ip, capturedAt, adapterKey: manifest.key, ok: false, failedStage: "adapter", ping: { ok: true, durationMs: ping.durationMs }, vendorPolling: { status: "supported", knownModel: manifest.knownModel }, safeError: "adapter_failed" };
+    }
+  }
   return { ip, capturedAt, adapterKey: manifest.key, ok: false, failedStage: "adapter", ping: { ok: true, durationMs: ping.durationMs }, vendorPolling: { status: manifest.protocolStatus, knownModel: manifest.knownModel }, safeError: manifest.protocolStatus === "protocol_required" ? "verified_protocol_contract_required" : "adapter_unsupported" };
 }
 

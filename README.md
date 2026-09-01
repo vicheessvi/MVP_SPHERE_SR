@@ -54,6 +54,8 @@
 1. XLSX-выгрузку SR согласно `specs/002-sr-inventory-analytics/contracts/sr-xlsx-import.md`.
 2. Одну общую папку со всеми результатами опросов.
 
+Ручной выбор общей папки остаётся доступен независимо от автоматизированного опроса Extron. Автоматизация только создаёт совместимые JSON и не заменяет существующий импорт.
+
 Структура общей папки:
 
 ```text
@@ -85,10 +87,32 @@ polling-export/
 
 ## Опрос устройств
 
-`runtime/model-catalog.js` содержит переданный каталог производителей и моделей. `scripts/poll-devices.js` принимает явный allowlist-план, проверяет адреса, выполняет ограниченный по времени ping и пишет отдельный безопасный JSON на каждый IP:
+`runtime/model-catalog.js` содержит переданный каталог производителей и моделей. Для контроллеров и панелей Extron добавлен contract-based HTTPS adapter: после входа он получает текущий `/www/main.js`, извлекает session-bound URI подтверждённых ресурсов и опрашивает их в той же локальной сессии. Поддержка определяется web-контрактом, а не жёстким списком моделей; неизвестный контракт завершается `unsupported_web_contract` без догадок.
+
+Рабочий порядок:
+
+1. Загрузить актуальную SR в `index.html`, в разделе «Загрузка» сформировать план для Контроллеров или Панелей управления Extron и скачать JSON-план. В плане нет логинов и паролей.
+2. Подготовить отдельный Excel-файл с первой таблицей и колонками `Тип устройства`, `Производитель`, `Логин`, `Пароль`. Необязательные `Модель` и `IP` задают исключения; приоритет — IP, затем тип+производитель+модель, затем тип+производитель.
+3. Запустить локальный скрипт:
 
 ```powershell
-node .\scripts\poll-devices.js --plan .\polling-plan.json --out .\polling-output --timeout 3000
+.\poll-extron.ps1 -Plan "C:\local\extron-polling-plan.json" -Credentials "C:\private\credentials.xlsx" -AllowInsecureTls
+```
+
+`-AllowInsecureTls` нужен только для явно выбранного локального оборудования с self-signed certificate. Страница `index.html` Excel с паролями не читает: polling-скрипт импортирует записи напрямую в DPAPI vault текущего Windows-пользователя. На другом ПК или в другом Windows-профиле credentials необходимо безопасно импортировать заново.
+
+По умолчанию отдельный безопасный JSON на каждый IP записывается атомарно в:
+
+```text
+%LOCALAPPDATA%\MVP_SPHERE_SR\poll-results\YYYY-MM-DD_HH-mm-ss\<IP>.json
+```
+
+Другой локальный корень задаётся параметром `-Output`. После опроса созданная папка или общий `poll-results` вручную выбирается в модуле «Загрузка».
+
+Эквивалентный низкоуровневый CLI:
+
+```powershell
+node .\scripts\poll-devices.js --plan .\polling-plan.json --credentials C:\private\credentials.xlsx --timeout 7000 --allow-insecure-tls
 ```
 
 Минимальный план:
@@ -96,12 +120,12 @@ node .\scripts\poll-devices.js --plan .\polling-plan.json --out .\polling-output
 ```json
 {
   "devices": [
-    { "ip": "10.10.1.15", "category": "vcs", "manufacturer": "Cisco", "model": "Webex Room Kit" }
+    { "ip": "192.0.2.10", "category": "controller", "manufacturer": "Extron", "model": "IPCP Pro", "allowInsecureTls": false }
   ]
 }
 ```
 
-Для известных моделей без подтверждённого vendor-протокола результат имеет статус `protocol_required`. Это намеренная fail-closed граница: реальные HTTPS/SSH/SNMP-команды и схемы ответов будут добавлены только по документации производителя или проверенным примерам, а не на основании догадок по названию модели.
+Для остальных производителей и для Extron с неподтверждённым поколением интерфейса результат имеет `protocol_required` или `unsupported_web_contract`. Это намеренная fail-closed граница: HTTPS/SSH/SNMP-команды и схемы ответов не выводятся из названия модели.
 
 ## Проверки
 
@@ -115,7 +139,7 @@ node scripts/validate-reference.js
 ## Ключевые файлы
 
 - `product-catalog.js`, `scripts/validate-reference.js` — единый каталог интерфейса/Справочника и проверка согласованности;
-- `runtime/model-catalog.js`, `runtime/polling.js`, `scripts/poll-devices.js` — каталог и каркас опроса;
+- `runtime/model-catalog.js`, `runtime/polling.js`, `runtime/extron-web-poller.js`, `scripts/poll-devices.js`, `poll-extron.ps1` — каталог, Extron adapter и локальный запуск опроса;
 - `app.js`, `styles.css`, `index.html`, `runtime-config.js` — единственный файловый интерфейс, пакетная загрузка, Dashboard-проекция и аналитика;
 - `specs/003-secure-local-polling/` — защищённый runtime и polling boundary;
 - `specs/004-analytics-dashboard/` — спецификация, контракты, план и проверки Dashboard;
@@ -124,4 +148,5 @@ node scripts/validate-reference.js
 - `specs/007-direct-index-launch/` — прямой непостоянный запуск;
 - `specs/008-batch-polling-folder-import/` — пакетный импорт общей папки и единственный файловый режим;
 - `specs/009-scalable-polling-import/` — индексированный массовый импорт, прогресс, отмена и performance evidence;
+- `specs/011-extron-web-polling/` — контракт, хранение, Excel credentials и проверки локального Extron web-опроса;
 - `docs/decisions/ADR-0005-secure-local-runtime.md`, `docs/decisions/ADR-0007-direct-index-session-mode.md` — архитектурные решения.

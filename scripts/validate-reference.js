@@ -8,5 +8,5 @@ if (!report.ok) {
   process.stderr.write(`Справочник и каталог продукта не согласованы: ${report.errors.length} ошибок.\n`);
   process.exitCode = 1;
 } else {
-  process.stdout.write(`PASS: ${report.counts.modules} модулей, ${report.counts.moduleHelpEntries} карточек модулей, ${report.counts.statusEntries} карточек статусов.\n`);
+  process.stdout.write(`PASS: ${report.counts.modules} модулей, ${report.counts.moduleHelpEntries} карточек модулей, ${report.counts.statusEntries} карточек статусов, ${report.counts.pollingHelpEntries} карточки локального опроса.\n`);
 }

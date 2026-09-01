@@ -24,9 +24,18 @@
 
   const ANALYZED_PARAMETER_RULES = deepFreeze([
     { id: "extron-controller-type-v1", category: "controller", manufacturerNormalized: "extron", path: "$.webBlocks.Project Info.Controller Type", label: "Тип контроллера", rationale: "Используется для подтверждённой классификации Контроллера Extron.", version: 1 },
-    { id: "extron-controller-firmware-v1", category: "controller", manufacturerNormalized: "extron", path: "$.webBlocks.Firmware.version", label: "Версия прошивки", rationale: "Показывает изменение установленной версии прошивки Контроллера Extron.", version: 1 },
+    { id: "extron-controller-firmware-v1", category: "controller", manufacturerNormalized: "extron", path: "$.webBlocks.Firmware.Version", label: "Версия прошивки", rationale: "Показывает изменение установленной версии прошивки Контроллера Extron.", version: 1 },
+    { id: "extron-controller-firmware-legacy-v1", category: "controller", manufacturerNormalized: "extron", path: "$.webBlocks.Firmware.version", label: "Версия прошивки", rationale: "Сохраняет сравнение ранее загруженных результатов Контроллеров Extron с историческим регистром поля.", version: 1 },
     { id: "extron-panel-type-v1", category: "panel", manufacturerNormalized: "extron", path: "$.webBlocks.Project Info.Controller Type", label: "Тип панели управления", rationale: "Используется для подтверждённой классификации Панели управления Extron.", version: 1 },
-    { id: "extron-panel-firmware-v1", category: "panel", manufacturerNormalized: "extron", path: "$.webBlocks.Firmware.version", label: "Версия прошивки", rationale: "Показывает изменение установленной версии прошивки Панели управления Extron.", version: 1 }
+    { id: "extron-panel-firmware-v1", category: "panel", manufacturerNormalized: "extron", path: "$.webBlocks.Firmware.Version", label: "Версия прошивки", rationale: "Показывает изменение установленной версии прошивки Панели управления Extron.", version: 1 },
+    { id: "extron-panel-firmware-legacy-v1", category: "panel", manufacturerNormalized: "extron", path: "$.webBlocks.Firmware.version", label: "Версия прошивки", rationale: "Сохраняет сравнение ранее загруженных результатов Панелей управления Extron с историческим регистром поля.", version: 1 }
+  ]);
+
+  const POLLING_HELP_ENTRIES = deepFreeze([
+    { id: "logic-extron-web-polling", title: "Автоматический опрос Extron", summary: "Локальный скрипт поддерживает контроллеры и панели управления Extron, web-интерфейс которых предоставляет подтверждённый динамический контракт ресурсов.", details: "Модель не ограничивается жёстким списком: URI определяются заново из web bundle каждого устройства. Неизвестный контракт безопасно отклоняется. Опрос выполняется только по IP из локального плана; index.html сетевые запросы не выполняет.", keywords: ["extron", "контроллер", "панель", "автоматический опрос"] },
+    { id: "logic-credential-excel", title: "Excel с логинами и паролями", summary: "Учётные данные загружаются отдельно в локальный polling-скрипт из XLSX/XLS и сразу переносятся в защищённое хранилище Windows.", details: "Основные колонки: «Тип устройства», «Производитель», «Логин», «Пароль»; необязательные «Модель» и «IP» задают исключения. Приоритет: IP, затем тип+производитель+модель, затем тип+производитель. Файл не читается HTML-интерфейсом, не копируется в проект и не попадает в результаты.", keywords: ["xlsx", "excel", "логин", "пароль", "dpapi", "учётные данные"] },
+    { id: "logic-poll-results-storage", title: "Куда сохраняются результаты опроса", summary: "По умолчанию JSON сохраняются в %LOCALAPPDATA%\\MVP_SPHERE_SR\\poll-results\\YYYY-MM-DD_HH-mm-ss.", details: "Для каждого IP создаётся отдельный JSON. Можно явно выбрать другой локальный корень. После завершения выберите созданную папку или общий poll-results в модуле «Загрузка».", keywords: ["localappdata", "poll-results", "папка результатов", "json"] },
+    { id: "logic-manual-polling-import", title: "Ручная загрузка опросов", summary: "Общую папку с готовыми JSON по-прежнему можно загружать вручную без запуска автоматического опроса.", details: "Автоматический polling является дополнительным способом получить совместимые файлы и не заменяет существующий ручной выбор общей папки.", keywords: ["ручная загрузка", "файлы", "папка", "импорт"] }
   ]);
 
   const equipmentModules = EQUIPMENT_CATEGORY_CATALOG.map((category) => ({
@@ -39,7 +48,7 @@
     helpId: `module-${category.route}`,
     contextHelp: true,
     summary: `Перечень категории «${category.title}» из актуальной выгрузки SR.`,
-    details: `Использует общий перечень, фильтры, карточку, историю опросов и аналитику оборудования. Категория определяется точным сравнением поля SR «${category.srField}» со значением «${category.srValue}» после безопасной нормализации пробелов и регистра. Каждая различимая строка актуальной SR остаётся в перечне даже без результата опроса. Подтверждённый протокол автоматического опроса не предполагается без отдельной спецификации.`,
+    details: `Использует общий перечень, фильтры, карточку, историю опросов и аналитику оборудования. Категория определяется точным сравнением поля SR «${category.srField}» со значением «${category.srValue}» после безопасной нормализации пробелов и регистра. Каждая различимая строка актуальной SR остаётся в перечне даже без результата опроса.${["controller", "panel"].includes(category.id) ? " Для устройств Extron доступен отдельный локальный contract-based web-опрос; ручная загрузка JSON и папок сохраняется." : " Подтверждённый протокол автоматического опроса не предполагается без отдельной спецификации."}`,
     keywords: [category.title.toLocaleLowerCase("ru-RU"), category.srValue.toLocaleLowerCase("ru-RU"), category.id]
   }));
 
@@ -59,9 +68,9 @@
     ...equipmentModules,
     {
       route: "upload", renderer: "upload", title: "Загрузка", order: 50, helpId: "module-upload", contextHelp: false,
-      summary: "Импортирует выгрузку SR и все папки результатов опросов из одной выбранной общей папки.",
-      details: "Каждая вложенная папка YYYY-MM-DD_HH-MM-SS становится отдельным запуском; JSON находятся рекурсивно и обрабатываются пакетно с живым прогрессом и безопасной отменой. Ошибки отдельных файлов не отменяют корректные результаты. Все данные остаются в памяти текущей вкладки.",
-      keywords: ["импорт", "xlsx", "json", "общая папка", "пакетная загрузка"]
+      summary: "Вручную импортирует выгрузку SR и общую папку с готовыми JSON результатов опросов; принимает также папки, созданные локальным Extron polling-скриптом.",
+      details: "Ручной выбор общей папки остаётся доступен независимо от автоматического опроса. Каждая вложенная папка YYYY-MM-DD_HH-MM-SS становится отдельным запуском; JSON находятся рекурсивно и обрабатываются пакетно с живым прогрессом и безопасной отменой. Автоматические результаты по умолчанию находятся в %LOCALAPPDATA%\\MVP_SPHERE_SR\\poll-results. Файл Excel с учётными данными принимает только локальный polling-скрипт, а не страница index.html.",
+      keywords: ["импорт", "xlsx", "json", "общая папка", "пакетная загрузка", "poll-results", "ручная загрузка"]
     },
     {
       route: "settings", renderer: "settings", title: "Локальное хранилище", order: 60, helpId: "module-settings", contextHelp: false,
@@ -179,6 +188,7 @@
     const modules = input.modules || MODULE_CATALOG;
     const terms = input.uiTerms || UI_TERMS;
     const statusDescriptors = input.statusDescriptors || STATUS_DESCRIPTORS;
+    const pollingHelpEntries = input.pollingHelpEntries || POLLING_HELP_ENTRIES;
     const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "equipment", "inventory", "upload", "settings", "reference"]);
     const errors = [];
     const russian = /[А-Яа-яЁё]/;
@@ -222,9 +232,17 @@
       if (item.tooltip && !terms.tooltips?.[item.tooltip]) errors.push(`Статус ${item.id} ссылается на отсутствующую подсказку ${item.tooltip}`);
     });
 
+    duplicateValues(pollingHelpEntries.map((item) => item.id)).forEach((value) => errors.push(`Повторяется id справки опроса: ${value}`));
+    pollingHelpEntries.forEach((item) => {
+      ["title", "summary", "details"].forEach((field) => {
+        if (!String(item[field] || "").trim() || !russian.test(String(item[field] || ""))) errors.push(`У справки опроса ${item.id || "(пусто)"} отсутствует русское поле ${field}`);
+      });
+      if (!Array.isArray(item.keywords) || !item.keywords.length) errors.push(`У справки опроса ${item.id || "(пусто)"} отсутствуют keywords`);
+    });
+
     const moduleHelp = buildModuleHelpSection(modules);
     const statusHelp = buildStatusHelpSection(terms, statusDescriptors);
-    const referenceIds = [...moduleHelp.entries, ...statusHelp.entries].map((item) => item.id);
+    const referenceIds = [...moduleHelp.entries, ...statusHelp.entries, ...pollingHelpEntries].map((item) => item.id);
     duplicateValues(referenceIds).forEach((value) => errors.push(`Повторяется id справочной записи: ${value}`));
     const helpIds = new Set(moduleHelp.entries.map((item) => item.id));
     modules.filter((item) => item.contextHelp && !helpIds.has(item.helpId)).forEach((item) => errors.push(`Нет контекстной справки для маршрута: ${item.route}`));
@@ -232,13 +250,14 @@
     return deepFreeze({
       ok: errors.length === 0,
       errors,
-      counts: { modules: modules.length, moduleHelpEntries: moduleHelp.entries.length, statusEntries: statusHelp.entries.length }
+      counts: { modules: modules.length, moduleHelpEntries: moduleHelp.entries.length, statusEntries: statusHelp.entries.length, pollingHelpEntries: pollingHelpEntries.length }
     });
   }
 
   return deepFreeze({
     EQUIPMENT_CATEGORY_CATALOG,
     ANALYZED_PARAMETER_RULES,
+    POLLING_HELP_ENTRIES,
     MODULE_CATALOG,
     UI_TERMS,
     STATUS_DESCRIPTORS,
