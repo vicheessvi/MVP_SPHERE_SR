@@ -1,6 +1,6 @@
 <!--
 Sync Impact Report
-- Version change: 1.0.0 -> 2.0.0
+- Version change: 2.0.0 -> 3.0.0
 - Modified principles:
   - placeholder Principle 1 -> I. Неизменяемые исходные доказательства
   - placeholder Principle 2 -> II. Идентичность предшествует сравнению
@@ -17,7 +17,8 @@ Sync Impact Report
     reads this file at planning time
   - .specify/templates/spec-template.md: no edit required
   - .specify/templates/tasks-template.md: no edit required
-- Follow-up: validate OS-bound vault, local-only transport and credential redaction in feature 003
+- Modified principle VI to permit explicitly requested ephemeral XLSX credential-pool validation in direct-file mode while prohibiting serialization, persistence and fallback credentials.
+- Dependent artifacts updated by feature 012: AGENTS.md, architecture, ADR-0012, tests.
 -->
 
 # MVP_SPHERE_SR Constitution
@@ -90,11 +91,14 @@ Rationale: пользователь должен понимать, что изм
 принимать соединения только через loopback и MUST NOT передавать данные во внешние
 сервисы, telemetry или CDN.
 
-Device credentials MAY требоваться только отдельному polling runtime. Они MUST
-импортироваться в выделенный зашифрованный vault, MUST NOT попадать в основной
-state, snapshots, аналитику, browser storage, логи, диагностику, backup или Git и
-MUST NOT возвращаться через read API. Ошибка импорта или polling MUST скрывать
-значения секретов. Доступ к runtime MUST иметь только роль «Администратор МЦТП».
+Device credentials MAY требоваться только автоматическому polling workflow. Явно
+выбранный XLSX MAY проверяться в замкнутой памяти текущей вкладки `file://`, но
+пары MUST NOT попадать в основной state, DOM, plan, snapshots, аналитику, browser
+storage, логи, диагностику, backup или Git. Локальный polling-процесс MUST получать
+тот же файл явно для каждого запуска и MUST держать нормализованный пул только в
+памяти процесса; старый vault, hardcoded credentials и иные fallback-источники
+запрещены. Ошибка импорта или polling MUST скрывать значения секретов. Доступ к
+workflow MUST иметь только роль «Администратор МЦТП».
 
 Rationale: polling требует секретов, но аналитика не должна становиться каналом
 их утечки; OS-bound vault отделяет полномочия опроса от данных анализа.
@@ -154,4 +158,4 @@ MUST быть явно согласована пользователем, сод
 проведённых проверках и известных отклонениях. Исключение допускается только как
 явно документированное временное решение с владельцем и условием устранения.
 
-**Version**: 2.0.0 | **Ratified**: 2026-08-03 | **Last Amended**: 2026-08-10
+**Version**: 3.0.0 | **Ratified**: 2026-08-03 | **Last Amended**: 2026-09-01

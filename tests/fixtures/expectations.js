@@ -134,9 +134,9 @@
 
   function legacy() {
     return {
-      ip: "10.22.187.2",
+      ip: "192.0.2.2",
       ok: true,
-      outputFile: "2026-06-01_09-41-28/10.22.187.2.json",
+      outputFile: "2026-06-01_09-41-28/192.0.2.2.json",
       webInterface: { ok: true, evidence: "Extron control processor", markers: ["Extron"] },
       webBlocks: {
         Firmware: { Version: "2.7.0" },
@@ -144,8 +144,8 @@
           Project: "Legacy Room.gcp",
           Version: "4.2",
           "Connected Devices": [{
-            addr: "10.22.187.5",
-            macAddress: "11:22:33:44:55:66",
+            addr: "192.0.2.5",
+            macAddress: "02:00:00:00:00:05",
             modelname: "TLP Pro 725T",
             name: "Legacy Panel",
             partnum: "60-1563-02",
@@ -153,7 +153,7 @@
           }],
           "TLP Project": { modelname: "IPCP Pro 350", partnumber: "60-1384-01", systemdevs: [] }
         },
-        "LAN Settings": { DHCP: "Off", "Host Name": "legacy-controller", "IP Address": "10.22.187.2", "Subnet Mask": "255.255.255.0", Gateway: "10.22.187.1", "DNS Server": "10.22.0.2", "MAC Address": "AA-BB-CC-DD-EE-10" },
+        "LAN Settings": { DHCP: "Off", "Host Name": "legacy-controller", "IP Address": "192.0.2.2", "Subnet Mask": "255.255.255.0", Gateway: "192.0.2.1", "DNS Server": "192.0.2.53", "MAC Address": "02-00-00-00-00-02" },
         GUI: []
       }
     };

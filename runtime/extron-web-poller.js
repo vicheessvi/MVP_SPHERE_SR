@@ -275,26 +275,32 @@ async function pollExtronDevice(device, credential, options) {
     ok: false,
     failedStage: null,
     loginAttempts: [],
-    successfulCredential: null,
+    credentialAttempts: 0,
     vendorPolling: { status: "supported", contract: "extron-web-dynamic-resources-v1" }
   };
   if (!ip) return { ...base, failedStage: "validation", safeError: "invalid_or_forbidden_ip" };
-  if (!credential || !credential.username || !credential.password) return { ...base, failedStage: "credentials", safeError: "credential_missing" };
+  const credentials = (Array.isArray(credential) ? credential : [credential]).filter((item) => item && item.username && item.password);
+  if (!credentials.length) return { ...base, failedStage: "credentials", safeError: "credential_missing" };
   const rejectUnauthorized = !(device.allowInsecureTls === true || settings.allowInsecureTls === true);
   const timeoutMs = settings.timeoutMs;
   let cookie = null;
-  try {
-    const authorization = Buffer.from(`${credential.username}:${credential.password}`, "utf8").toString("base64");
-    const login = await request({ ip, method: "POST", path: `/api/login?rnd=${Number(settings.now ? settings.now() : Date.now())}`, headers: { Authorization: `Basic ${authorization}`, "Content-Length": "0" }, body: "", rejectUnauthorized, timeoutMs, maxBytes: 1024 * 1024 });
-    cookie = sessionCookie(login.headers);
-    const loginOk = login.statusCode >= 200 && login.statusCode < 300 && Boolean(cookie);
-    base.loginAttempts.push({ username: String(credential.username), ok: loginOk });
-    if (!loginOk) return { ...base, failedStage: "authorization", safeError: "authorization_failed" };
-    base.successfulCredential = { username: String(credential.username) };
-  } catch (error) {
-    base.loginAttempts.push({ username: String(credential.username), ok: false });
-    return { ...base, failedStage: "login", safeError: safeTransportError(error) };
+  for (let index = 0; index < credentials.length; index += 1) {
+    try {
+      const candidate = credentials[index];
+      const authorization = Buffer.from(`${candidate.username}:${candidate.password}`, "utf8").toString("base64");
+      const login = await request({ ip, method: "POST", path: `/api/login?rnd=${Number(settings.now ? settings.now() : Date.now())}`, headers: { Authorization: `Basic ${authorization}`, "Content-Length": "0" }, body: "", rejectUnauthorized, timeoutMs, maxBytes: 1024 * 1024 });
+      cookie = sessionCookie(login.headers);
+      const loginOk = login.statusCode >= 200 && login.statusCode < 300 && Boolean(cookie);
+      base.loginAttempts.push({ attempt: index + 1, ok: loginOk });
+      base.credentialAttempts = index + 1;
+      if (loginOk) break;
+    } catch (error) {
+      base.loginAttempts.push({ attempt: index + 1, ok: false });
+      base.credentialAttempts = index + 1;
+      return { ...base, failedStage: "login", safeError: safeTransportError(error) };
+    }
   }
+  if (!cookie) return { ...base, failedStage: "authorization", safeError: "authorization_failed" };
 
   let discovery;
   try {

@@ -1649,6 +1649,7 @@
     assertEqual(result.state.inventoryDevices.length, 1);
     assertEqual(result.state.inventoryDevices[0].ipNormalized, null);
     assert(result.state.inventoryIssues.some((item) => item.kind === "invalid_ip"));
+    assertEqual(result.outcome, "processed", "Диагностика без отклонённых строк не должна давать частичный статус");
   });
 
   test("Одинаковый IP с разными strong IDs не сливает устройства", () => {
@@ -1674,9 +1675,57 @@
     assert(result.state.inventoryIssues.some((item) => item.kind === "classification_conflict"));
   });
 
-  test("Polling plan отмечает Extron готовым для локального CLI без credentials в browser", () => {
+  test("Каскад автоматического плана строится из актуальной SR и очищает дочерние значения", () => {
     const sr = api.importSrRows(api.createDemoState(), { filename: "plan.xlsx", headers: srHeaders(), rows: [srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron" }), srRow({ "Инвентарный номер": "INV-2", "Серийный номер": "SER-2", "MAC": "00-11-22-33-44-77", "IP": "10.10.20.77", "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Crestron" })] });
-    const result = api.createPollingPlan(sr.state, { category: "controller", scheduledAt: "2026-06-10T10:00:00", actorId: "user-administrator" });
+    const all = api.deriveAutomaticPollingPlan(sr.state, { categories: [api.POLLING_ALL], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL] });
+    assertEqual(all.selectedDevices.length, 2);
+    assertEqual(all.supportedDevices.length, 1);
+    const extron = api.deriveAutomaticPollingPlan(sr.state, { categories: ["controller"], manufacturers: ["extron"], models: [api.POLLING_ALL] });
+    assertEqual(extron.selectedDevices.length, 1);
+    assertEqual(extron.availableModels.length, 1);
+    const changed = api.deriveAutomaticPollingPlan(sr.state, { categories: ["controller"], manufacturers: ["missing-vendor"], models: ["missing-model"] });
+    assertEqual(changed.selection.manufacturers.length, 0);
+    assertEqual(changed.selection.models.length, 0);
+    assertEqual(changed.selectedDevices.length, 0);
+  });
+
+  test("Каскад покрывает один, несколько и все значения каждого уровня", () => {
+    const rows = [
+      srRow({ "Инвентарный номер": "C-1", "Серийный номер": "CS-1", MAC: "02-00-00-00-01-01", IP: "10.30.0.1", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron", Модель: "Model A" }),
+      srRow({ "Инвентарный номер": "C-2", "Серийный номер": "CS-2", MAC: "02-00-00-00-01-02", IP: "10.30.0.2", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron", Модель: "Model B" }),
+      srRow({ "Инвентарный номер": "C-3", "Серийный номер": "CS-3", MAC: "02-00-00-00-01-03", IP: "10.30.0.3", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Crestron", Модель: "Model C" }),
+      srRow({ "Инвентарный номер": "P-1", "Серийный номер": "PS-1", MAC: "02-00-00-00-01-04", IP: "10.30.0.4", "Тип оборудования": "panel", "Тип модели": "Панель управления", Производитель: "Extron", Модель: "Panel A" })
+    ];
+    const imported = api.importSrRows(api.createDemoState(), { filename: "cascade.xlsx", headers: srHeaders(), rows });
+    const select = (categories, manufacturers, models) => api.deriveAutomaticPollingPlan(imported.state, { categories, manufacturers, models });
+    assertEqual(select(["controller"], [api.POLLING_ALL], [api.POLLING_ALL]).selectedDevices.length, 3);
+    assertEqual(select(["controller", "panel"], [api.POLLING_ALL], [api.POLLING_ALL]).selectedDevices.length, 4);
+    assertEqual(select([api.POLLING_ALL], [api.POLLING_ALL], [api.POLLING_ALL]).selectedDevices.length, 4);
+    assertEqual(select([api.POLLING_ALL], ["extron"], [api.POLLING_ALL]).selectedDevices.length, 3);
+    assertEqual(select([api.POLLING_ALL], ["extron", "crestron"], [api.POLLING_ALL]).selectedDevices.length, 4);
+    assertEqual(select(["controller"], [api.POLLING_ALL], [api.POLLING_ALL]).availableManufacturers.length, 2);
+    assertEqual(select([api.POLLING_ALL], [api.POLLING_ALL], ["model a"]).selectedDevices.length, 1);
+    assertEqual(select([api.POLLING_ALL], [api.POLLING_ALL], ["model a", "model b"]).selectedDevices.length, 2);
+    assertEqual(select([api.POLLING_ALL], ["extron"], [api.POLLING_ALL]).availableModels.length, 3);
+    const intersection = select(["controller"], ["extron"], ["model b"]);
+    assertEqual(intersection.selectedDevices.length, 1);
+    assertEqual(intersection.selectedDevices[0].inventoryNumber, "C-2");
+    assertEqual(intersection.selectedDevices.length, intersection.supportedDevices.length + intersection.unsupportedDevices.length);
+  });
+
+  test("Экран Загрузка использует четыре операционных секции без старых пояснений", () => {
+    if (typeof require !== "function") return;
+    const fs = require("fs");
+    const source = fs.readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Тип оборудования", "Дата и время начала опроса", "Интервал"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    assert(!source.includes("Первый непустой лист; «Домен» необязателен"));
+    assert(!source.includes("План локального опроса"));
+    assert(!source.includes("Производитель, необязательно"));
+  });
+
+  test("Polling plan v2 включает supported и unsupported без credentials", () => {
+    const sr = api.importSrRows(api.createDemoState(), { filename: "plan.xlsx", headers: srHeaders(), rows: [srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron" }), srRow({ "Инвентарный номер": "INV-2", "Серийный номер": "SER-2", "MAC": "00-11-22-33-44-77", "IP": "10.10.20.77", "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Crestron" })] });
+    const result = api.createPollingPlan(sr.state, { categories: ["controller"], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL], scheduledAt: "2026-06-10T10:00:00", intervalSeconds: 10, credentialsReady: true, credentialSourceSha256: "a".repeat(64), actorId: "user-administrator" });
     assert(result.ok, result.errors?.join("; "));
     assertEqual(result.plan.selectionSummary.total, 2);
     assertEqual(result.plan.selectionSummary.implemented, 1);
@@ -1684,8 +1733,12 @@
     assert(!JSON.stringify(result.plan).toLowerCase().includes("password"));
     const exported = api.buildPollingPlanExport(result.state, result.plan.id);
     assert(exported.ok);
-    assertEqual(exported.payload.devices.length, 1);
-    assertEqual(exported.payload.devices[0].manufacturer, "Extron");
+    assertEqual(exported.payload.schemaVersion, 2);
+    assertEqual(exported.payload.intervalSeconds, 10);
+    assertEqual(exported.payload.authenticationInputSha256, "a".repeat(64));
+    assertEqual(exported.payload.devices.length, 2);
+    assert(exported.payload.devices.some((device) => device.manufacturer === "Extron" && device.pollingSupported));
+    assert(exported.payload.devices.some((device) => device.manufacturer === "Crestron" && !device.pollingSupported));
     assert(!/password|login|credential/i.test(JSON.stringify(exported.payload)));
   });
 

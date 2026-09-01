@@ -1,12 +1,12 @@
 # Карта контекста
 
-## Текущая feature 011
+## Текущая feature 012
 
-- Спецификация и план: `specs/011-extron-web-polling/`.
-- Extron adapter и orchestration: `runtime/extron-web-poller.js`, `runtime/polling.js`, `runtime/model-catalog.js`.
-- Excel credentials, DPAPI vault и output: `scripts/poll-devices.js`, `runtime/credential-vault.js`, `poll-extron.ps1`.
-- UI plan/manual import/reference: `app.js`, `product-catalog.js`.
-- Архитектурное решение: `docs/decisions/ADR-0011-extron-web-polling.md`.
+- Спецификация и план: `specs/012-automatic-polling-plan/`.
+- Каскад, план v2, XLSX UI validation и ручной импорт: `app.js`, `runtime/credential-pool.js`.
+- Последовательный Extron polling, интервал и per-result save: `runtime/extron-web-poller.js`, `runtime/polling.js`, `scripts/poll-devices.js`, `poll-extron.ps1`.
+- Термины и Справочник: `product-catalog.js`.
+- Архитектурное решение: `docs/decisions/ADR-0012-automatic-polling-plan.md`.
 
 ## Постоянные инструкции
 

@@ -104,8 +104,8 @@ Each evidence item contains:
   "from_snapshot_id": "a2813fb5-4bce-418b-8bfc-c8e9e161ac6c",
   "to_snapshot_id": "ae23a7e8-285a-4684-9158-a63552219222",
   "field": "ip_address",
-  "old_value": "10.22.187.5",
-  "new_value": "10.22.187.8",
+  "old_value": "192.0.2.5",
+  "new_value": "192.0.2.8",
   "match_confidence": "exact",
   "rule_id": "device.network.ip.changed",
   "ruleset_version": "1.0.0",
@@ -113,8 +113,8 @@ Each evidence item contains:
     {
       "snapshot_id": "ae23a7e8-285a-4684-9158-a63552219222",
       "source_path": "$.webBlocks['Project Info']['Connected Devices'][0].addr",
-      "raw_value": "10.22.187.8",
-      "normalized_value": "10.22.187.8",
+      "raw_value": "192.0.2.8",
+      "normalized_value": "192.0.2.8",
       "quality": "valid"
     }
   ],

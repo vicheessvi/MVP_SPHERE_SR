@@ -52,6 +52,8 @@
 
   const PRODUCT_CATALOG = global.MVP_PRODUCT_CATALOG || (typeof module === "object" && module.exports ? require("./product-catalog") : null);
   if (!PRODUCT_CATALOG) throw new Error("Каталог продукта не загружен");
+  const CREDENTIAL_POOL = global.MVP_CREDENTIAL_POOL || (typeof module === "object" && module.exports ? require("./runtime/credential-pool") : null);
+  if (!CREDENTIAL_POOL) throw new Error("Модуль проверки учётных данных не загружен");
   const { MODULE_CATALOG, UI_TERMS, EQUIPMENT_CATEGORY_CATALOG, ANALYZED_PARAMETER_RULES, POLLING_HELP_ENTRIES } = PRODUCT_CATALOG;
   const EQUIPMENT_CATEGORY_IDS = Object.freeze(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id));
   const catalogValidation = PRODUCT_CATALOG.validateProductCatalog();
@@ -62,7 +64,7 @@
     {
       id: "about", title: "1. Об инструменте", description: "Назначение и границы безопасной работы.", entries: [
         { id: "about-tool", title: "MVP_SPHERE_SR", summary: "Инструмент предназначен для учёта, опроса и анализа состояния оборудования мультимедийной инфраструктуры.", details: "Перечень оборудования формируется по выгрузке SR и включает семь категорий: Терминалы ВКС, Контроллеры, Панели управления, Коммутаторы, Матричные коммутаторы, Скалеры и Аудио процессоры. Состояние появляется только из фактически импортированных результатов опросов.", keywords: ["назначение", "оборудование"] },
-        { id: "about-local", title: "Запуск и хранение", summary: "Инструмент имеет один режим: прямое открытие index.html для анализа в текущей вкладке.", details: "Импортированные данные находятся только в памяти страницы и удаляются при перезагрузке или закрытии. Файлы логинов и паролей интерфейс не читает.", keywords: ["index.html", "сеанс", "безопасность", "локально"] }
+        { id: "about-local", title: "Запуск и хранение", summary: "Инструмент имеет один режим: прямое открытие index.html для анализа в текущей вкладке.", details: "Импортированные данные и временно проверенный пул учётных данных находятся только в памяти страницы и удаляются при перезагрузке или закрытии. Секреты не включаются в состояние, план или результаты.", keywords: ["index.html", "сеанс", "безопасность", "локально"] }
       ]
     },
     PRODUCT_CATALOG.buildModuleHelpSection(),
@@ -1409,7 +1411,7 @@
       if (row.category === "other") next.inventoryIssues.push(createInventoryIssue({ kind: "unknown_category", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Строка не относится к ВКС, контроллеру или панели" }));
       srImport.acceptedCount += 1;
     });
-    srImport.status = srImport.rejectedCount || next.inventoryIssues.some((issue) => issue.sourceId === srImport.id) ? "partial" : "processed";
+    srImport.status = srImport.rejectedCount > 0 ? "partial" : "processed";
     next.srImports.push(srImport);
     next = appendHistory(next, { actorId: input.actorId || "system", action: "Импортирована выгрузка SR", entityType: "sr_import", entityId: srImport.id, details: `${srImport.filename}: ${srImport.acceptedCount}/${srImport.rowCount}` });
     return { ok: true, outcome: srImport.status, state: next, srImportId: srImport.id, acceptedCount: srImport.acceptedCount, rejectedCount: srImport.rejectedCount, errors: [] };
@@ -1581,7 +1583,7 @@
     }
 
     emitProgress("Формирование перечня оборудования", rows.length);
-    srImport.status = srImport.rejectedCount || next.inventoryIssues.some((issue) => issue.sourceId === srImport.id) ? "partial" : "processed";
+    srImport.status = srImport.rejectedCount > 0 ? "partial" : "processed";
     next.srImports.push(srImport);
     next.history.push(makeHistoryEntry({ actorId: input.actorId || "system", action: "Импортирована выгрузка SR", entityType: "sr_import", entityId: srImport.id, details: `${srImport.filename}: ${srImport.acceptedCount}/${srImport.rowCount}` }));
     emitProgress("Обновление аналитики", rows.length);
@@ -1617,43 +1619,132 @@
     return run;
   }
 
+  const POLLING_ALL = "*";
+  const POLLING_MISSING = "__not_specified__";
+
+  function pollingCategoryOrder(category) {
+    const item = EQUIPMENT_CATEGORY_CATALOG.find((candidate) => candidate.id === category);
+    return item ? item.order : Number.MAX_SAFE_INTEGER;
+  }
+
+  function pollingDimensionValue(device, dimension) {
+    if (dimension === "categories") return normalizeText(device?.category) || POLLING_MISSING;
+    if (dimension === "manufacturers") return normalizeManufacturer(device?.manufacturerNormalized || device?.manufacturerRaw) || POLLING_MISSING;
+    return normalizeText(device?.modelNormalized || device?.modelRaw) || POLLING_MISSING;
+  }
+
+  function normalizePollingSelection(values, available) {
+    const source = Array.isArray(values) ? values.map(String) : values ? [String(values)] : [];
+    if (source.includes(POLLING_ALL)) return available.length ? [POLLING_ALL] : [];
+    const allowed = new Set(available.map((item) => item.value));
+    return [...new Set(source.filter((value) => allowed.has(value)))];
+  }
+
+  function pollingOptions(devices, dimension) {
+    const labels = new Map();
+    for (const device of devices) {
+      const value = pollingDimensionValue(device, dimension);
+      if (labels.has(value)) continue;
+      let label = "Не указано";
+      if (dimension === "categories") label = formatCategoryLabel(value);
+      else if (dimension === "manufacturers") label = normalizeDisplay(device.manufacturerRaw || device.manufacturerNormalized) || "Не указано";
+      else label = normalizeDisplay(device.modelRaw || device.modelNormalized) || "Не указано";
+      labels.set(value, label);
+    }
+    return [...labels].map(([value, label]) => ({ value, label })).sort((left, right) => {
+      if (dimension === "categories") return pollingCategoryOrder(left.value) - pollingCategoryOrder(right.value);
+      return left.label.localeCompare(right.label, "ru", { sensitivity: "base" });
+    });
+  }
+
+  function matchesPollingSelection(device, dimension, selection) {
+    return selection.includes(POLLING_ALL) || selection.includes(pollingDimensionValue(device, dimension));
+  }
+
+  function sortPollingDevices(devices) {
+    return [...devices].sort((left, right) => pollingCategoryOrder(left.category) - pollingCategoryOrder(right.category)
+      || normalizeDisplay(left.manufacturerRaw || left.manufacturerNormalized).localeCompare(normalizeDisplay(right.manufacturerRaw || right.manufacturerNormalized), "ru", { sensitivity: "base" })
+      || normalizeDisplay(left.modelRaw || left.modelNormalized).localeCompare(normalizeDisplay(right.modelRaw || right.modelNormalized), "ru", { sensitivity: "base" })
+      || String(left.ipNormalized || "").localeCompare(String(right.ipNormalized || ""), "en", { numeric: true })
+      || String(left.id || "").localeCompare(String(right.id || "")));
+  }
+
+  function deriveAutomaticPollingPlan(currentState, input) {
+    const selection = input || {};
+    const inventory = currentState.inventoryDevices.filter((device) => device.inCurrentSr !== false && EQUIPMENT_CATEGORY_IDS.includes(device.category));
+    const availableCategories = pollingOptions(inventory, "categories");
+    const categories = normalizePollingSelection(selection.categories, availableCategories);
+    const categoryDevices = categories.length ? inventory.filter((device) => matchesPollingSelection(device, "categories", categories)) : [];
+    const availableManufacturers = pollingOptions(categoryDevices, "manufacturers");
+    const manufacturers = normalizePollingSelection(selection.manufacturers, availableManufacturers);
+    const manufacturerDevices = manufacturers.length ? categoryDevices.filter((device) => matchesPollingSelection(device, "manufacturers", manufacturers)) : [];
+    const availableModels = pollingOptions(manufacturerDevices, "models");
+    const models = normalizePollingSelection(selection.models, availableModels);
+    const selectedDevices = sortPollingDevices(models.length ? manufacturerDevices.filter((device) => matchesPollingSelection(device, "models", models)) : []);
+    const supportedDevices = [];
+    const unsupportedDevices = [];
+    selectedDevices.forEach((device) => {
+      const capability = resolvePollingCapability(device);
+      (device.ipNormalized && capability.support === "implemented" && capability.transport ? supportedDevices : unsupportedDevices).push(device);
+    });
+    return Object.freeze({
+      availableCategories: Object.freeze(availableCategories),
+      availableManufacturers: Object.freeze(availableManufacturers),
+      availableModels: Object.freeze(availableModels),
+      selection: Object.freeze({ categories: Object.freeze(categories), manufacturers: Object.freeze(manufacturers), models: Object.freeze(models) }),
+      selectedDevices: Object.freeze(selectedDevices),
+      supportedDevices: Object.freeze(supportedDevices),
+      unsupportedDevices: Object.freeze(unsupportedDevices)
+    });
+  }
+
   function createPollingPlan(currentState, input) {
-    const category = normalizeText(input.category);
-    if (!EQUIPMENT_CATEGORY_IDS.includes(category)) return { ok: false, state: deepClone(currentState), errors: ["Категория плана не поддерживается"] };
+    const projection = deriveAutomaticPollingPlan(currentState, input);
+    const errors = [];
+    if (!currentState.srImports.some((item) => item.status === "processed" || item.status === "partial")) errors.push("Сначала загрузите выгрузку SR");
+    if (!projection.selection.categories.length) errors.push("Выберите Тип оборудования");
+    if (!projection.selection.manufacturers.length) errors.push("Выберите Производителя");
+    if (!projection.selection.models.length) errors.push("Выберите Модель");
+    if (!projection.selectedDevices.length) errors.push("По выбранным фильтрам устройства не найдены");
     const scheduledAt = normalizeDate(input.scheduledAt);
-    if (!scheduledAt) return { ok: false, state: deepClone(currentState), errors: ["Дата и время плана обязательны"] };
-    const manufacturer = normalizeManufacturer(input.manufacturer);
-    const devices = currentState.inventoryDevices.filter((device) => device.inCurrentSr !== false && device.category === category && (!manufacturer || device.manufacturerNormalized === manufacturer));
-    const capabilities = devices.map(resolvePollingCapability);
-    const implemented = devices.filter((device, index) => device.ipNormalized && capabilities[index].support === "implemented" && capabilities[index].transport).length;
+    if (!scheduledAt) errors.push("Дата и время начала опроса обязательны");
+    const intervalSeconds = Number(input.intervalSeconds);
+    if (!Number.isInteger(intervalSeconds) || intervalSeconds < 0 || !Number.isFinite(intervalSeconds)) errors.push("Интервал должен быть целым числом секунд от 0");
+    if (!input.credentialsReady) errors.push("Загрузите файл «Учётные данные оборудования» в модуле «Загрузка»");
+    if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить выбранный файл учётных данных");
+    if (!projection.supportedDevices.length) errors.push("Среди выбранных устройств нет оборудования с поддерживаемым автоматическим опросом");
+    if (errors.length) return { ok: false, state: deepClone(currentState), projection, errors };
     let next = deepClone(currentState);
     const plan = {
-      id: createId("polling-run"), kind: "plan", identityKey: `plan|${scheduledAt}|${category}|${manufacturer || "all"}|${nowIso()}`,
+      id: createId("polling-run"), kind: "plan", identityKey: `plan|${scheduledAt}|${nowIso()}`,
       folderName: null, capturedAt: scheduledAt, capturedAtSource: "planned", importedAt: nowIso(), importedById: input.actorId || "system",
-      deviceIds: devices.map((device) => device.id), fileCount: 0, successCount: 0, errorCount: 0, status: implemented > 0 ? "ready_for_local_cli" : "blocked_no_adapter",
-      selectionSummary: { category, manufacturer: manufacturer || null, total: devices.length, implemented, notImplemented: devices.length - implemented }
+      intervalSeconds, authenticationInputSha256: String(input.credentialSourceSha256).toLowerCase(), selection: deepClone(projection.selection), deviceIds: projection.selectedDevices.map((device) => device.id),
+      fileCount: 0, successCount: 0, errorCount: 0, status: "ready_for_local_cli",
+      selectionSummary: { total: projection.selectedDevices.length, implemented: projection.supportedDevices.length, notImplemented: projection.unsupportedDevices.length }
     };
     next.pollingRuns.push(plan);
-    next = appendHistory(next, { actorId: input.actorId || "system", action: "Сформирован план опроса", entityType: "polling_run", entityId: plan.id, details: `${category}: ${devices.length}; ${implemented > 0 ? "local CLI ready" : "adapter unavailable"}` });
-    return { ok: true, state: next, plan, errors: [] };
+    next = appendHistory(next, { actorId: input.actorId || "system", action: "Сформирован план автоматического опроса", entityType: "polling_run", entityId: plan.id, details: `${plan.selectionSummary.total} устройств; поддерживается ${plan.selectionSummary.implemented}` });
+    return { ok: true, state: next, plan, projection, errors: [] };
   }
 
   function buildPollingPlanExport(currentState, planId) {
     const plan = currentState.pollingRuns.find((item) => item.id === planId && item.kind === "plan");
     if (!plan) return { ok: false, errors: ["План опроса не найден"] };
-    const devices = (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).filter((device) => {
+    const devices = (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).map((device) => {
       const capability = resolvePollingCapability(device);
-      return Boolean(device.ipNormalized && capability.support === "implemented" && capability.transport);
-    }).map((device) => ({
-      ip: device.ipNormalized,
+      const pollingSupported = Boolean(device.ipNormalized && capability.support === "implemented" && capability.transport);
+      return {
+      ip: device.ipNormalized || null,
       category: device.category,
       manufacturer: device.manufacturerRaw || device.manufacturerNormalized,
       model: device.modelRaw || device.modelNormalized || "",
+      pollingSupported,
+      adapterKey: capability.key || null,
       allowInsecureTls: false
-    }));
+    }; });
     return {
       ok: true,
-      payload: { schemaVersion: 1, scheduledAt: plan.capturedAt, devices },
+      payload: { schemaVersion: 2, scheduledAt: plan.capturedAt, intervalSeconds: plan.intervalSeconds || 0, authenticationInputSha256: plan.authenticationInputSha256, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), devices },
       filename: `extron-polling-plan-${String(plan.capturedAt || "").slice(0, 10) || "local"}.json`,
       errors: []
     };
@@ -3933,6 +4024,8 @@
     STATE_ARRAY_KEYS,
     ROLE_NAMES,
     POLLING_ADAPTERS,
+    POLLING_ALL,
+    POLLING_MISSING,
     SR_REQUIRED_HEADERS,
     appendHistory,
     addReviewDecision,
@@ -3945,6 +4038,9 @@
     createDemoState,
     buildPollingPlanExport,
     createPollingPlan,
+    deriveAutomaticPollingPlan,
+    normalizePollingSelection,
+    sortPollingDevices,
     createSelectedComparison,
     deepClone,
     deriveLegacyMetadata,
@@ -4085,6 +4181,7 @@
     }
   }
   const initialNavigationState = createNavigationState();
+  let credentialPoolSession = null;
   const ui = {
     route: initialNavigationState.route,
     message: startupMessage,
@@ -4103,6 +4200,8 @@
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
+    pollingPlanSelection: { categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalSeconds: "0" },
+    credentialSummary: null,
     inventoryBusy: false,
     equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
@@ -4664,10 +4763,26 @@
       </section>`;
   }
 
+  function selectedPollingLabels(options, selection) {
+    if (selection.includes(POLLING_ALL)) return ["Все"];
+    const labels = new Map(options.map((item) => [item.value, item.label]));
+    return selection.map((value) => labels.get(value) || "Не указано");
+  }
+
+  function renderPollingChoiceGroup(name, label, options, selection) {
+    const selectedLabels = selectedPollingLabels(options, selection);
+    return `<fieldset class="polling-choice-group"><legend>${escapeHtml(label)}</legend><div class="polling-choice-options">
+      <label class="polling-choice"><input type="checkbox" data-polling-plan-filter="${name}" value="${POLLING_ALL}"${selection.includes(POLLING_ALL) ? " checked" : ""}${options.length ? "" : " disabled"}>Все</label>
+      ${options.map((item) => `<label class="polling-choice"><input type="checkbox" data-polling-plan-filter="${name}" value="${escapeHtml(item.value)}"${selection.includes(item.value) ? " checked" : ""}>${escapeHtml(item.label)}</label>`).join("")}
+    </div><div class="polling-choice-tags" aria-live="polite">${selectedLabels.map((item) => `<span class="selection-tag">${escapeHtml(item)}</span>`).join("") || `<span class="muted">Ничего не выбрано</span>`}</div></fieldset>`;
+  }
+
   function renderUpload() {
     const pollingProgress = ui.pollingProgress;
     const pollingPercent = pollingProgress?.total ? Math.min(100, Math.round((pollingProgress.processed / pollingProgress.total) * 100)) : 0;
     const srPercent = ui.srProgress?.total ? Math.min(100, Math.round((ui.srProgress.processed / ui.srProgress.total) * 100)) : 0;
+    const projection = deriveAutomaticPollingPlan(state, ui.pollingPlanSelection);
+    ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     return `
       <header class="page-header">
         <div>
@@ -4676,14 +4791,13 @@
         </div>
       </header>
       <div class="card-grid section-gap">
-        <section class="card upload-card"><h2>1. Выгрузка SR (.xlsx)</h2><p class="muted">Первый непустой лист; «Домен» необязателен. Повторный импорт обновляет устройства без потери истории.</p>
+        <section class="card upload-card"><h2>1. Выгрузка SR</h2>
           <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file">Файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить выгрузку SR</button></form>
           ${ui.srProgress ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(ui.srProgress.stage)}</span><strong>${ui.srProgress.processed || 0} из ${ui.srProgress.total || 0} строк</strong></div><strong>${srPercent}%</strong></div><progress max="100" value="${srPercent}">${srPercent}%</progress><p class="muted">Принято: ${ui.srProgress.accepted || 0} · отклонено: ${ui.srProgress.rejected || 0}</p></section>` : ""}
           ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
-        <section class="card upload-card"><h2>2. Общая папка результатов опросов</h2><p class="muted">Выберите одну общую папку целиком. Внутри неё могут находиться несколько папок сеансов вида YYYY-MM-DD_HH-MM-SS; все JSON будут найдены рекурсивно и импортированы как отдельные запуски.</p>
-          <div class="info-panel">Формат даты: год-месяц-день. Например, 2026-06-01_09-41-28 — 1 июня 2026 года, 09:41:28.</div>
-          <form class="form-grid section-gap" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Главная папка со всеми результатами</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать все папки опросов</button></form>
+        <section class="card upload-card"><h2>2. Общая папка результатов опросов</h2>
+          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Главная папка со всеми результатами</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
           ${pollingProgress ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="${ui.inventoryBusy ? "true" : "false"}">
             <div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(pollingProgress.stage)}</span><strong>${pollingProgress.processed} из ${pollingProgress.total} JSON</strong></div><strong>${pollingPercent}%</strong></div>
             <div class="polling-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pollingPercent}"><span style="width:${pollingPercent}%"></span></div>
@@ -4693,10 +4807,22 @@
           </section>` : ""}
           ${ui.pollingImportResults.length ? `<ul class="result-list section-gap">${ui.pollingImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
+        <section class="card upload-card"><h2>3. Учётные данные оборудования</h2>
+          <form class="form-grid" data-credential-import-form><div class="field"><label for="credential-file">Файл учётных данных (.xlsx)</label><input id="credential-file" name="credentialFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit">Загрузить учётные данные</button></form>
+          ${ui.credentialSummary ? `<div class="safe-summary section-gap" aria-live="polite"><strong>Учётные данные загружены</strong><span>Доступно пар: ${ui.credentialSummary.acceptedCount}</span><span>Отклонено строк: ${ui.credentialSummary.rejectedCount}</span><span>Точных дублей: ${ui.credentialSummary.duplicateCount}</span></div>` : ""}
+        </section>
       </div>
-      <section class="card section-gap"><h2>3. План локального опроса</h2><p class="muted">Сформируйте из актуальной SR план для отдельного локального polling-скрипта. Страница не выполняет сетевой опрос и не читает файл паролей.</p>
-        <form class="filter-grid" data-polling-plan-form><div class="field"><label>Категория</label><select name="category" required>${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<option value="${item.id}">${escapeHtml(item.title)}</option>`).join("")}</select></div><div class="field"><label>Производитель, необязательно</label><input name="manufacturer" placeholder="Например, Extron"></div><div class="field"><label>Дата и время</label><input name="scheduledAt" type="datetime-local" required></div><button class="button primary" type="submit">Сформировать план</button></form>
-        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План: ${escapeHtml(formatCategoryLabel(ui.pollingPlanResult.category))}, устройств ${ui.pollingPlanResult.total}; готовы для локального опроса ${ui.pollingPlanResult.implemented}; без подтверждённого механизма ${ui.pollingPlanResult.notImplemented}. Учётные данные не загружались в страницу.</div>${ui.pollingPlanResult.implemented > 0 ? `<button class="button secondary section-gap" type="button" data-download-polling-plan="${escapeHtml(ui.pollingPlanResult.planId)}">Скачать план JSON</button>` : ""}` : ""}
+      <section class="card section-gap"><h2>4. План автоматического опроса</h2>
+        <form class="automatic-plan-form" data-polling-plan-form>
+          <div class="polling-cascade">
+            ${renderPollingChoiceGroup("categories", "Тип оборудования", projection.availableCategories, projection.selection.categories)}
+            ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
+            ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
+          </div>
+          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><label>Интервал</label><div class="field-with-unit"><input name="intervalSeconds" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalSeconds || "0")}" required><span>секунд</span></div></div><button class="button primary" type="submit">Сформировать план</button></div>
+        </form>
+        <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd>${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd>${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd>${projection.unsupportedDevices.length}</dd></div></dl>
+        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>${ui.pollingPlanResult.implemented > 0 ? `<button class="button secondary section-gap" type="button" data-download-polling-plan="${escapeHtml(ui.pollingPlanResult.planId)}">Скачать план JSON</button>` : ""}` : ""}
       </section>
       `;
   }
@@ -5251,14 +5377,38 @@
       return;
     }
 
+    const credentialImportForm = event.target.closest("[data-credential-import-form]");
+    if (credentialImportForm) {
+      event.preventDefault();
+      const file = credentialImportForm.elements.credentialFile?.files?.[0];
+      if (!file || !/\.xlsx$/i.test(file.name)) { setMessage("Выберите файл учётных данных в формате XLSX.", "error"); render(); return; }
+      try {
+        const arrayBuffer = await readFileArrayBuffer(file);
+        const parsed = CREDENTIAL_POOL.parseCredentialWorkbook(arrayBuffer, global.XLSX);
+        credentialPoolSession = { credentials: parsed.credentials, sourceSha256: await sha256Bytes(arrayBuffer) };
+        ui.credentialSummary = deepClone(parsed.summary);
+        ui.pollingPlanResult = null;
+        setMessage(`Учётные данные загружены. Доступно пар: ${parsed.summary.acceptedCount}; отклонено строк: ${parsed.summary.rejectedCount}; дублей: ${parsed.summary.duplicateCount}.`, "success");
+      } catch {
+        credentialPoolSession = null;
+        ui.credentialSummary = null;
+        setMessage("Файл учётных данных не принят. Проверьте формат XLSX и колонки «Логин» и «Пароль».", "error");
+      }
+      credentialImportForm.reset();
+      render();
+      return;
+    }
+
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
     if (pollingPlanForm) {
       event.preventDefault();
       const formData = new FormData(pollingPlanForm);
-      const result = createPollingPlan(state, { category: String(formData.get("category") || ""), manufacturer: String(formData.get("manufacturer") || ""), scheduledAt: String(formData.get("scheduledAt") || ""), actorId: currentUser()?.id || "system" });
+      ui.pollingPlanSelection.scheduledAt = String(formData.get("scheduledAt") || "");
+      ui.pollingPlanSelection.intervalSeconds = String(formData.get("intervalSeconds") || "");
+      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, credentialsReady: Boolean(credentialPoolSession?.credentials?.length), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
       ui.pollingPlanResult = { ...result.plan.selectionSummary, planId: result.plan.id };
-      commitState(result.state, `План сохранён: ${result.plan.selectionSummary.implemented} устройств готовы для отдельного локального опроса.`);
+      commitState(result.state, `План сформирован: ${result.plan.selectionSummary.implemented} устройств готовы для автоматического опроса.`);
       return;
     }
 
@@ -5546,6 +5696,8 @@
       if (result.ok && result.outcome !== "duplicate") {
         state = result.state;
         pollingImportContextCache = null;
+        ui.pollingPlanSelection = { categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalSeconds: ui.pollingPlanSelection.intervalSeconds || "0" };
+        ui.pollingPlanResult = null;
       }
       ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
       setMessage(result.ok ? "Выгрузка SR обработана." : "Выгрузка SR не импортирована.", result.ok ? "success" : "error");
@@ -5669,6 +5821,27 @@
   }
 
   function handleChange(event) {
+    const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
+    if (pollingPlanForm && event.target.matches("[data-polling-plan-filter]")) {
+      const dimension = event.target.dataset.pollingPlanFilter;
+      const value = String(event.target.value || "");
+      const previous = Array.isArray(ui.pollingPlanSelection[dimension]) ? ui.pollingPlanSelection[dimension] : [];
+      let nextSelection;
+      if (event.target.checked && value === POLLING_ALL) nextSelection = [POLLING_ALL];
+      else if (event.target.checked) nextSelection = [...new Set(previous.filter((item) => item !== POLLING_ALL).concat(value))];
+      else nextSelection = previous.filter((item) => item !== value);
+      ui.pollingPlanSelection[dimension] = nextSelection;
+      const projection = deriveAutomaticPollingPlan(state, ui.pollingPlanSelection);
+      ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
+      ui.pollingPlanResult = null;
+      render();
+      return;
+    }
+    if (pollingPlanForm && ["scheduledAt", "intervalSeconds"].includes(event.target.name)) {
+      ui.pollingPlanSelection[event.target.name] = String(event.target.value || "");
+      ui.pollingPlanResult = null;
+      return;
+    }
     if (!event.target.matches("[data-import-backup]") || !event.target.files?.[0]) return;
     const file = event.target.files[0];
     const reader = new FileReader();

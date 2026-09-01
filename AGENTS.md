@@ -7,10 +7,10 @@
 - Видение: `docs/project-vision.md`.
 - Стек интерфейса: Windows, HTML5, CSS3, Vanilla JavaScript, browser File API, vendored SheetJS CE 0.20.3; Node.js используется только для разработки и отдельных локальных polling-скриптов.
 - Runtime интерфейса: единственный режим — непостоянный `file://index.html` для текущей вкладки.
-- Хранение интерфейса: только память страницы; secrets не принимаются, `localStorage`/`IndexedDB` не используются.
+- Хранение интерфейса: только память страницы; выбранный XLSX credentials проверяется только в памяти текущей вкладки и не сериализуется; `localStorage`/`IndexedDB` не используются.
 - Роль: только «Администратор МЦТП».
-- Constitution: версия 2.0.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/011-extron-web-polling/`.
+- Constitution: версия 3.0.0 в `.specify/memory/constitution.md`.
+- Текущая feature: `specs/012-automatic-polling-plan/`.
 
 ## Правила работы агента
 
@@ -22,8 +22,8 @@
 - Доступные модули, их названия, справочные описания, пользовательские статусы и подсказки изменять через `product-catalog.js`; после правки обязательно запускать `node scripts/validate-reference.js`.
 - Не добавлять новый доступный маршрут в обход `MODULE_CATALOG` и не дублировать модульные карточки вручную в `app.js`.
 - Никогда не помещать реальные логины, пароли, токены, ключи, IP-выгрузки или runtime data в Git, fixtures, логи, state, аналитику и ответы API.
-- Не заменять file-mode memory adapter на `localStorage`/`IndexedDB` и не включать credential import для `file://`; чувствительные данные браузер не сохраняет.
-- Excel credentials принимает только отдельный локальный polling CLI; scope выбирается IP → тип+производитель+модель → тип+производитель, а browser получает только plan без secrets.
+- Не заменять file-mode memory adapter на `localStorage`/`IndexedDB`. XLSX credentials в `file://` допускается читать только в замкнутую переменную текущей вкладки для проверки схемы/счётчиков; нельзя помещать пары в `state`, DOM, plan, логи или browser storage.
+- Новый автоматический запуск принимает только текущий XLSX `Логин | Пароль` как общий пул без fallback к старому vault; browser экспортирует plan без secrets, а тот же файл явно передаётся локальному polling CLI.
 - Не добавлять внешнюю передачу, CDN, телеметрию или non-loopback bind без нового явного решения пользователя и security review.
 - Не делать commit/push без явного указания пользователя.
 - Значимые решения фиксировать в `docs/decisions`, этапы — в `docs/implementation-log.md`.

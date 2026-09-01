@@ -1,6 +1,18 @@
 # Архитектура
 
-## Feature 011: локальный web-опрос Extron
+## Feature 012: Загрузка и План автоматического опроса
+
+- `app.js` строит каскад `Тип оборудования → Производитель → Модель` только из актуальной SR, показывает точные total/supported/unsupported и экспортирует plan schema v2 со стабильным порядком.
+- Полный успех SR зависит от `rejectedCount = 0`; диагностические inventory issues больше не превращают успешный импорт в «частичный».
+- `runtime/credential-pool.js` проверяет первую таблицу XLSX `Логин | Пароль`, изолирует неполные строки и точные дубли. UI держит пары только в замкнутой памяти вкладки и выводит безопасные счётчики.
+- Новый CLI-run требует этот же XLSX и явный output root, сверяет SHA-256 файла из plan до сети, создаёт общий in-memory pool и не использует historical DPAPI vault как fallback.
+- `runtime/polling.js` не выполняет сеть для unsupported, сохраняет детерминированный последовательный порядок, ждёт интервал только после callback успешной записи и поддерживает AbortSignal.
+- `scripts/poll-devices.js` атомарно сохраняет каждый JSON немедленно; save failure пытается создать локальную recovery-копию и останавливает batch до следующего устройства.
+- Граница `file://` сохранена: HTML не запускает процесс; пользователь передаёт скачанный plan, тот же XLSX и output локальному `poll-extron.ps1`.
+
+## Feature 011: локальный web-опрос Extron (историческая основа)
+
+Правила credentials и последовательного выполнения ниже частично заменены ADR-0012; актуальный workflow описан в разделе Feature 012.
 
 - `runtime/extron-web-poller.js` реализует один contract-based adapter для контроллеров и панелей управления Extron: login, in-memory `NortxeSession`, чтение `/www/main.js`, динамическое обнаружение resource URI и exact `/api/swis/resource<uri>` без query.
 - Поддержка не ограничена названиями моделей. Любая модель с подтверждённым bundle/resource contract использует adapter; неизвестный контракт завершается fail-closed без vendor-команд по догадке.
@@ -26,7 +38,7 @@
 
 ## Текущий статус
 
-Поддерживается один пользовательский режим: непостоянный browser-only сеанс при прямом открытии `index.html`. Решение описано в ADR-0008. Интерфейс не принимает секреты и не использует постоянное browser-хранилище.
+Поддерживается один пользовательский режим: непостоянный browser-only сеанс при прямом открытии `index.html`. Решение описано в ADR-0008 и ADR-0012. Интерфейс временно проверяет выбранный XLSX credentials, но не помещает пары в state/DOM/plan и не использует постоянное browser-хранилище.
 
 ## Компоненты
 
@@ -38,7 +50,8 @@
 - `product-catalog.js` является единым browser/CommonJS-источником модулей, presentation dictionary и генерируемых карточек модулей/статусов; `app.js` потребляет его проекции.
 - `runtime/model-catalog.js` маршрутизирует переданные производители/модели.
 - `runtime/polling.js` проверяет explicit allowlist, выполняет bounded ping, dispatch-ит подтверждённый Extron adapter и fail-closed останавливается для остальных протоколов.
-- `scripts/poll-devices.js` — CLI, импортирующий локальный Excel credentials в DPAPI vault и формирующий безопасные per-IP результаты.
+- `runtime/credential-pool.js` — общий browser/CommonJS parser XLSX-пула без сериализации секретов.
+- `scripts/poll-devices.js` — CLI, использующий только текущий XLSX-пул в памяти и формирующий безопасные per-IP результаты.
 - `runtime/extron-web-poller.js` — изолированный HTTPS adapter с injectable transport для synthetic contract/security tests.
 - `vendor/xlsx.full.min.js` — локально vendored SheetJS без CDN.
 
@@ -51,14 +64,14 @@ index.html (file://)
 in-memory state for current page only
         |
         +-- selected local SR / folder tree
-        +-- no credential import
+        +-- selected XLSX -> transient validation only
         +-- no browser persistence
         +-- no product network requests
 
 separate poll-extron.ps1 / Node process
         |
         +-- explicit plan IP allowlist
-        +-- Excel credentials -> DPAPI vault (not browser)
+        +-- same Excel credentials -> current in-memory pool
         +-- HTTPS only to planned Extron devices
         +-- local atomic JSON -> poll-results
 ```

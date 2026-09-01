@@ -688,6 +688,20 @@ Commit, push и deploy для этого этапа не выполнялись.
 
 Commit, push и deploy не выполнялись.
 
+## 2026-09-01 — Загрузка и План автоматического опроса
+
+Создана Full SpecKit feature `012-automatic-polling-plan`. Модуль «Загрузка» разделён на SR, общую папку, учётные данные и План автоматического опроса. Длинные пояснения убраны с операционного экрана и перенесены в централизованный Справочник.
+
+Причина ложного «Загружено частично» находилась в status rule: наличие любой диагностической inventory issue приравнивалось к отклонённой строке. Теперь `partial` зависит только от `rejectedCount > 0`; предупреждения сохраняются отдельно.
+
+Добавлена чистая каскадная проекция актуальной SR с multi-select и взаимоисключающим «Все», точными total/supported/unsupported, обязательными Производителем и Моделью, стабильным порядком и plan schema v2. XLSX `Логин | Пароль` проверяется в памяти вкладки с безопасной статистикой; план содержит только его SHA-256. Тот же файл обязателен локальному CLI, сверяется до сети и является единственным credential source текущего запуска.
+
+Polling runner теперь исключает unsupported до ping, сохраняет каждый JSON через awaited callback, после успешной записи ждёт интервал только перед следующим поддерживаемым устройством и прерывает ожидание по AbortSignal. Save failure пытается создать локальную recovery-копию и прекращает batch. PowerShell launcher требует Plan, Credentials и Output.
+
+Проверки: main regression — 135/135 PASS; runtime/DPAPI — 28/28 PASS; historical server integration — 1/1 PASS; product catalog/reference — PASS; JavaScript и PowerShell syntax — PASS; `git diff --check`, real-IP/artifact scan — PASS. Старый fixture с ранее использованным инфраструктурным IP заменён адресами RFC 5737. Встроенный browser-control блокирует `file://` политикой URL, поэтому визуальный smoke-test не подменялся localhost-режимом.
+
+Commit, push и deploy не выполнялись.
+
 ## 2026-08-31 — Локальный web-опрос контроллеров и панелей Extron
 
 Выполнена feature `011-extron-web-polling`. Добавлен единый contract-based HTTPS adapter для контроллеров и панелей управления Extron. После login он сохраняет `NortxeSession` только в памяти процесса, читает текущий `/www/main.js`, извлекает динамические URI подтверждённых ресурсов и делает exact resource GET без query. Поддержка определяется контрактом, поэтому не ограничена каталогом моделей; неизвестный bundle/schema завершается fail-closed.

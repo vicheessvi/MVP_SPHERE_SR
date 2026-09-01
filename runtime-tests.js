@@ -6,6 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { CredentialVault, parseCredentialText } = require("./runtime/credential-vault");
+const { parseCredentialRows, parseCredentialWorkbook } = require("./runtime/credential-pool");
 const { extractResourceUris, pollExtronDevice } = require("./runtime/extron-web-poller");
 const { CATALOG, resolveManifest } = require("./runtime/model-catalog");
 const { probeDevice, runPlan } = require("./runtime/polling");
@@ -20,6 +21,16 @@ function assert(value, message) { if (!value) throw new Error(message || "Assert
 function equal(actual, expected, message) { if (actual !== expected) throw new Error(`${message || "Values differ"}: expected ${expected}, got ${actual}`); }
 
 function temporaryDirectory() { return fs.mkdtempSync(path.join(os.tmpdir(), "mvp-sphere-secure-test-")); }
+
+function writeCredentialWorkbook(directory, rows) {
+  const XLSX = require("./vendor/xlsx.full.min.js");
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.json_to_sheet(rows || [{ "Логин": "synthetic-user", "Пароль": "SYNTHETIC-XLSX-SECRET" }]);
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Credentials");
+  const filename = path.join(directory, "credentials.xlsx");
+  fs.writeFileSync(filename, XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }));
+  return filename;
+}
 
 test("AES-256-GCM envelope скрывает plaintext и проверяет AAD", () => {
   const key = crypto.randomBytes(32);
@@ -84,18 +95,25 @@ test("Credential vault write-only summary не раскрывает secrets", ()
 test("Credential Excel импортируется локально без выполнения формул", () => {
   const directory = temporaryDirectory();
   try {
-    const XLSX = require("./vendor/xlsx.full.min.js");
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet([{ "Тип устройства": "Контроллер", "Производитель": "Extron", "Логин": "synthetic-user", "Пароль": "SYNTHETIC-XLSX-SECRET" }]);
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Credentials");
-    const filename = path.join(directory, "credentials.xlsx");
-    fs.writeFileSync(filename, XLSX.write(workbook, { bookType: "xlsx", type: "buffer" }));
+    const filename = writeCredentialWorkbook(directory, [{ "Логин": "synthetic-user", "Пароль": "SYNTHETIC-XLSX-SECRET" }, { "Логин": "synthetic-user", "Пароль": "SYNTHETIC-XLSX-SECRET" }, { "Логин": "", "Пароль": "missing-login" }]);
     const imported = readCredentialImport(filename);
-    equal(imported.format, "json");
-    const records = parseCredentialText(imported.text, imported.format);
-    equal(records.length, 1);
-    equal(records[0]["Логин"], "synthetic-user");
+    equal(imported.credentials.length, 1);
+    equal(imported.summary.duplicateCount, 1);
+    equal(imported.summary.rejectedCount, 1);
+    assert(/^[0-9a-f]{64}$/.test(imported.sourceSha256));
+    assert(!JSON.stringify(imported.summary).includes("SYNTHETIC-XLSX-SECRET"));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("Credential pool требует Логин и Пароль и изолирует некорректные строки", () => {
+  const parsed = parseCredentialRows([["Логин", "Пароль"], ["user-1", "secret-1"], ["", "secret-2"], ["user-1", "secret-1"], ["", ""]]);
+  equal(parsed.credentials.length, 1);
+  equal(parsed.summary.rejectedCount, 1);
+  equal(parsed.summary.duplicateCount, 1);
+  equal(parsed.summary.emptyRowCount, 1);
+  let rejected = false;
+  try { parseCredentialRows([["Логин"], ["user"]]); } catch { rejected = true; }
+  assert(rejected);
 });
 
 test("Credential vault выбирает IP, затем модель, затем тип и производителя", () => {
@@ -137,13 +155,103 @@ test("Polling ping failure имеет exact shape", async () => {
 });
 
 test("Polling success без verified protocol fail-closed и не читает credentials", async () => {
-  const results = await runPlan({ devices: [{ ip: "10.1.2.3", category: "vcs", manufacturer: "Cisco", model: "Webex Room Kit" }] }, { ping: async () => ({ ok: true, durationMs: 1 }) });
+  let pingCalls = 0;
+  const results = await runPlan({ devices: [{ ip: "10.1.2.3", category: "vcs", manufacturer: "Cisco", model: "Webex Room Kit" }] }, { ping: async () => { pingCalls += 1; return { ok: true, durationMs: 1 }; } });
   equal(results[0].failedStage, "adapter");
   equal(results[0].vendorPolling.status, "protocol_required");
+  equal(pingCalls, 0, "Unsupported device must not be pinged");
   assert(!JSON.stringify(results[0]).toLowerCase().includes("password"));
   let rejected = false;
   try { await probeDevice({ ip: "10.1.2.4" }, { allowedIps: new Set(["10.1.2.3"]), ping: async () => ({ ok: true }) }); } catch { rejected = true; }
   assert(rejected, "non-plan target must be rejected");
+});
+
+test("Polling interval начинается после сохранения и отсутствует после последнего устройства", async () => {
+  const events = [];
+  const plan = { intervalSeconds: 7, devices: [
+    { ip: "10.1.2.3", category: "controller", manufacturer: "Extron" },
+    { ip: "10.1.2.4", category: "panel", manufacturer: "Extron" }
+  ] };
+  const results = await runPlan(plan, {
+    ping: async (ip) => ({ ok: true, durationMs: 1 }),
+    getCredentials: () => [{ username: "synthetic", password: "SYNTHETIC" }],
+    extronAdapter: async (device) => { events.push(`poll:${device.ipNormalized}`); return { ip: device.ipNormalized, ok: true, failedStage: null, vendorPolling: { status: "supported" }, webBlocks: {} }; },
+    onResult: async (result) => { events.push(`save:${result.ip}`); },
+    wait: async (milliseconds) => { events.push(`wait:${milliseconds}`); }
+  });
+  equal(results.length, 2);
+  equal(events.join(","), "poll:10.1.2.3,save:10.1.2.3,wait:7000,poll:10.1.2.4,save:10.1.2.4");
+});
+
+test("Дата начала ожидается до первого устройства отдельно от межустройственного интервала", async () => {
+  const events = [];
+  await runPlan({ scheduledAt: "2026-09-01T10:00:01.000Z", intervalSeconds: 0, devices: [{ ip: "10.1.2.3", category: "controller", manufacturer: "Extron" }] }, {
+    honorSchedule: true,
+    nowMs: () => new Date("2026-09-01T10:00:00.000Z").getTime(),
+    wait: async (milliseconds) => { events.push(`schedule:${milliseconds}`); },
+    ping: async () => ({ ok: true, durationMs: 1 }),
+    getCredentials: () => [{ username: "synthetic", password: "SYNTHETIC" }],
+    extronAdapter: async (device) => { events.push(`poll:${device.ipNormalized}`); return { ip: device.ipNormalized, ok: true, vendorPolling: { status: "supported" } }; },
+    onResult: async () => { events.push("save"); }
+  });
+  equal(events.join(","), "schedule:1000,poll:10.1.2.3,save");
+});
+
+test("Ошибка сохранения останавливает batch до следующего устройства", async () => {
+  const polled = [];
+  let failed = false;
+  try {
+    await runPlan({ intervalSeconds: 0, devices: [
+      { ip: "10.1.2.3", category: "controller", manufacturer: "Extron" },
+      { ip: "10.1.2.4", category: "controller", manufacturer: "Extron" }
+    ] }, {
+      ping: async () => ({ ok: true, durationMs: 1 }),
+      getCredentials: () => [{ username: "synthetic", password: "SYNTHETIC" }],
+      extronAdapter: async (device) => { polled.push(device.ipNormalized); return { ip: device.ipNormalized, ok: true, vendorPolling: { status: "supported" } }; },
+      onResult: async () => { throw new Error("synthetic_save_failure"); }
+    });
+  } catch (error) { failed = error.message === "synthetic_save_failure"; }
+  assert(failed);
+  equal(polled.join(","), "10.1.2.3");
+});
+
+test("Отмена прерывает ожидание интервала", async () => {
+  const abortController = new AbortController();
+  let cancelled = false;
+  try {
+    await runPlan({ intervalSeconds: 5, devices: [
+      { ip: "10.1.2.3", category: "controller", manufacturer: "Extron" },
+      { ip: "10.1.2.4", category: "controller", manufacturer: "Extron" }
+    ] }, {
+      signal: abortController.signal,
+      ping: async () => ({ ok: true, durationMs: 1 }),
+      getCredentials: () => [{ username: "synthetic", password: "SYNTHETIC" }],
+      extronAdapter: async (device) => ({ ip: device.ipNormalized, ok: true, vendorPolling: { status: "supported" } }),
+      onResult: async () => {},
+      wait: async (_milliseconds, signal) => { abortController.abort(); if (signal.aborted) throw Object.assign(new Error("Polling cancelled"), { code: "POLLING_CANCELLED" }); }
+    });
+  } catch (error) { cancelled = error.code === "POLLING_CANCELLED"; }
+  assert(cancelled);
+});
+
+test("Extron перебирает общий credential pool без записи логинов в результат", async () => {
+  let attempts = 0;
+  const result = await pollExtronDevice({ ip: "10.1.2.3" }, [
+    { username: "first-user", password: "FIRST-SECRET" },
+    { username: "second-user", password: "SECOND-SECRET" }
+  ], {
+    request: async (request) => {
+      if (request.path.startsWith("/api/login")) {
+        attempts += 1;
+        return attempts === 1 ? { statusCode: 401, headers: {}, body: "" } : { statusCode: 200, headers: { "set-cookie": "NortxeSession=SYNTHETIC" }, body: "" };
+      }
+      return { statusCode: 200, headers: {}, body: "window.app={unknown:true};" };
+    }
+  });
+  equal(result.credentialAttempts, 2);
+  assert(!JSON.stringify(result).includes("first-user"));
+  assert(!JSON.stringify(result).includes("second-user"));
+  assert(!JSON.stringify(result).includes("SECRET"));
 });
 
 test("Extron adapter извлекает session-bound URI и делает exact resource GET", async () => {
@@ -243,14 +351,13 @@ test("Polling output использует timestamp folder, atomic per-IP JSON �
   try {
     const planPath = path.join(directory, "plan.json");
     fs.writeFileSync(planPath, JSON.stringify({ devices: [{ ip: "10.1.2.3", category: "controller", manufacturer: "Extron" }, { ip: "10.1.2.4", category: "panel", manufacturer: "Extron" }] }));
+    const credentialPath = writeCredentialWorkbook(directory);
     const clock = new Date(2026, 7, 31, 19, 41, 28);
     equal(formatCaptureFolder(clock), "2026-08-31_19-41-28");
     const resolved = resolveOutputDirectory(["--plan", planPath, "--output-root", directory], { now: () => clock });
     assert(resolved.endsWith(path.join("2026-08-31_19-41-28")));
-    const summary = await execute(["--plan", planPath, "--output-root", directory], {
+    const summary = await execute(["--plan", planPath, "--credentials", credentialPath, "--output-root", directory], {
       now: () => clock,
-      secureRoot: path.join(directory, "vault"),
-      vault: { getForIp: () => null },
       runPlan: async () => [
         { ip: "10.1.2.3", ok: true, failedStage: null, note: "Basic SYNTHETIC", cookie: "NortxeSession=SYNTHETIC" },
         { ip: "10.1.2.4", ok: false, failedStage: "authorization", password: "SYNTHETIC-SECRET", safeError: "authorization_failed" }
@@ -264,8 +371,55 @@ test("Polling output использует timestamp folder, atomic per-IP JSON �
     assert(!disk.includes("SYNTHETIC-SECRET"));
     assert(!disk.includes("NortxeSession="));
     assert(!fs.readdirSync(summary.outputDir).some((name) => name.endsWith(".tmp")));
-    const sanitized = sanitizeResult({ headers: { Authorization: "Basic X" }, safe: "ok" });
+    const sanitized = sanitizeResult({ headers: { Authorization: "Basic X" }, username: "hidden", successfulCredential: { username: "hidden" }, safe: "ok" });
     equal(JSON.stringify(sanitized), '{"safe":"ok"}');
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("Automatic CLI требует текущий XLSX и явный output root", async () => {
+  const directory = temporaryDirectory();
+  try {
+    const planPath = path.join(directory, "plan.json");
+    fs.writeFileSync(planPath, JSON.stringify({ devices: [{ ip: "10.1.2.3", category: "controller", manufacturer: "Extron" }] }));
+    let credentialsRejected = false;
+    try { await execute(["--plan", planPath, "--output-root", directory]); } catch (error) { credentialsRejected = /XLSX is required/.test(error.message); }
+    assert(credentialsRejected);
+    const credentialPath = writeCredentialWorkbook(directory);
+    let outputRejected = false;
+    try { await execute(["--plan", planPath, "--credentials", credentialPath]); } catch (error) { outputRejected = /Output directory is required/.test(error.message); }
+    assert(outputRejected);
+    fs.writeFileSync(planPath, JSON.stringify({ authenticationInputSha256: "0".repeat(64), devices: [{ ip: "10.1.2.3", category: "controller", manufacturer: "Extron" }] }));
+    let fingerprintRejected = false;
+    try { await execute(["--plan", planPath, "--credentials", credentialPath, "--output-root", directory]); } catch (error) { fingerprintRejected = /does not match/.test(error.message); }
+    assert(fingerprintRejected);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("Ошибка основной записи создаёт локальную recovery-копию и останавливает запуск", async () => {
+  const directory = temporaryDirectory();
+  try {
+    const planPath = path.join(directory, "plan.json");
+    const credentialPath = writeCredentialWorkbook(directory);
+    const recoveryRoot = path.join(directory, "recovery");
+    fs.writeFileSync(planPath, JSON.stringify({ devices: [{ ip: "10.1.2.3", category: "controller", manufacturer: "Extron" }] }));
+    let recovered = false;
+    try {
+      await execute(["--plan", planPath, "--credentials", credentialPath, "--output-root", path.join(directory, "output")], {
+        recoveryRoot,
+        writeJson(target, value) {
+          if (!target.startsWith(recoveryRoot)) throw new Error("synthetic_primary_write_failure");
+          fs.writeFileSync(target, JSON.stringify(value), "utf8");
+        },
+        runPlan: async (plan, options) => {
+          const result = { ip: plan.devices[0].ip, ok: true, vendorPolling: { status: "supported" } };
+          await options.onResult(result, { index: 0, total: 1, device: plan.devices[0] });
+          return [result];
+        }
+      });
+    } catch (error) { recovered = error.code === "RESULT_SAVE_FAILED_RECOVERED"; }
+    assert(recovered);
+    const recoveryFiles = fs.readdirSync(path.join(recoveryRoot, fs.readdirSync(recoveryRoot)[0]));
+    equal(recoveryFiles.join(","), "10.1.2.3.json");
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 

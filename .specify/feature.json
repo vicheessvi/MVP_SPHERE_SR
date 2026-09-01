@@ -1,1 +1,3 @@
-{"feature_directory":"specs\\011-extron-web-polling"}
+{
+  "feature_directory": "specs/012-automatic-polling-plan"
+}

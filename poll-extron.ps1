@@ -3,10 +3,10 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$Plan,
 
-  [Parameter(Mandatory = $false)]
+  [Parameter(Mandatory = $true)]
   [string]$Credentials,
 
-  [Parameter(Mandatory = $false)]
+  [Parameter(Mandatory = $true)]
   [string]$Output,
 
   [Parameter(Mandatory = $false)]
@@ -30,8 +30,8 @@ $arguments = @(
   '--plan', [IO.Path]::GetFullPath($Plan),
   '--timeout', [string]$Timeout
 )
-if ($Credentials) { $arguments += @('--credentials', [IO.Path]::GetFullPath($Credentials)) }
-if ($Output) { $arguments += @('--output-root', [IO.Path]::GetFullPath($Output)) }
+$arguments += @('--credentials', [IO.Path]::GetFullPath($Credentials))
+$arguments += @('--output-root', [IO.Path]::GetFullPath($Output))
 if ($AllowInsecureTls) { $arguments += '--allow-insecure-tls' }
 
 & $nodeExecutable @arguments
