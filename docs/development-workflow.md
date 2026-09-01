@@ -58,6 +58,19 @@
 
 Не логировать каждую мелкую правку.
 
+## Добавление polling adapter
+
+Новый adapter нельзя выводить из названия производителя или модели. До изменения `runtime/device-catalog.json` должны быть зафиксированы:
+
+- источник доказательства: официальная документация или воспроизводимая проверка на устройстве;
+- transport, порт, TLS-policy, authentication flow и точные endpoint;
+- границы target allowlist, timeout и максимального ответа;
+- минимальные признаки поддерживаемого контракта и fail-closed поведение неизвестной версии;
+- схема безопасного результата без credentials, Authorization, cookies и raw sensitive error bodies;
+- synthetic contract tests для успеха, auth failure, неизвестного контракта, timeout/TLS и redaction.
+
+После evidence review добавляются manifest в `runtime/device-catalog.json`, изолированный модуль в `mvp_runtime/adapters/`, регистрация transport в `mvp_runtime/polling.py` и тесты. Server/job/browser API не дублируются под производителя. Реальный IP, payload и credentials в repository не сохраняются.
+
 ## Финальный отчёт ИИ-агент
 
 Каждая задача должна завершаться отчётом:

@@ -64,7 +64,7 @@
     {
       id: "about", title: "1. Об инструменте", description: "Назначение и границы безопасной работы.", entries: [
         { id: "about-tool", title: "MVP_SPHERE_SR", summary: "Инструмент предназначен для учёта, опроса и анализа состояния оборудования мультимедийной инфраструктуры.", details: "Перечень оборудования формируется по выгрузке SR и включает семь категорий: Терминалы ВКС, Контроллеры, Панели управления, Коммутаторы, Матричные коммутаторы, Скалеры и Аудио процессоры. Состояние появляется только из фактически импортированных результатов опросов.", keywords: ["назначение", "оборудование"] },
-        { id: "about-local", title: "Запуск и хранение", summary: "Для автоматического опроса инструмент запускается через start.ps1; прямой index.html остаётся для ручного анализа.", details: "Импортированные данные находятся только в памяти страницы и удаляются при перезагрузке или закрытии. XLSX передаётся только в память защищённой loopback-сессии одного запуска. Секреты не включаются в состояние, план или результаты; готовые JSON остаются в явно выбранной общей папке.", keywords: ["index.html", "start.ps1", "сеанс", "безопасность", "локально"] }
+        { id: "about-local", title: "Запуск и хранение", summary: "Для автоматического опроса инструмент запускается двойным щелчком по START_MVP_SPHERE_SR.py; прямой index.html остаётся для ручного анализа.", details: "Требуется установленный Python 3.11 или новее; Node.js, PowerShell и установка пакетов не нужны. Импортированные данные находятся только в памяти страницы и удаляются при перезагрузке или закрытии. XLSX передаётся только в память локальной loopback-сессии одного запуска. Секреты не включаются в состояние, план или результаты; готовые JSON остаются в явно выбранной общей папке.", keywords: ["index.html", "START_MVP_SPHERE_SR.py", "python", "сеанс", "безопасность", "локально"] }
       ]
     },
     PRODUCT_CATALOG.buildModuleHelpSection(),
@@ -4161,7 +4161,7 @@
 
   const launchMode = resolveLaunchMode({ protocol: global.location && global.location.protocol, fileMarker: Boolean(global.__MVP_FILE_RUNTIME__), secureMarker: Boolean(global.__MVP_SECURE_RUNTIME__) });
   if (!launchMode) {
-    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Запустите локальный инструмент</h1><p>Для автоматического опроса используйте <code>start.ps1</code>. Прямой <code>index.html</code> доступен для ручного анализа.</p></section></main>`;
+    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Запустите локальный инструмент</h1><p>Для автоматического опроса откройте <code>START_MVP_SPHERE_SR.py</code> установленным Python 3.11 или новее. Прямой <code>index.html</code> доступен для ручного анализа.</p></section></main>`;
     return;
   }
 
@@ -4294,7 +4294,7 @@
   }
 
   function automaticPollingErrorMessage(code) {
-    return ({ runtime_required: "Для автоматического опроса запустите проект через start.ps1.", credentials_required: "Повторно загрузите XLSX с учётными данными.", credential_file_invalid: "Файл учётных данных не принят локальным исполнителем.", credential_sha_mismatch: "Файл учётных данных изменился после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить очередной JSON. Опрос остановлен.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
+    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Повторно загрузите XLSX с учётными данными.", credential_file_invalid: "Файл учётных данных не принят локальным исполнителем.", credential_sha_mismatch: "Файл учётных данных изменился после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить очередной JSON. Опрос остановлен.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
   }
 
   async function monitorAutomaticPolling(jobId, monitorToken) {
@@ -4452,13 +4452,10 @@
         <section class="login-card" aria-labelledby="login-title">
           <div class="brand-mark" aria-hidden="true">SR</div>
           <h1 id="login-title">MVP_SPHERE_SR</h1>
-          <p class="page-subtitle">Вход администратора</p>
+          <p class="page-subtitle">Локальный сеанс Администратора МЦТП</p>
           ${renderMessage()}
-          <form class="form-grid" data-login-form>
-            <div class="field"><label for="login">Логин</label><input id="login" name="login" autocomplete="username" required></div>
-            <div class="field"><label for="password">Пароль</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
-            <div class="button-row"><button class="button primary" type="submit">Войти</button><button class="button secondary" type="button" data-fill-login="admin" data-fill-password="admin">Заполнить тестовые данные</button></div>
-          </form>
+          <p class="muted">Учётные данные оборудования на этом экране не принимаются. Они загружаются отдельным XLSX только перед автоматическим опросом.</p>
+          <div class="button-row"><button class="button primary" type="button" data-start-local-session>Продолжить</button></div>
         </section>
       </main>`;
   }
@@ -4951,7 +4948,7 @@
         </section>
         <section class="card upload-card"><h2>2. Общая папка результатов опросов</h2>
           <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Главная папка со всеми результатами</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
-          <div class="output-folder-picker section-gap"><div><strong>Папка для новых автоматических опросов</strong><p class="muted">${launchMode.kind === "local" ? (ui.pollingOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.pollingOutputFolderName)}` : "Выберите общую папку до формирования плана.") : "Автоматический опрос доступен после запуска через start.ps1."}</p></div><button class="button secondary" type="button" data-select-polling-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку</button></div>
+          <div class="output-folder-picker section-gap"><div><strong>Папка для новых автоматических опросов</strong><p class="muted">${launchMode.kind === "local" ? (ui.pollingOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.pollingOutputFolderName)}` : "Выберите общую папку до формирования плана.") : "Автоматический опрос доступен после запуска START_MVP_SPHERE_SR.py."}</p></div><button class="button secondary" type="button" data-select-polling-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку</button></div>
           ${pollingProgress ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="${ui.inventoryBusy ? "true" : "false"}">
             <div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(pollingProgress.stage)}</span><strong>${pollingProgress.processed} из ${pollingProgress.total} JSON</strong></div><strong>${pollingPercent}%</strong></div>
             <div class="polling-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pollingPercent}"><span style="width:${pollingPercent}%"></span></div>
@@ -5233,7 +5230,7 @@
     }
     if (event.target.closest("[data-select-polling-output]")) {
       if (launchMode.kind !== "local" || typeof global.showDirectoryPicker !== "function") {
-        setMessage("Для выбора папки и автоматического опроса запустите проект через start.ps1 в поддерживаемом браузере.", "error");
+        setMessage("Для выбора папки и автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error");
         render();
         return;
       }
@@ -5270,15 +5267,17 @@
       return;
     }
 
-    const fill = event.target.closest("[data-fill-login]");
-    if (fill) {
-      const login = document.getElementById("login");
-      const password = document.getElementById("password");
-      if (login && password) {
-        login.value = fill.dataset.fillLogin;
-        password.value = fill.dataset.fillPassword;
-        login.focus();
-      }
+    if (event.target.closest("[data-start-local-session]")) {
+      const user = state.users.find((item) => item.active && item.role === "administrator");
+      if (!user) { setMessage("Локальный профиль администратора недоступен.", "error"); render(); return; }
+      let next = deepClone(state);
+      next.currentUserId = null;
+      next = appendHistory(next, { actorId: user.id, actorName: user.name, action: "Начат локальный сеанс", entityType: "session" });
+      const sessionResult = writeSessionUserId(next, user.id, sessionStorageRef);
+      if (!sessionResult.ok) { setMessage(`Локальный сеанс не создан: ${sessionResult.errors.join("; ")}`, "error"); render(); return; }
+      sessionUserId = user.id;
+      ui.route = "dashboard";
+      if (!commitState(next)) { clearSessionUserId(sessionStorageRef); sessionUserId = null; render(); }
       return;
     }
 
@@ -5593,7 +5592,7 @@
       ui.pollingPlanSelection.scheduledAt = String(formData.get("scheduledAt") || "");
       ui.pollingPlanSelection.intervalSeconds = String(formData.get("intervalSeconds") || "");
       ui.pollingPlanSelection.allowInsecureTls = formData.get("allowInsecureTls") === "on";
-      if (launchMode.kind !== "local") { setMessage("Для автоматического опроса запустите проект через start.ps1.", "error"); render(); return; }
+      if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
       if (!pollingOutputRootHandle) { setMessage("Сначала выберите общую папку для сохранения результатов.", "error"); render(); return; }
       const result = createPollingPlan(state, { ...ui.pollingPlanSelection, credentialsReady: Boolean(credentialPoolSession?.file), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
@@ -5827,40 +5826,7 @@
       return;
     }
 
-    const form = event.target.closest("[data-login-form]");
-    if (!form) return;
-    event.preventDefault();
-    const formData = new FormData(form);
-    const login = String(formData.get("login") || "").trim();
-    const password = String(formData.get("password") || "");
-    const user = state.users.find((item) => item.active && item.login === login && item.password === password);
-    if (!user) {
-      setMessage("Неверные demo-учётные данные.", "error");
-      render();
-      return;
-    }
-    let next = deepClone(state);
-    next.currentUserId = null;
-    if (!next.settings.demoWarningAcceptedAt) next.settings.demoWarningAcceptedAt = nowIso();
-    next = appendHistory(next, {
-      actorId: user.id,
-      actorName: user.name,
-      action: "Вход в demo-интерфейс",
-      entityType: "session"
-    });
-    const sessionResult = writeSessionUserId(next, user.id, sessionStorageRef);
-    if (!sessionResult.ok) {
-      setMessage(`Demo-session не создана: ${sessionResult.errors.join("; ")}`, "error");
-      render();
-      return;
-    }
-    sessionUserId = user.id;
-    ui.route = "dashboard";
-    if (!commitState(next)) {
-      clearSessionUserId(sessionStorageRef);
-      sessionUserId = null;
-      render();
-    }
+    return;
   }
 
   function readFileText(file) {

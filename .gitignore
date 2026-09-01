@@ -43,6 +43,13 @@ credentials*.csv
 credentials*.xlsx
 node_modules/
 coverage/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
 
 # Verified portable runtime and bootstrap staging (never commit)
 .runtime/

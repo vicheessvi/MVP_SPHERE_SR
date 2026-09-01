@@ -1725,6 +1725,11 @@
     const fs = require("fs");
     const source = fs.readFileSync(require("path").join(__dirname, "app.js"), "utf8");
     ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Тип оборудования", "Дата и время начала опроса", "Интервал"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    assert(source.includes("START_MVP_SPHERE_SR.py"));
+    assert(!source.includes("start.ps1"));
+    assert(!source.includes("START_MVP_SPHERE_SR.cmd"));
+    assert(!source.includes('data-fill-login="admin"'));
+    assert(source.includes("data-start-local-session"));
     assert(!source.includes("Первый непустой лист; «Домен» необязателен"));
     assert(!source.includes("План локального опроса"));
     assert(!source.includes("Производитель, необязательно"));

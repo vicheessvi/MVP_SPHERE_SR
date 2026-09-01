@@ -13,5 +13,10 @@ ADR фиксируют значимые решения, их контекст, �
 - `ADR-0007-direct-index-session-mode.md` — прямой файловый сеанс.
 - `ADR-0008-batch-folder-file-only.md` — текущий file-only режим и импорт общей папки.
 - `ADR-0009-scalable-import-pipeline.md` — индексированный пакетный импорт, cooperative yield, прогресс и отмена.
+- `ADR-0010-equipment-sr-analysis.md` — единое оборудование, семь категорий и точные правила SR.
+- `ADR-0011-extron-web-polling.md` — подтверждённый Extron dynamic-resource HTTPS contract.
+- `ADR-0012-automatic-polling-plan.md` — plan v2, XLSX-пул и последовательная запись результатов.
+- `ADR-0013-in-tool-polling.md` — исторический Node loopback API и browser ACK.
+- `ADR-0014-python-runtime-migration.md` — актуальный Python 3.11+ standard-library runtime и удаление Node/PowerShell production path.
 
 Новый ADR нужен при изменении trust boundary, bind address, способа хранения ключа/секретов, подключении внешнего сервиса, реального vendor transport или новой роли.
