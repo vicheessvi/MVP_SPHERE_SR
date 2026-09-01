@@ -1,12 +1,13 @@
 # Карта контекста
 
-## Текущая feature 012
+## Текущая feature 013
 
-- Спецификация и план: `specs/012-automatic-polling-plan/`.
-- Каскад, план v2, XLSX UI validation и ручной импорт: `app.js`, `runtime/credential-pool.js`.
-- Последовательный Extron polling, интервал и per-result save: `runtime/extron-web-poller.js`, `runtime/polling.js`, `scripts/poll-devices.js`, `poll-extron.ps1`.
+- Спецификация и план: `specs/013-in-tool-polling/`.
+- Каскад, plan v2, выбор output folder, запуск/прогресс/ACK и ручной импорт: `app.js`, `runtime/credential-pool.js`.
+- Авторизованная loopback session и polling job API: `server.js`, `runtime/polling-job.js`, `start.ps1`.
+- Последовательный Extron HTTPS polling и CLI compatibility: `runtime/extron-web-poller.js`, `runtime/polling.js`, `scripts/poll-devices.js`, `poll-extron.ps1`.
 - Термины и Справочник: `product-catalog.js`.
-- Архитектурное решение: `docs/decisions/ADR-0012-automatic-polling-plan.md`.
+- Архитектурное решение: `docs/decisions/ADR-0013-in-tool-polling.md`.
 
 ## Постоянные инструкции
 
@@ -30,7 +31,7 @@
 
 ## Код по зонам
 
-- UI/state/analytics/Dashboard projection, единственный direct-file memory mode, индексированный пакетный импорт папок, progress/cancel и Справочник: `index.html`, `runtime-config.js`, `styles.css`, `app.js`.
+- UI/state/analytics/Dashboard projection, loopback automatic mode, direct-file manual mode, индексированный пакетный импорт папок, progress/cancel и Справочник: `index.html`, `runtime-config.js`, `styles.css`, `app.js`.
 - Performance regression и synthetic scale matrix: `tests.js`, `benchmarks/import-performance.js`, `specs/009-scalable-polling-import/benchmark-results.md`.
 - Product catalog/reference source: `product-catalog.js`, `scripts/validate-reference.js`.
 - Catalog/polling: `runtime/model-catalog.js`, `runtime/polling.js`, `runtime/extron-web-poller.js`, `scripts/poll-devices.js`, `poll-extron.ps1`.

@@ -64,7 +64,7 @@
     {
       id: "about", title: "1. Об инструменте", description: "Назначение и границы безопасной работы.", entries: [
         { id: "about-tool", title: "MVP_SPHERE_SR", summary: "Инструмент предназначен для учёта, опроса и анализа состояния оборудования мультимедийной инфраструктуры.", details: "Перечень оборудования формируется по выгрузке SR и включает семь категорий: Терминалы ВКС, Контроллеры, Панели управления, Коммутаторы, Матричные коммутаторы, Скалеры и Аудио процессоры. Состояние появляется только из фактически импортированных результатов опросов.", keywords: ["назначение", "оборудование"] },
-        { id: "about-local", title: "Запуск и хранение", summary: "Инструмент имеет один режим: прямое открытие index.html для анализа в текущей вкладке.", details: "Импортированные данные и временно проверенный пул учётных данных находятся только в памяти страницы и удаляются при перезагрузке или закрытии. Секреты не включаются в состояние, план или результаты.", keywords: ["index.html", "сеанс", "безопасность", "локально"] }
+        { id: "about-local", title: "Запуск и хранение", summary: "Для автоматического опроса инструмент запускается через start.ps1; прямой index.html остаётся для ручного анализа.", details: "Импортированные данные находятся только в памяти страницы и удаляются при перезагрузке или закрытии. XLSX передаётся только в память защищённой loopback-сессии одного запуска. Секреты не включаются в состояние, план или результаты; готовые JSON остаются в явно выбранной общей папке.", keywords: ["index.html", "start.ps1", "сеанс", "безопасность", "локально"] }
       ]
     },
     PRODUCT_CATALOG.buildModuleHelpSection(),
@@ -3949,9 +3949,28 @@
     return { ok: true, state: next, projectId: project.id, snapshotId: snapshot.id };
   }
 
-  function resolveLaunchMode({ protocol, fileMarker } = {}) {
+  function resolveLaunchMode({ protocol, fileMarker, secureMarker } = {}) {
     if (protocol === "file:" && fileMarker) return Object.freeze({ kind: "file", persistent: false, credentialsAvailable: false });
+    if ((protocol === "http:" || protocol === "https:") && secureMarker) return Object.freeze({ kind: "local", persistent: false, credentialsAvailable: true });
     return null;
+  }
+
+  function formatPollingRunFolderName(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) throw new Error("Некорректное время запуска");
+    const pad = (part) => String(part).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+  }
+
+  function chooseUniquePollingRunFolderName(existingNames, startedAt) {
+    const occupied = new Set(Array.from(existingNames || [], (item) => String(item)));
+    const base = new Date(startedAt);
+    if (Number.isNaN(base.getTime())) throw new Error("Некорректное время запуска");
+    for (let offset = 0; offset < 86400; offset += 1) {
+      const candidate = formatPollingRunFolderName(new Date(base.getTime() + offset * 1000));
+      if (!occupied.has(candidate)) return candidate;
+    }
+    throw new Error("Не удалось подобрать имя папки запуска");
   }
 
   function createVolatileStorage(initialValues) {
@@ -4111,6 +4130,8 @@
     classifySrDevice,
     resolvePollingCapability,
     resolveLaunchMode,
+    formatPollingRunFolderName,
+    chooseUniquePollingRunFolderName,
     resolveMatchDecision,
     readSessionUserId,
     saveState,
@@ -4138,9 +4159,9 @@
   const app = document.getElementById("app");
   if (!app) return;
 
-  const launchMode = resolveLaunchMode({ protocol: global.location && global.location.protocol, fileMarker: Boolean(global.__MVP_FILE_RUNTIME__) });
+  const launchMode = resolveLaunchMode({ protocol: global.location && global.location.protocol, fileMarker: Boolean(global.__MVP_FILE_RUNTIME__), secureMarker: Boolean(global.__MVP_SECURE_RUNTIME__) });
   if (!launchMode) {
-    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Откройте локальный файл index.html</h1><p>Инструмент запускается прямым открытием корневого <code>index.html</code> на этом компьютере.</p></section></main>`;
+    app.innerHTML = `<main id="main-content" class="login-shell"><section class="login-card"><div class="brand-mark">SR</div><h1>Запустите локальный инструмент</h1><p>Для автоматического опроса используйте <code>start.ps1</code>. Прямой <code>index.html</code> доступен для ручного анализа.</p></section></main>`;
     return;
   }
 
@@ -4182,6 +4203,8 @@
   }
   const initialNavigationState = createNavigationState();
   let credentialPoolSession = null;
+  let pollingOutputRootHandle = null;
+  let automaticPollingMonitor = null;
   const ui = {
     route: initialNavigationState.route,
     message: startupMessage,
@@ -4200,8 +4223,10 @@
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
-    pollingPlanSelection: { categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalSeconds: "0" },
+    pollingPlanSelection: { categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalSeconds: "0", allowInsecureTls: true },
     credentialSummary: null,
+    pollingOutputFolderName: null,
+    automaticPolling: null,
     inventoryBusy: false,
     equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
@@ -4220,6 +4245,132 @@
 
   function setMessage(text, type) {
     ui.message = text ? { text, type: type || "info" } : null;
+  }
+
+  async function runtimeRequest(pathname, options = {}) {
+    if (launchMode.kind !== "local") throw Object.assign(new Error("runtime_required"), { safeCode: "runtime_required" });
+    const method = String(options.method || "GET").toUpperCase();
+    const headers = { ...(options.headers || {}) };
+    if (!["GET", "HEAD"].includes(method)) headers["X-MVP-CSRF"] = String(global.__MVP_CSRF__ || "");
+    const response = await global.fetch(pathname, { method, headers, body: options.body, credentials: "same-origin", cache: "no-store" });
+    if (response.status === 204) return null;
+    let payload = null;
+    try { payload = await response.json(); } catch { payload = null; }
+    if (!response.ok) throw Object.assign(new Error(payload?.error || "local_runtime_error"), { safeCode: payload?.error || "local_runtime_error", status: response.status });
+    return payload;
+  }
+
+  async function ensurePollingOutputPermission(handle) {
+    if (!handle) return false;
+    const options = { mode: "readwrite" };
+    if (typeof handle.queryPermission === "function" && await handle.queryPermission(options) === "granted") return true;
+    return typeof handle.requestPermission === "function" && await handle.requestPermission(options) === "granted";
+  }
+
+  async function createPollingRunDirectory(rootHandle, startedAt) {
+    const existing = [];
+    if (typeof rootHandle.keys === "function") for await (const name of rootHandle.keys()) existing.push(name);
+    const name = chooseUniquePollingRunFolderName(existing, startedAt);
+    return { name, handle: await rootHandle.getDirectoryHandle(name, { create: true }) };
+  }
+
+  async function writePollingResultFile(runDirectory, pending) {
+    const filename = String(pending?.filename || "");
+    if (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}\.json$|^unsupported-[0-9]{4}\.json$/.test(filename)) throw new Error("Некорректное имя результата");
+    const fileHandle = await runDirectory.handle.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable({ keepExistingData: false });
+    try {
+      const payload = { ...pending.payload, outputFile: `.\\${runDirectory.name}\\${filename}` };
+      await writable.write(JSON.stringify(payload, null, 2));
+      await writable.close();
+    } catch (error) {
+      try { await writable.abort(); } catch { /* best effort */ }
+      throw error;
+    }
+  }
+
+  function automaticPollingStatusLabel(status) {
+    return ({ scheduled: "Ожидание времени запуска", running: "Опрос устройства", waiting_for_save: "Сохранение результата", waiting_interval: "Ожидание интервала", completed: "Завершено", cancelled: "Отменено", failed: "Ошибка" })[status] || "Подготовка";
+  }
+
+  function automaticPollingErrorMessage(code) {
+    return ({ runtime_required: "Для автоматического опроса запустите проект через start.ps1.", credentials_required: "Повторно загрузите XLSX с учётными данными.", credential_file_invalid: "Файл учётных данных не принят локальным исполнителем.", credential_sha_mismatch: "Файл учётных данных изменился после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить очередной JSON. Опрос остановлен.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
+  }
+
+  async function monitorAutomaticPolling(jobId, monitorToken) {
+    let runDirectory = null;
+    try {
+      while (automaticPollingMonitor === monitorToken) {
+        const status = await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}`);
+        ui.automaticPolling = { ...status, runFolderName: runDirectory?.name || null };
+        if (status.startedAt && !runDirectory) {
+          if (!await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
+          runDirectory = await createPollingRunDirectory(pollingOutputRootHandle, status.startedAt);
+          ui.automaticPolling.runFolderName = runDirectory.name;
+        }
+        if (status.pendingResult) {
+          const pending = await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/result`);
+          if (pending) {
+            let saved = false;
+            try {
+              if (!runDirectory) runDirectory = await createPollingRunDirectory(pollingOutputRootHandle, status.startedAt || new Date().toISOString());
+              await writePollingResultFile(runDirectory, pending);
+              saved = true;
+            } finally {
+              await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/result/${encodeURIComponent(pending.resultId)}/ack`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ saved }) });
+            }
+          }
+        }
+        render();
+        if (["completed", "cancelled", "failed"].includes(status.status)) {
+          const message = status.status === "completed"
+            ? `Автоматический опрос завершён. Результаты сохранены в папку ${runDirectory?.name || "запуска"}.`
+            : automaticPollingErrorMessage(status.safeError || (status.status === "cancelled" ? "polling_cancelled" : "local_runtime_error"));
+          setMessage(message, status.status === "completed" ? "success" : status.status === "cancelled" ? "warning" : "error");
+          render();
+          break;
+        }
+        await new Promise((resolve) => global.setTimeout(resolve, 250));
+      }
+    } catch (error) {
+      try { await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch { /* runtime may already be gone */ }
+      setMessage(automaticPollingErrorMessage(error.safeCode || "result_save_failed"), "error");
+      render();
+    } finally {
+      if (automaticPollingMonitor === monitorToken) automaticPollingMonitor = null;
+      credentialPoolSession = null;
+      ui.credentialSummary = null;
+    }
+  }
+
+  async function startAutomaticPolling(planId, allowInsecureTls) {
+    if (launchMode.kind !== "local") throw Object.assign(new Error("runtime_required"), { safeCode: "runtime_required" });
+    if (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
+    if (!credentialPoolSession?.file) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
+    const exported = buildPollingPlanExport(state, planId);
+    if (!exported.ok) throw Object.assign(new Error("plan_invalid"), { safeCode: "plan_invalid" });
+    const credentialBytes = await readFileArrayBuffer(credentialPoolSession.file);
+    let credentialsUploaded = false;
+    let started;
+    try {
+      const credentialResponse = await runtimeRequest("/api/polling/credentials", { method: "POST", headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-File-Name": encodeURIComponent(credentialPoolSession.file.name) }, body: credentialBytes });
+      credentialsUploaded = true;
+      if (credentialResponse.sourceSha256 !== credentialPoolSession.sourceSha256) throw Object.assign(new Error("credential_sha_mismatch"), { safeCode: "credential_sha_mismatch" });
+      started = await runtimeRequest("/api/polling/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId, plan: exported.payload, allowInsecureTls: allowInsecureTls === true }) });
+      credentialsUploaded = false;
+    } catch (error) {
+      if (credentialsUploaded) {
+        try { await runtimeRequest("/api/polling/credentials", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch { /* runtime may already have cleared the pool */ }
+      }
+      throw error;
+    } finally {
+      new Uint8Array(credentialBytes).fill(0);
+    }
+    ui.automaticPolling = { jobId: started.jobId, status: started.status, total: exported.payload.devices.length, processed: 0, successful: 0, failed: 0, unsupported: 0, allowInsecureTls: allowInsecureTls === true };
+    const monitorToken = Symbol("automatic-polling-monitor");
+    automaticPollingMonitor = monitorToken;
+    render();
+    void monitorAutomaticPolling(started.jobId, monitorToken);
   }
 
   function commitState(nextState, successMessage) {
@@ -4780,6 +4931,8 @@
   function renderUpload() {
     const pollingProgress = ui.pollingProgress;
     const pollingPercent = pollingProgress?.total ? Math.min(100, Math.round((pollingProgress.processed / pollingProgress.total) * 100)) : 0;
+    const automatic = ui.automaticPolling;
+    const automaticPercent = automatic?.total ? Math.min(100, Math.round((automatic.processed / automatic.total) * 100)) : 0;
     const srPercent = ui.srProgress?.total ? Math.min(100, Math.round((ui.srProgress.processed / ui.srProgress.total) * 100)) : 0;
     const projection = deriveAutomaticPollingPlan(state, ui.pollingPlanSelection);
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
@@ -4798,6 +4951,7 @@
         </section>
         <section class="card upload-card"><h2>2. Общая папка результатов опросов</h2>
           <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Главная папка со всеми результатами</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
+          <div class="output-folder-picker section-gap"><div><strong>Папка для новых автоматических опросов</strong><p class="muted">${launchMode.kind === "local" ? (ui.pollingOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.pollingOutputFolderName)}` : "Выберите общую папку до формирования плана.") : "Автоматический опрос доступен после запуска через start.ps1."}</p></div><button class="button secondary" type="button" data-select-polling-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку</button></div>
           ${pollingProgress ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="${ui.inventoryBusy ? "true" : "false"}">
             <div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(pollingProgress.stage)}</span><strong>${pollingProgress.processed} из ${pollingProgress.total} JSON</strong></div><strong>${pollingPercent}%</strong></div>
             <div class="polling-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pollingPercent}"><span style="width:${pollingPercent}%"></span></div>
@@ -4819,10 +4973,11 @@
             ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
             ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
           </div>
-          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><label>Интервал</label><div class="field-with-unit"><input name="intervalSeconds" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalSeconds || "0")}" required><span>секунд</span></div></div><button class="button primary" type="submit">Сформировать план</button></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><label>Интервал</label><div class="field-with-unit"><input name="intervalSeconds" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalSeconds || "0")}" required><span>секунд</span></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><button class="button primary" type="submit"${automaticPollingMonitor ? " disabled" : ""}>Сформировать и запустить опрос</button></div>
         </form>
         <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd>${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd>${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd>${projection.unsupportedDevices.length}</dd></div></dl>
-        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>${ui.pollingPlanResult.implemented > 0 ? `<button class="button secondary section-gap" type="button" data-download-polling-plan="${escapeHtml(ui.pollingPlanResult.planId)}">Скачать план JSON</button>` : ""}` : ""}
+        ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
+        ${automatic ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(automaticPollingStatusLabel(automatic.status))}</span><strong>${automatic.processed || 0} из ${automatic.total || 0} устройств</strong></div><strong>${automaticPercent}%</strong></div><progress max="100" value="${automaticPercent}">${automaticPercent}%</progress><dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${automatic.successful || 0}</dd></div><div><dt>Ошибки</dt><dd>${automatic.failed || 0}</dd></div><div><dt>Не поддерживается</dt><dd>${automatic.unsupported || 0}</dd></div><div><dt>Папка запуска</dt><dd class="mono">${escapeHtml(automatic.runFolderName || "будет создана при старте")}</dd></div></dl>${automatic.allowInsecureTls ? `<p class="muted">Для этого запуска разрешён самоподписанный HTTPS-сертификат. Обычный HTTP не используется.</p>` : ""}${!["completed", "cancelled", "failed"].includes(automatic.status) ? `<button class="button danger" type="button" data-cancel-automatic-polling>Отменить опрос</button>` : ""}</section>` : ""}
       </section>
       `;
   }
@@ -5061,7 +5216,7 @@
       </div>`;
   }
 
-  function handleClick(event) {
+  async function handleClick(event) {
     const navigationAction = resolveNavigationAction(event.target);
     if (navigationAction?.type === "toggle_equipment") {
       const navigation = reduceNavigationState(ui, navigationAction);
@@ -5074,6 +5229,35 @@
       ui.pollingCancelRequested = true;
       if (ui.pollingProgress) ui.pollingProgress.cancelRequested = true;
       render();
+      return;
+    }
+    if (event.target.closest("[data-select-polling-output]")) {
+      if (launchMode.kind !== "local" || typeof global.showDirectoryPicker !== "function") {
+        setMessage("Для выбора папки и автоматического опроса запустите проект через start.ps1 в поддерживаемом браузере.", "error");
+        render();
+        return;
+      }
+      try {
+        const handle = await global.showDirectoryPicker({ id: "mvp-sphere-polling-output", mode: "readwrite" });
+        if (!await ensurePollingOutputPermission(handle)) throw new Error("permission_denied");
+        pollingOutputRootHandle = handle;
+        ui.pollingOutputFolderName = handle.name || "выбранная папка";
+        setMessage(`Общая папка результатов выбрана: ${ui.pollingOutputFolderName}.`, "success");
+      } catch (error) {
+        if (error?.name !== "AbortError") setMessage("Папка не выбрана или запись в неё не разрешена.", "error");
+      }
+      render();
+      return;
+    }
+    if (event.target.closest("[data-cancel-automatic-polling]")) {
+      const jobId = ui.automaticPolling?.id || ui.automaticPolling?.jobId;
+      if (jobId) {
+        try {
+          await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+          setMessage("Запрошена отмена автоматического опроса.", "warning");
+        } catch { setMessage("Не удалось передать отмену локальному исполнителю.", "error"); }
+        render();
+      }
       return;
     }
     const downloadPollingPlan = event.target.closest("[data-download-polling-plan]");
@@ -5382,10 +5566,11 @@
       event.preventDefault();
       const file = credentialImportForm.elements.credentialFile?.files?.[0];
       if (!file || !/\.xlsx$/i.test(file.name)) { setMessage("Выберите файл учётных данных в формате XLSX.", "error"); render(); return; }
+      let credentialBuffer = null;
       try {
-        const arrayBuffer = await readFileArrayBuffer(file);
-        const parsed = CREDENTIAL_POOL.parseCredentialWorkbook(arrayBuffer, global.XLSX);
-        credentialPoolSession = { credentials: parsed.credentials, sourceSha256: await sha256Bytes(arrayBuffer) };
+        credentialBuffer = await readFileArrayBuffer(file);
+        const parsed = CREDENTIAL_POOL.parseCredentialWorkbook(credentialBuffer, global.XLSX);
+        credentialPoolSession = { file, sourceSha256: await sha256Bytes(credentialBuffer) };
         ui.credentialSummary = deepClone(parsed.summary);
         ui.pollingPlanResult = null;
         setMessage(`Учётные данные загружены. Доступно пар: ${parsed.summary.acceptedCount}; отклонено строк: ${parsed.summary.rejectedCount}; дублей: ${parsed.summary.duplicateCount}.`, "success");
@@ -5393,6 +5578,8 @@
         credentialPoolSession = null;
         ui.credentialSummary = null;
         setMessage("Файл учётных данных не принят. Проверьте формат XLSX и колонки «Логин» и «Пароль».", "error");
+      } finally {
+        if (credentialBuffer) new Uint8Array(credentialBuffer).fill(0);
       }
       credentialImportForm.reset();
       render();
@@ -5405,10 +5592,20 @@
       const formData = new FormData(pollingPlanForm);
       ui.pollingPlanSelection.scheduledAt = String(formData.get("scheduledAt") || "");
       ui.pollingPlanSelection.intervalSeconds = String(formData.get("intervalSeconds") || "");
-      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, credentialsReady: Boolean(credentialPoolSession?.credentials?.length), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
+      ui.pollingPlanSelection.allowInsecureTls = formData.get("allowInsecureTls") === "on";
+      if (launchMode.kind !== "local") { setMessage("Для автоматического опроса запустите проект через start.ps1.", "error"); render(); return; }
+      if (!pollingOutputRootHandle) { setMessage("Сначала выберите общую папку для сохранения результатов.", "error"); render(); return; }
+      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, credentialsReady: Boolean(credentialPoolSession?.file), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
       ui.pollingPlanResult = { ...result.plan.selectionSummary, planId: result.plan.id };
-      commitState(result.state, `План сформирован: ${result.plan.selectionSummary.implemented} устройств готовы для автоматического опроса.`);
+      if (!commitState(result.state, `План сформирован: ${result.plan.selectionSummary.implemented} устройств готовы для автоматического опроса.`)) return;
+      try {
+        await startAutomaticPolling(result.plan.id, ui.pollingPlanSelection.allowInsecureTls);
+        setMessage("План сформирован и передан локальному исполнителю. Опрос запустится в указанное время.", "success");
+      } catch (error) {
+        setMessage(automaticPollingErrorMessage(error.safeCode || "local_runtime_error"), "error");
+        render();
+      }
       return;
     }
 
@@ -5696,7 +5893,7 @@
       if (result.ok && result.outcome !== "duplicate") {
         state = result.state;
         pollingImportContextCache = null;
-        ui.pollingPlanSelection = { categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalSeconds: ui.pollingPlanSelection.intervalSeconds || "0" };
+        ui.pollingPlanSelection = { categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalSeconds: ui.pollingPlanSelection.intervalSeconds || "0", allowInsecureTls: ui.pollingPlanSelection.allowInsecureTls === true };
         ui.pollingPlanResult = null;
       }
       ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
@@ -5840,6 +6037,10 @@
     if (pollingPlanForm && ["scheduledAt", "intervalSeconds"].includes(event.target.name)) {
       ui.pollingPlanSelection[event.target.name] = String(event.target.value || "");
       ui.pollingPlanResult = null;
+      return;
+    }
+    if (pollingPlanForm && event.target.name === "allowInsecureTls") {
+      ui.pollingPlanSelection.allowInsecureTls = event.target.checked === true;
       return;
     }
     if (!event.target.matches("[data-import-backup]") || !event.target.files?.[0]) return;

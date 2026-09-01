@@ -6,16 +6,19 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
-const { CredentialVault } = require("./runtime/credential-vault");
+const { parseCredentialWorkbook } = require("./runtime/credential-pool");
+const { createPollingJob } = require("./runtime/polling-job");
+const { assertNoPlanSecrets } = require("./scripts/poll-devices");
 const { SecureStore } = require("./runtime/secure-store");
+const XLSX = require("./vendor/xlsx.full.min.js");
 
 const HOST = "127.0.0.1";
 const requestedPort = Number(process.env.MVP_SPHERE_PORT) || 0;
 const dataDir = path.resolve(process.env.MVP_SPHERE_DATA_DIR || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "MVP_SPHERE_SR"));
 const store = new SecureStore({ dataDir });
-const vault = new CredentialVault(store);
 const launchToken = crypto.randomBytes(32).toString("base64url");
 const sessions = new Map();
+const jobs = new Map();
 let launchUsed = false;
 
 function securityHeaders(response) {
@@ -62,20 +65,50 @@ function requireSession(request, response, mutation) {
   return session;
 }
 
-function readBody(request) {
+function readBody(request, maximumBytes) {
+  const limit = Math.max(1, Number(maximumBytes) || 1024 * 1024);
   return new Promise((resolve, reject) => {
     const chunks = [];
-    request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    let bytes = 0;
+    request.on("data", (chunk) => {
+      bytes += chunk.length;
+      if (bytes > limit) {
+        const error = Object.assign(new Error("request_too_large"), { code: "REQUEST_TOO_LARGE" });
+        reject(error);
+        request.resume();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
     request.on("end", () => resolve(Buffer.concat(chunks)));
     request.on("error", reject);
   });
+}
+
+async function readJson(request, maximumBytes) {
+  const body = await readBody(request, maximumBytes);
+  try { return JSON.parse(body.toString("utf8")); }
+  catch { throw Object.assign(new Error("invalid_json"), { code: "INVALID_JSON" }); }
+}
+
+function clearSessionCredentials(session) {
+  if (Array.isArray(session.credentialPool)) session.credentialPool.splice(0, session.credentialPool.length);
+  session.credentialPool = null;
+  session.credentialSha256 = null;
+  session.credentialSummary = null;
+}
+
+function jobForSession(session, jobId) {
+  if (!jobId || ![session.activeJobId, session.lastJobId].includes(jobId)) return null;
+  return jobs.get(jobId) || null;
 }
 
 const PUBLIC_FILES = new Map([
   ["/app.js", [path.join(__dirname, "app.js"), "text/javascript; charset=utf-8"]],
   ["/product-catalog.js", [path.join(__dirname, "product-catalog.js"), "text/javascript; charset=utf-8"]],
   ["/styles.css", [path.join(__dirname, "styles.css"), "text/css; charset=utf-8"]],
-  ["/vendor/xlsx.full.min.js", [path.join(__dirname, "vendor", "xlsx.full.min.js"), "text/javascript; charset=utf-8"]]
+  ["/vendor/xlsx.full.min.js", [path.join(__dirname, "vendor", "xlsx.full.min.js"), "text/javascript; charset=utf-8"]],
+  ["/runtime/credential-pool.js", [path.join(__dirname, "runtime", "credential-pool.js"), "text/javascript; charset=utf-8"]]
 ]);
 
 async function handle(request, response) {
@@ -86,7 +119,7 @@ async function handle(request, response) {
       launchUsed = true;
       const id = crypto.randomBytes(32).toString("base64url");
       const csrfToken = crypto.randomBytes(32).toString("base64url");
-      sessions.set(id, { csrfToken, createdAt: new Date().toISOString() });
+      sessions.set(id, { csrfToken, createdAt: new Date().toISOString(), credentialPool: null, credentialSha256: null, credentialSummary: null, activeJobId: null, lastJobId: null });
       securityHeaders(response);
       response.statusCode = 303;
       response.setHeader("Set-Cookie", `mvp_sphere_session=${encodeURIComponent(id)}; Path=/; HttpOnly; SameSite=Strict`);
@@ -107,21 +140,100 @@ async function handle(request, response) {
         return value === null ? json(response, 404, { error: "not_found" }) : send(response, 200, value, "application/json; charset=utf-8");
       }
       if (request.method === "PUT") {
-        const body = await readBody(request);
+        const body = await readBody(request, 64 * 1024 * 1024);
         const result = store.writeBuffer(key, body);
         return json(response, 200, { ok: true, bytes: result.bytes, sha256: result.plaintextSha256 });
       }
       if (request.method === "DELETE") return json(response, 200, { ok: true, deleted: store.delete(key) });
     }
 
-    if (url.pathname === "/api/credentials/import" && request.method === "POST") {
-      const body = await readBody(request);
-      const format = url.searchParams.get("format") === "csv" ? "csv" : "json";
-      try { return json(response, 200, { ok: true, summary: vault.importText(body.toString("utf8"), format) }); }
-      catch (error) { return json(response, 400, { ok: false, error: error.message || "credential_import_failed" }); }
+    if (url.pathname === "/api/polling/credentials" && request.method === "POST") {
+      const filename = String(request.headers["x-file-name"] || "");
+      if (!/\.xlsx$/i.test(filename)) return json(response, 400, { ok: false, error: "credential_file_invalid" });
+      if (session.activeJobId) return json(response, 409, { ok: false, error: "job_already_active" });
+      const body = await readBody(request, 10 * 1024 * 1024);
+      try {
+        const parsed = parseCredentialWorkbook(body, XLSX);
+        clearSessionCredentials(session);
+        session.credentialPool = parsed.credentials.slice();
+        session.credentialSha256 = crypto.createHash("sha256").update(body).digest("hex");
+        session.credentialSummary = { ...parsed.summary };
+        return json(response, 200, { ok: true, summary: session.credentialSummary, sourceSha256: session.credentialSha256 });
+      } catch {
+        clearSessionCredentials(session);
+        return json(response, 400, { ok: false, error: "credential_file_invalid" });
+      }
+    }
+    if (url.pathname === "/api/polling/credentials" && request.method === "DELETE") {
+      if (session.activeJobId) return json(response, 409, { ok: false, error: "job_already_active" });
+      clearSessionCredentials(session);
+      return json(response, 200, { ok: true });
     }
 
-    if (url.pathname === "/api/credentials/summary" && request.method === "GET") return json(response, 200, { ok: true, summary: vault.summary() });
+    if (url.pathname === "/api/polling/jobs" && request.method === "POST") {
+      if (session.activeJobId) return json(response, 409, { ok: false, error: "job_already_active" });
+      if (!session.credentialPool || !session.credentialPool.length) return json(response, 400, { ok: false, error: "credentials_required" });
+      const input = await readJson(request, 5 * 1024 * 1024);
+      try { assertNoPlanSecrets(input.plan); }
+      catch { clearSessionCredentials(session); return json(response, 400, { ok: false, error: "plan_invalid" }); }
+      const plan = input.plan;
+      if (!plan || plan.schemaVersion !== 2 || !Array.isArray(plan.devices) || !plan.devices.length) { clearSessionCredentials(session); return json(response, 400, { ok: false, error: "plan_invalid" }); }
+      if (!/^[0-9a-f]{64}$/i.test(String(plan.authenticationInputSha256 || "")) || String(plan.authenticationInputSha256).toLowerCase() !== session.credentialSha256) {
+        clearSessionCredentials(session);
+        return json(response, 400, { ok: false, error: "credential_sha_mismatch" });
+      }
+      if (session.lastJobId) jobs.delete(session.lastJobId);
+      let job;
+      try {
+        job = createPollingJob({
+          plan,
+          planId: String(input.planId || "") || null,
+          credentials: session.credentialPool,
+          allowInsecureTls: input.allowInsecureTls === true,
+          onTerminal(status) {
+            clearSessionCredentials(session);
+            session.activeJobId = null;
+            session.lastJobId = status.id;
+          }
+        });
+      } catch {
+        clearSessionCredentials(session);
+        return json(response, 400, { ok: false, error: "plan_invalid" });
+      }
+      jobs.set(job.id, job);
+      session.activeJobId = job.id;
+      session.lastJobId = job.id;
+      return json(response, 202, { ok: true, jobId: job.id, status: job.status().status });
+    }
+
+    const jobRoute = url.pathname.match(/^\/api\/polling\/jobs\/([A-Za-z0-9_-]+)$/);
+    if (jobRoute && request.method === "GET") {
+      const job = jobForSession(session, jobRoute[1]);
+      return job ? json(response, 200, { ok: true, ...job.status() }) : json(response, 404, { ok: false, error: "job_not_found" });
+    }
+    const cancelRoute = url.pathname.match(/^\/api\/polling\/jobs\/([A-Za-z0-9_-]+)\/cancel$/);
+    if (cancelRoute && request.method === "POST") {
+      const job = jobForSession(session, cancelRoute[1]);
+      return job ? json(response, 200, { ok: true, ...job.cancel() }) : json(response, 404, { ok: false, error: "job_not_found" });
+    }
+
+    const pendingRoute = url.pathname.match(/^\/api\/polling\/jobs\/([A-Za-z0-9_-]+)\/result$/);
+    if (pendingRoute && request.method === "GET") {
+      const job = jobForSession(session, pendingRoute[1]);
+      if (!job) return json(response, 404, { ok: false, error: "job_not_found" });
+      const pending = job.result();
+      if (!pending) { securityHeaders(response); response.statusCode = 204; return response.end(); }
+      return json(response, 200, { ok: true, ...pending });
+    }
+
+    const ackRoute = url.pathname.match(/^\/api\/polling\/jobs\/([A-Za-z0-9_-]+)\/result\/([A-Za-z0-9_-]+)\/ack$/);
+    if (ackRoute && request.method === "POST") {
+      const job = jobForSession(session, ackRoute[1]);
+      if (!job) return json(response, 404, { ok: false, error: "job_not_found" });
+      const input = await readJson(request, 1024);
+      if (typeof input.saved !== "boolean" || !job.acknowledge(ackRoute[2], input.saved)) return json(response, 409, { ok: false, error: "result_ack_rejected" });
+      return json(response, 200, { ok: true, status: job.status().status });
+    }
 
     if (url.pathname === "/runtime-config.js" && request.method === "GET") return send(response, 200, `globalThis.__MVP_SECURE_RUNTIME__=true;globalThis.__MVP_CSRF__=${JSON.stringify(session.csrfToken)};`, "text/javascript; charset=utf-8");
 
@@ -136,7 +248,8 @@ async function handle(request, response) {
     }
     return json(response, 404, { error: "not_found" });
   } catch (error) {
-    return json(response, 500, { error: "local_runtime_error", safeMessage: error.code === "ENOSPC" ? "Недостаточно места на диске" : "Локальная операция не выполнена" });
+    const status = error && error.code === "REQUEST_TOO_LARGE" ? 413 : error && error.code === "INVALID_JSON" ? 400 : 500;
+    return json(response, status, { error: status === 413 ? "request_too_large" : status === 400 ? "invalid_json" : "local_runtime_error", safeMessage: error.code === "ENOSPC" ? "Недостаточно места на диске" : "Локальная операция не выполнена" });
   }
 }
 
@@ -152,4 +265,4 @@ server.listen(requestedPort, HOST, () => {
 });
 
 function close() { return new Promise((resolve) => server.close(resolve)); }
-module.exports = { close, dataDir, server };
+module.exports = { clearSessionCredentials, close, dataDir, jobForSession, readBody, server };

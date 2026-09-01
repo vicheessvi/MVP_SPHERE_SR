@@ -5,12 +5,12 @@
 Проект подготовлен к дальнейшему редактированию через ИИ-агента и GitHub SpecKit.
 
 - Видение: `docs/project-vision.md`.
-- Стек интерфейса: Windows, HTML5, CSS3, Vanilla JavaScript, browser File API, vendored SheetJS CE 0.20.3; Node.js используется только для разработки и отдельных локальных polling-скриптов.
-- Runtime интерфейса: единственный режим — непостоянный `file://index.html` для текущей вкладки.
-- Хранение интерфейса: только память страницы; выбранный XLSX credentials проверяется только в памяти текущей вкладки и не сериализуется; `localStorage`/`IndexedDB` не используются.
+- Стек интерфейса: Windows, HTML5, CSS3, Vanilla JavaScript, browser File/System Access API, vendored SheetJS CE 0.20.3; Node.js используется для разработки и защищённого loopback polling runtime.
+- Runtime интерфейса: `start.ps1` открывает авторизованную loopback-сессию для автоматического опроса; прямой `file://index.html` остаётся для ручного анализа.
+- Хранение интерфейса: только память страницы; выбранный XLSX передаётся только в память текущей loopback-сессии и не сериализуется; `localStorage`/`IndexedDB` не используются.
 - Роль: только «Администратор МЦТП».
-- Constitution: версия 3.0.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/012-automatic-polling-plan/`.
+- Constitution: версия 3.1.0 в `.specify/memory/constitution.md`.
+- Текущая feature: `specs/013-in-tool-polling/`.
 
 ## Правила работы агента
 
@@ -22,8 +22,8 @@
 - Доступные модули, их названия, справочные описания, пользовательские статусы и подсказки изменять через `product-catalog.js`; после правки обязательно запускать `node scripts/validate-reference.js`.
 - Не добавлять новый доступный маршрут в обход `MODULE_CATALOG` и не дублировать модульные карточки вручную в `app.js`.
 - Никогда не помещать реальные логины, пароли, токены, ключи, IP-выгрузки или runtime data в Git, fixtures, логи, state, аналитику и ответы API.
-- Не заменять file-mode memory adapter на `localStorage`/`IndexedDB`. XLSX credentials в `file://` допускается читать только в замкнутую переменную текущей вкладки для проверки схемы/счётчиков; нельзя помещать пары в `state`, DOM, plan, логи или browser storage.
-- Новый автоматический запуск принимает только текущий XLSX `Логин | Пароль` как общий пул без fallback к старому vault; browser экспортирует plan без secrets, а тот же файл явно передаётся локальному polling CLI.
+- Не заменять memory adapter на `localStorage`/`IndexedDB`. XLSX credentials допускается читать только в замкнутую переменную вкладки и передавать бинарно в same-origin loopback runtime; нельзя помещать пары в `state`, DOM, plan, логи, browser storage или постоянное runtime-хранилище.
+- Автоматический запуск принимает только текущий XLSX `Логин | Пароль` как общий пул без fallback к старому vault; runtime сверяет SHA-256, очищает pool во всех terminal paths и выдаёт redacted JSON по одному до ACK записи.
 - Не добавлять внешнюю передачу, CDN, телеметрию или non-loopback bind без нового явного решения пользователя и security review.
 - Не делать commit/push без явного указания пользователя.
 - Значимые решения фиксировать в `docs/decisions`, этапы — в `docs/implementation-log.md`.
@@ -43,4 +43,4 @@
 - Каталог и отдельные polling-скрипты: релевантные проверки `runtime-tests.js`, пока исторические runtime-компоненты остаются в репозитории.
 - Синтаксис: `node --check` для изменённых `.js`.
 - Secret/artifact scan обязателен перед commit.
-- Acceptance выполняется для единственного режима: прямое открытие `index.html` проверяет пакетный импорт общей папки, сеансовую аналитику и сброс при reload.
+- Acceptance: `start.ps1` проверяет полный автоматический workflow, а прямой `index.html` — ручной пакетный импорт, сеансовую аналитику и явную блокировку сетевого запуска.

@@ -726,6 +726,40 @@ th {
   margin-top: 12px;
 }
 
+.output-folder-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--border-color, #d9e2df);
+  border-radius: 12px;
+  background: #f7faf9;
+}
+
+.output-folder-picker p {
+  margin: 0.35rem 0 0;
+}
+
+.polling-tls-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  line-height: 1.35;
+  color: #374b47;
+}
+
+.polling-tls-option input {
+  margin-top: 0.15rem;
+}
+
+@media (max-width: 720px) {
+  .output-folder-picker {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .selection-tag {
   padding: 4px 8px;
   border: 1px solid #b8d5cf;

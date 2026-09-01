@@ -1,5 +1,15 @@
 # Архитектура
 
+## Feature 013: автоматический опрос внутри инструмента
+
+- `start.ps1` запускает `server.js` на случайном loopback-порту и открывает одноразовую HttpOnly/CSRF session.
+- `app.js` передаёт выбранный XLSX только same-origin runtime, автоматически отправляет plan v2 после формирования и показывает progress/cancel.
+- `runtime/polling-job.js` ограничивает session одним job, выполняет schedule и runner, выдаёт один redacted JSON и ждёт ACK browser-записи до interval.
+- Browser File System Access handle живёт только в памяти вкладки. В выбранном корне создаётся уникальная `YYYY-MM-DD_HH-mm-ss`; ручной importer читает те же JSON без преобразования.
+- Extron остаётся HTTPS-only. Self-signed bypass задаётся явно для job и передаётся adapter как `rejectUnauthorized: false` только этим запросам; HTTP и глобальная TLS-настройка не используются.
+- Terminal job всегда очищает credential pool. Plan/status/result/logs/persistent storage не содержат credentials, cookie или Authorization.
+- Direct `file://index.html` остаётся ручным сеансовым режимом и блокирует автоматический сетевой запуск.
+
 ## Feature 012: Загрузка и План автоматического опроса
 
 - `app.js` строит каскад `Тип оборудования → Производитель → Модель` только из актуальной SR, показывает точные total/supported/unsupported и экспортирует plan schema v2 со стабильным порядком.
@@ -8,7 +18,7 @@
 - Новый CLI-run требует этот же XLSX и явный output root, сверяет SHA-256 файла из plan до сети, создаёт общий in-memory pool и не использует historical DPAPI vault как fallback.
 - `runtime/polling.js` не выполняет сеть для unsupported, сохраняет детерминированный последовательный порядок, ждёт интервал только после callback успешной записи и поддерживает AbortSignal.
 - `scripts/poll-devices.js` атомарно сохраняет каждый JSON немедленно; save failure пытается создать локальную recovery-копию и останавливает batch до следующего устройства.
-- Граница `file://` сохранена: HTML не запускает процесс; пользователь передаёт скачанный plan, тот же XLSX и output локальному `poll-extron.ps1`.
+- Ручной CLI сохранён для диагностики и совместимости; основной автоматический workflow заменён Feature 013.
 
 ## Feature 011: локальный web-опрос Extron (историческая основа)
 
@@ -38,11 +48,11 @@
 
 ## Текущий статус
 
-Поддерживается один пользовательский режим: непостоянный browser-only сеанс при прямом открытии `index.html`. Решение описано в ADR-0008 и ADR-0012. Интерфейс временно проверяет выбранный XLSX credentials, но не помещает пары в state/DOM/plan и не использует постоянное browser-хранилище.
+Поддерживаются два локальных режима с одним интерфейсом: `start.ps1` для автоматического опроса и direct `index.html` для ручного анализа. Оба используют непостоянный memory state без `localStorage`/`IndexedDB`; только loopback-mode получает сетевые полномочия. Решение описано в ADR-0013.
 
 ## Компоненты
 
-- `runtime-config.js` подтверждает статический `file://` запуск.
+- `runtime-config.js` подтверждает статический `file://` manual-mode; `server.js` выдаёт динамический marker/CSRF для loopback-mode.
 - `app.js` всегда использует непостоянный memory adapter, содержит state v3, импорт SR/дерева результатов, чистую Dashboard-проекцию, аналитику и UI единственной роли.
 - `groupPollingFilesByRunFolder` рекурсивно группирует выбранные JSON по ближайшей папке `YYYY-MM-DD_HH-MM-SS`; legacy `ingestPollingFolderTree` сохранён как эталон семантики.
 - UI использует `processPollingImportBatches`: пакеты по 32 файла, bounded reading 2–6, cooperative yield, throttled progress и cancellation token. `createPollingImportContext` индексирует SR IP, дубликаты, запуски, историю и соседние change-пары; поздняя запись пересчитывает не более двух пар.
@@ -51,6 +61,8 @@
 - `runtime/model-catalog.js` маршрутизирует переданные производители/модели.
 - `runtime/polling.js` проверяет explicit allowlist, выполняет bounded ping, dispatch-ит подтверждённый Extron adapter и fail-closed останавливается для остальных протоколов.
 - `runtime/credential-pool.js` — общий browser/CommonJS parser XLSX-пула без сериализации секретов.
+- `runtime/polling-job.js` — ephemeral job lifecycle, progress, cancellation и pending-result ACK/backpressure.
+- `server.js` — authenticated same-origin loopback API credentials/jobs/status/result/ACK/cancel.
 - `scripts/poll-devices.js` — CLI, использующий только текущий XLSX-пул в памяти и формирующий безопасные per-IP результаты.
 - `runtime/extron-web-poller.js` — изолированный HTTPS adapter с injectable transport для synthetic contract/security tests.
 - `vendor/xlsx.full.min.js` — локально vendored SheetJS без CDN.
@@ -58,25 +70,20 @@
 ## Security boundary
 
 ```text
-index.html (file://)
-        |
-        v
-in-memory state for current page only
-        |
-        +-- selected local SR / folder tree
-        +-- selected XLSX -> transient validation only
-        +-- no browser persistence
-        +-- no product network requests
+start.ps1 -> server.js (127.0.0.1, random port)
+                     |
+                     +-- one-time launch token -> HttpOnly session + CSRF
+                     +-- XLSX -> in-memory credential pool -> cleared terminally
+                     +-- immutable plan IP allowlist -> ping -> Extron HTTPS/443
+                     +-- redacted result -> browser pending result
+                                              |
+                                              +-- selected folder/YYYY-MM-DD_HH-mm-ss/IP.json
+                                              +-- ACK write -> interval -> next device
 
-separate poll-extron.ps1 / Node process
-        |
-        +-- explicit plan IP allowlist
-        +-- same Excel credentials -> current in-memory pool
-        +-- HTTPS only to planned Extron devices
-        +-- local atomic JSON -> poll-results
+index.html (file://) -> in-memory manual import/analytics only; no polling API
 ```
 
-Интерфейс загружает только относительные локальные assets и явно выбранные пользователем файлы, не выполняет storage/credential API requests и не читает прежние значения `localStorage`. Его состояние уничтожается при reload/close. HTTP/HTTPS не является вторым режимом и блокируется.
+Loopback UI и direct-file UI загружают только локальные assets. Browser state, folder handle и поисковые значения уничтожаются при reload/close. Runtime принимает только exact Host `127.0.0.1|localhost` текущего порта; mutation дополнительно требует same-origin и CSRF.
 
 ## Данные
 
@@ -88,7 +95,7 @@ State schema v3 мигрирует v1/v2 и оставляет единстве�
 
 Маршрут «Справочник» объединяет каталоговые проекции с явными смысловыми материалами, не сохраняет поисковые запросы и не обращается к сети. Контекстные кнопки «О модуле» используют стабильные идентификаторы `HELP_TOPIC_BY_ROUTE`; подсказки показателей используют общий источник `UI_TERMS.tooltips`.
 
-Во время массового импорта Dashboard и тяжёлые аналитические selectors не вызываются. Progress snapshot не содержит raw JSON и отрисовывается не чаще одного раза в 100 мс. В active file-only режиме канонический state изменяется атомарно в памяти страницы; полная сериализация всего growing state не находится в import hot path.
+Во время массового импорта Dashboard и тяжёлые аналитические selectors не вызываются. Progress snapshot не содержит raw JSON и отрисовывается не чаще одного раза в 100 мс. В обоих режимах канонический state изменяется атомарно в памяти страницы; полная сериализация всего growing state не находится в import hot path.
 
 Модульная часть `HELP_SECTIONS`, навигация, `HELP_TOPIC_BY_ROUTE` и конфигурация трёх inventory-маршрутов теперь вычисляются из `MODULE_CATALOG`. Статусные карточки вычисляются из `STATUS_DESCRIPTORS` и `UI_TERMS`. Явные смысловые определения остаются ручными: автоматическая проверка требует метаданные, но не выдумывает смысл нового кода.
 

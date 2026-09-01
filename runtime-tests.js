@@ -10,6 +10,7 @@ const { parseCredentialRows, parseCredentialWorkbook } = require("./runtime/cred
 const { extractResourceUris, pollExtronDevice } = require("./runtime/extron-web-poller");
 const { CATALOG, resolveManifest } = require("./runtime/model-catalog");
 const { probeDevice, runPlan } = require("./runtime/polling");
+const { createPollingJob } = require("./runtime/polling-job");
 const { decryptBuffer, encryptBuffer, getOrCreateMasterKey } = require("./runtime/security");
 const { SecureStore } = require("./runtime/secure-store");
 const { execute, formatCaptureFolder, readCredentialImport, resolveOutputDirectory, sanitizeResult } = require("./scripts/poll-devices");
@@ -423,6 +424,47 @@ test("Ошибка основной записи создаёт локальну
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("Loopback job ждёт подтверждения записи до завершения результата", async () => {
+  const secret = "SYNTHETIC-JOB-SECRET";
+  let advancedAfterResult = false;
+  const job = createPollingJob({
+    plan: { schemaVersion: 2, scheduledAt: new Date(0).toISOString(), intervalSeconds: 0, devices: [{ ip: "192.0.2.10", category: "controller", manufacturer: "Extron", pollingSupported: false }] },
+    credentials: [{ username: "synthetic-user", password: secret }],
+    runPlan: async (plan, options) => {
+      const result = { ip: plan.devices[0].ip, ok: false, networkAttempted: false, safeError: "verified_protocol_contract_required" };
+      await options.onResult(result, { index: 0, total: 1, device: plan.devices[0] });
+      advancedAfterResult = true;
+      options.onProgress({ stage: "processed", index: 1, total: 1, result });
+      return [result];
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  equal(job.status().status, "waiting_for_save");
+  assert(!advancedAfterResult, "Job продолжил выполнение до ACK записи");
+  const pending = job.result();
+  assert(pending && pending.filename === "192.0.2.10.json");
+  assert(!JSON.stringify(pending).includes(secret));
+  assert(job.acknowledge(pending.resultId, true));
+  const completed = await job.done;
+  equal(completed.status, "completed");
+  assert(advancedAfterResult);
+  equal(completed.processed, 1);
+  equal(completed.unsupported, 1);
+});
+
+test("Loopback job отменяет отложенный запуск без обращения к устройству", async () => {
+  let executed = false;
+  const job = createPollingJob({
+    plan: { schemaVersion: 2, scheduledAt: new Date(Date.now() + 60000).toISOString(), intervalSeconds: 0, devices: [{ ip: "192.0.2.11", category: "controller", manufacturer: "Extron" }] },
+    credentials: [{ username: "synthetic-user", password: "SYNTHETIC-CANCEL-SECRET" }],
+    runPlan: async () => { executed = true; return []; }
+  });
+  job.cancel();
+  const cancelled = await job.done;
+  equal(cancelled.status, "cancelled");
+  assert(!executed, "Polling был запущен после отмены schedule");
+});
+
 test("Manual polling import остаётся доступен вместе с local polling CLI", () => {
   const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
   const gitignore = fs.readFileSync(path.join(__dirname, ".gitignore"), "utf8");
@@ -431,7 +473,7 @@ test("Manual polling import остаётся доступен вместе с lo
   assert(gitignore.includes("poll-results/"));
 });
 
-test("Target navigation и загрузка соответствуют единственному файловому режиму", () => {
+test("Target navigation и загрузка сохраняют ручной file-mode и loopback automatic-mode", () => {
   const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
   const styles = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
   const navigation = productCatalog.buildNavigation();
@@ -454,7 +496,7 @@ test("Target navigation и загрузка соответствуют един�
   assert(source.includes('${expanded ? "" : " hidden"}>'), "Collapsed navigation должна использовать нативный hidden");
 });
 
-test("Прямой index.html использует непостоянный file mode и не показывает удалённые уведомления", () => {
+test("Прямой index.html остаётся непостоянным ручным режимом и не показывает удалённые уведомления", () => {
   const index = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
   const runtimeConfig = fs.readFileSync(path.join(__dirname, "runtime-config.js"), "utf8");
   const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");

@@ -688,6 +688,16 @@ Commit, push и deploy для этого этапа не выполнялись.
 
 Commit, push и deploy не выполнялись.
 
+## 2026-09-01 — Автоматический опрос внутри инструмента
+
+Создана Full SpecKit feature `013-in-tool-polling`. После выбора общей папки кнопка «Сформировать и запустить опрос» создаёт plan v2 и автоматически передаёт его защищённому runtime, запущенному через `start.ps1` только на `127.0.0.1`.
+
+XLSX `Логин | Пароль` передаётся бинарно same-origin endpoint, сверяется по SHA-256 и существует только в памяти одного job. Runtime не использует historical vault или fallback credentials и очищает pool после completed, cancelled или failed. Extron использует только HTTPS/443; self-signed bypass является явным per-job параметром и не меняет глобальную TLS-конфигурацию.
+
+Добавлен pull/ACK-контракт результата: runtime выдаёт один redacted JSON и блокирует interval/следующее устройство, пока browser не запишет файл в выбранную папку `YYYY-MM-DD_HH-mm-ss` и не подтвердит успех. Ошибка записи останавливает job; отмена прерывает schedule/interval, ранее записанные JSON остаются. Direct `index.html` сохраняет ручной импорт и аналитику, но автоматический сетевой запуск блокирует.
+
+Документация, Constitution 3.1.0, ADR-0013, Справочник и тестовые контракты обновлены. Проверки: main regression — 136/136 PASS; runtime/DPAPI/job — 30/30 PASS; loopback API — 1/1 PASS; product catalog, JavaScript syntax и `git diff --check` — PASS. Визуальный smoke-test реального `127.0.0.1` экрана подтвердил новые элементы и отсутствие browser console errors. Реальные SR, credentials и опрос оборудования в acceptance не использовались. Commit, push и deploy не выполнялись.
+
 ## 2026-09-01 — Загрузка и План автоматического опроса
 
 Создана Full SpecKit feature `012-automatic-polling-plan`. Модуль «Загрузка» разделён на SR, общую папку, учётные данные и План автоматического опроса. Длинные пояснения убраны с операционного экрана и перенесены в централизованный Справочник.

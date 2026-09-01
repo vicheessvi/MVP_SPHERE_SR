@@ -1,6 +1,6 @@
 <!--
 Sync Impact Report
-- Version change: 2.0.0 -> 3.0.0
+- Version change: 3.0.0 -> 3.1.0
 - Modified principles:
   - placeholder Principle 1 -> I. Неизменяемые исходные доказательства
   - placeholder Principle 2 -> II. Идентичность предшествует сравнению
@@ -17,8 +17,8 @@ Sync Impact Report
     reads this file at planning time
   - .specify/templates/spec-template.md: no edit required
   - .specify/templates/tasks-template.md: no edit required
-- Modified principle VI to permit explicitly requested ephemeral XLSX credential-pool validation in direct-file mode while prohibiting serialization, persistence and fallback credentials.
-- Dependent artifacts updated by feature 012: AGENTS.md, architecture, ADR-0012, tests.
+- Modified principle VI to permit an authenticated loopback polling session, explicit user-selected JSON output and ephemeral XLSX transfer without credential persistence.
+- Dependent artifacts updated by feature 013: AGENTS.md, architecture, ADR-0013, tests.
 -->
 
 # MVP_SPHERE_SR Constitution
@@ -86,19 +86,23 @@ Rationale: пользователь должен понимать, что изм
 
 Внутренние IP, MAC, hostname, имена пользователей, сведения об оборудовании,
 исходные снимки и результаты аналитики MUST считаться чувствительными
-инфраструктурными данными. Они MUST храниться только локально, в зашифрованном
-виде, с ключом, привязанным к учётной записи операционной системы. Runtime MUST
+инфраструктурными данными. Постоянное хранилище, которым управляет приложение,
+MUST быть локальным и зашифрованным с ключом, привязанным к учётной записи
+операционной системы. Явно выбранные пользователем исходные и выходные файлы MAY
+оставаться в совместимом открытом формате под защитой прав доступа Windows;
+приложение MUST NOT создавать их скрытые незашифрованные копии. Runtime MUST
 принимать соединения только через loopback и MUST NOT передавать данные во внешние
 сервисы, telemetry или CDN.
 
 Device credentials MAY требоваться только автоматическому polling workflow. Явно
-выбранный XLSX MAY проверяться в замкнутой памяти текущей вкладки `file://`, но
-пары MUST NOT попадать в основной state, DOM, plan, snapshots, аналитику, browser
-storage, логи, диагностику, backup или Git. Локальный polling-процесс MUST получать
-тот же файл явно для каждого запуска и MUST держать нормализованный пул только в
-памяти процесса; старый vault, hardcoded credentials и иные fallback-источники
-запрещены. Ошибка импорта или polling MUST скрывать значения секретов. Доступ к
-workflow MUST иметь только роль «Администратор МЦТП».
+выбранный XLSX MAY проверяться в замкнутой памяти вкладки и MAY передаваться только
+same-origin loopback runtime активной одноразовой сессии. Пары MUST NOT попадать в
+основной state, DOM, plan, snapshots, аналитику, browser storage, постоянное
+runtime-хранилище, логи, диагностику, backup или Git. Runtime MUST сверять SHA-256
+того же файла до сети, держать нормализованный пул только в памяти текущего job и
+очищать его после завершения, отмены или ошибки; старый vault, hardcoded credentials
+и иные fallback-источники запрещены. Ошибка импорта или polling MUST скрывать
+значения секретов. Доступ к workflow MUST иметь только роль «Администратор МЦТП».
 
 Rationale: polling требует секретов, но аналитика не должна становиться каналом
 их утечки; OS-bound vault отделяет полномочия опроса от данных анализа.
@@ -158,4 +162,4 @@ MUST быть явно согласована пользователем, сод
 проведённых проверках и известных отклонениях. Исключение допускается только как
 явно документированное временное решение с владельцем и условием устранения.
 
-**Version**: 3.0.0 | **Ratified**: 2026-08-03 | **Last Amended**: 2026-09-01
+**Version**: 3.1.0 | **Ratified**: 2026-08-03 | **Last Amended**: 2026-09-01

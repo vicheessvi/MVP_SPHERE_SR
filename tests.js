@@ -855,12 +855,19 @@
     assert(api.canPerformAction(state, "user-administrator", "reset_state"));
     assertEqual(state.users.length, 1);
     assertEqual(api.resolveLaunchMode({ protocol: "file:", fileMarker: true }).kind, "file");
-    assertEqual(api.resolveLaunchMode({ protocol: "http:", secureMarker: true }), null);
+    assertEqual(api.resolveLaunchMode({ protocol: "http:", secureMarker: true }).kind, "local");
     assertEqual(api.resolveLaunchMode({ protocol: "http:" }), null);
     const first = api.createVolatileStorage();
     first.setItem("synthetic", "value");
     assertEqual(first.getItem("synthetic"), "value");
     assertEqual(api.createVolatileStorage().getItem("synthetic"), null);
+  });
+
+  test("Папка автоматического запуска имеет совместимое уникальное timestamp-имя", () => {
+    const startedAt = new Date(2026, 8, 1, 9, 41, 28);
+    assertEqual(api.formatPollingRunFolderName(startedAt), "2026-09-01_09-41-28");
+    assertEqual(api.chooseUniquePollingRunFolderName(["2026-09-01_09-41-28"], startedAt), "2026-09-01_09-41-29");
+    assertEqual(api.parseRunFolderTimestamp("2026-09-01_09-41-29").capturedAt, new Date(2026, 8, 1, 9, 41, 29).toISOString());
   });
 
   test("MatchDecision choose пересчитывает зависимый diff и сохраняет старый ChangeSet", async () => {
