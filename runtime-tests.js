@@ -547,6 +547,14 @@ test("Bootstrap не читает рабочие данные, использу�
   assert(/node\.exe/i.test(resolved.stdout));
 });
 
+test("Windows launcher запускает start.ps1 из каталога проекта без ручной команды", () => {
+  const source = fs.readFileSync(path.join(__dirname, "START_MVP_SPHERE_SR.cmd"), "utf8");
+  assert(source.includes('cd /d "%~dp0"'));
+  assert(source.includes('powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0start.ps1"'));
+  assert(source.includes("pause"), "Ошибка запуска должна оставаться видимой пользователю");
+  assert(!source.includes("http://") && !source.includes("https://"), "Launcher не должен обращаться к сети сам");
+});
+
 test("Bootstrap fail-closed отклоняет неподдерживаемую архитектуру до загрузки", () => {
   const rejected = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(__dirname, "scripts", "ensure-node.ps1"), "-ProjectRoot", __dirname, "-NoDownload"], {
     cwd: __dirname,

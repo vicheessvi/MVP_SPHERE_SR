@@ -4,7 +4,7 @@
 
 - Спецификация и план: `specs/013-in-tool-polling/`.
 - Каскад, plan v2, выбор output folder, запуск/прогресс/ACK и ручной импорт: `app.js`, `runtime/credential-pool.js`.
-- Авторизованная loopback session и polling job API: `server.js`, `runtime/polling-job.js`, `start.ps1`.
+- Пользовательский запуск двойным щелчком, авторизованная loopback session и polling job API: `START_MVP_SPHERE_SR.cmd`, `start.ps1`, `server.js`, `runtime/polling-job.js`.
 - Последовательный Extron HTTPS polling и CLI compatibility: `runtime/extron-web-poller.js`, `runtime/polling.js`, `scripts/poll-devices.js`, `poll-extron.ps1`.
 - Термины и Справочник: `product-catalog.js`.
 - Архитектурное решение: `docs/decisions/ADR-0013-in-tool-polling.md`.

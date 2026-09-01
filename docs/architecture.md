@@ -2,7 +2,7 @@
 
 ## Feature 013: автоматический опрос внутри инструмента
 
-- `start.ps1` запускает `server.js` на случайном loopback-порту и открывает одноразовую HttpOnly/CSRF session.
+- `START_MVP_SPHERE_SR.cmd` является пользовательской точкой входа двойным щелчком и переносимо вызывает `start.ps1` из каталога проекта; `start.ps1` запускает `server.js` на случайном loopback-порту и открывает одноразовую HttpOnly/CSRF session.
 - `app.js` передаёт выбранный XLSX только same-origin runtime, автоматически отправляет plan v2 после формирования и показывает progress/cancel.
 - `runtime/polling-job.js` ограничивает session одним job, выполняет schedule и runner, выдаёт один redacted JSON и ждёт ACK browser-записи до interval.
 - Browser File System Access handle живёт только в памяти вкладки. В выбранном корне создаётся уникальная `YYYY-MM-DD_HH-mm-ss`; ручной importer читает те же JSON без преобразования.
@@ -48,7 +48,7 @@
 
 ## Текущий статус
 
-Поддерживаются два локальных режима с одним интерфейсом: `start.ps1` для автоматического опроса и direct `index.html` для ручного анализа. Оба используют непостоянный memory state без `localStorage`/`IndexedDB`; только loopback-mode получает сетевые полномочия. Решение описано в ADR-0013.
+Поддерживаются два локальных режима с одним интерфейсом: `START_MVP_SPHERE_SR.cmd` для автоматического опроса и direct `index.html` для ручного анализа. Launcher вызывает внутренний `start.ps1`; пользователю не требуется вводить PowerShell-команду. Оба режима используют непостоянный memory state без `localStorage`/`IndexedDB`; только loopback-mode получает сетевые полномочия. Решение описано в ADR-0013.
 
 ## Компоненты
 
@@ -70,7 +70,7 @@
 ## Security boundary
 
 ```text
-start.ps1 -> server.js (127.0.0.1, random port)
+START_MVP_SPHERE_SR.cmd -> start.ps1 -> server.js (127.0.0.1, random port)
                      |
                      +-- one-time launch token -> HttpOnly session + CSRF
                      +-- XLSX -> in-memory credential pool -> cleared terminally
