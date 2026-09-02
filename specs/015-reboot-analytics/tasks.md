@@ -8,7 +8,7 @@
 ## Phase 2 — Tests first
 
 - [X] T003 [P] Add navigation/reference regression cases in `tests.js`
-- [X] T004 [P] Add uptime extraction and `reboot-min-v1` pair cases in `tests.js`
+- [X] T004 [P] Add strict Extron `Device Status.Date − Uptime` and boot-clustering cases in `tests.js`
 - [X] T005 [P] Add duplicate, late input, tie, filter and performance cases in `tests.js`
 
 ## Phase 3 — Core analytics

@@ -1867,6 +1867,7 @@
   });
 
   function rebootResult(id, deviceId, observedAt, uptimeValue, overrides = {}) {
+    const deviceDate = new Date(observedAt).toUTCString().replace(" GMT", "");
     return {
       id,
       deviceId,
@@ -1876,7 +1877,7 @@
       capturedAtSource: "file_last_modified",
       observationAt: observedAt,
       observationAtSource: "payload_captured_at",
-      normalizedData: { webBlocks: { "Device Status": { "Uptime Seconds": uptimeValue } } },
+      normalizedData: { webBlocks: { "Device Status": { Date: deviceDate, "Uptime Seconds": uptimeValue } } },
       ...overrides
     };
   }
@@ -1901,33 +1902,43 @@
     const numeric = api.extractRebootObservation(rebootResult("r1", "reboot-device", "2026-08-10T10:00:00.000Z", 61));
     assert(numeric.eligible);
     assertEqual(numeric.observation.uptimeSeconds, 61);
-    const formatted = api.extractRebootObservation(rebootResult("r2", "reboot-device", "2026-08-10T11:00:00.000Z", undefined, { normalizedData: { webBlocks: { "Device Status": { Uptime: "1d 2h 3m 4s" } } } }));
+    const formatted = api.extractRebootObservation(rebootResult("r2", "reboot-device", "2026-08-10T11:00:00.000Z", undefined, { normalizedData: { webBlocks: { "Device Status": { Date: "Mon, 10 Aug 2026 11:00:00", Uptime: "1d 2h 3m 4s" } } } }));
     assert(formatted.eligible);
     assertEqual(formatted.observation.uptimeSeconds, 93784);
-    const conflict = api.extractRebootObservation(rebootResult("r3", "reboot-device", "2026-08-10T12:00:00.000Z", 10, { normalizedData: { webBlocks: { "Device Status": { "Uptime Seconds": 10, Uptime: "0h 0m 11s" } } } }));
+    const conflict = api.extractRebootObservation(rebootResult("r3", "reboot-device", "2026-08-10T12:00:00.000Z", 10, { normalizedData: { webBlocks: { "Device Status": { Date: "Mon, 10 Aug 2026 12:00:00", "Uptime Seconds": 10, Uptime: "0h 0m 11s" } } } }));
     assertEqual(conflict.reason, "conflicting_uptime");
+    const invalidDate = api.extractRebootObservation(rebootResult("r4", "reboot-device", "2026-08-10T12:00:00.000Z", 10, { normalizedData: { webBlocks: { "Device Status": { Date: "неизвестная дата", Uptime: "0h 0m 10s" } } } }));
+    assertEqual(invalidDate.reason, "invalid_device_date");
   });
 
-  test("reboot-min-v1 отличает непрерывный uptime от подтверждённой перезагрузки", () => {
+  test("Extron Date минус Uptime вычисляет и объединяет перезагрузки", () => {
+    const example = rebootFixture([rebootResult("example", "reboot-device", "2027-01-01T00:00:00.000Z", undefined, {
+      normalizedData: { webBlocks: { "Device Status": { Date: "Mon, 01 Jun 2026 09:56:35", Time: "Mon, 01 Jun 2026 09:56:35", "Time Zone": { error: "" }, Uptime: "2d 23h 5m 58s" } } }
+    })]);
+    const exampleAnalytics = api.getRebootAnalytics(example, { period: "all" }, { timeZone: "UTC" });
+    assertEqual(exampleAnalytics.events.length, 1);
+    assertEqual(exampleAnalytics.events[0].estimatedAt, "2026-05-29T10:50:37.000Z");
+    assertEqual(exampleAnalytics.events[0].observedAtSource, "device_status_date");
+
     const continuous = rebootFixture([
       rebootResult("r1", "reboot-device", "2026-08-10T10:00:00.000Z", 3600),
       rebootResult("r2", "reboot-device", "2026-08-10T11:00:00.000Z", 7200)
     ]);
-    assertEqual(api.getRebootAnalytics(continuous, { period: "all" }).events.length, 0);
+    assertEqual(api.getRebootAnalytics(continuous, { period: "all" }).events.length, 1);
     const rebooted = rebootFixture([
       rebootResult("r1", "reboot-device", "2026-08-10T10:00:00.000Z", 3600),
       rebootResult("r2", "reboot-device", "2026-08-10T12:00:00.000Z", 600)
     ]);
     const analytics = api.getRebootAnalytics(rebooted, { period: "all" });
-    assertEqual(analytics.events.length, 1);
-    assertEqual(analytics.summary.minimumReboots, 1);
+    assertEqual(analytics.events.length, 2);
+    assertEqual(analytics.summary.minimumReboots, 2);
     assertEqual(analytics.events[0].minimumCount, 1);
-    assertEqual(analytics.events[0].ruleVersion, "reboot-min-v1");
+    assertEqual(analytics.events[0].ruleVersion, "extron-reboot-v2");
     const longGap = rebootFixture([
       rebootResult("r1", "reboot-device", "2026-08-01T10:00:00.000Z", 60),
       rebootResult("r2", "reboot-device", "2026-08-10T10:00:00.000Z", 86400)
     ]);
-    assertEqual(api.getRebootAnalytics(longGap, { period: "all" }).events.length, 1, "Reboot после первого опроса определяется даже при большем втором uptime");
+    assertEqual(api.getRebootAnalytics(longGap, { period: "all" }).events.length, 2, "Reboot после первого опроса определяется даже при большем втором uptime");
   });
 
   test("Legacy файл использует timestamp файла с ограниченной достоверностью", () => {
@@ -1955,7 +1966,7 @@
       rebootResult("same-time", "reboot-device", "2026-08-10T12:00:00.000Z", 700)
     ]);
     const analytics = api.getRebootAnalytics(state, { period: "all" });
-    assertEqual(analytics.events.length, 0);
+    assertEqual(analytics.events.length, 1);
     assert(analytics.coverage.unknownPairs >= 1);
   });
 
@@ -1984,7 +1995,7 @@
     const started = Date.now();
     const analytics = api.getRebootAnalytics(state, { period: "all" }, { timeZone: "UTC" });
     const elapsed = Date.now() - started;
-    assertEqual(analytics.events.length, 0);
+    assertEqual(analytics.events.length, 5000);
     assert(elapsed < 2000, `Расчёт занял ${elapsed} мс`);
   });
 

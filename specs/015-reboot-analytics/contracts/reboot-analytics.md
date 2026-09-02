@@ -2,7 +2,7 @@
 
 ## `extractRebootObservation(result)`
 
-Возвращает `{ eligible: true, observation }` только для parsed, точно сопоставленного результата с поддержанными временем и uptime. Иначе `{ eligible: false, reason }`. Не мутирует result.
+Возвращает `{ eligible: true, observation }` только для parsed, точно сопоставленного результата с поддержанными `Device Status.Date` и uptime. Вычисляет `bootAtMs = observedAtMs − uptimeSeconds × 1000`. Иначе `{ eligible: false, reason }`. Не мутирует result.
 
 ## `deriveMinimumReboot(previous, current, device)`
 
@@ -10,7 +10,7 @@
 - `{ status: "unknown", reason }` при неоднозначности;
 - `{ status: "not_confirmed" }`, когда пара пригодна, но событие не доказано.
 
-`event.minimumCount` всегда 1; `ruleVersion` всегда `reboot-min-v1`. Отсутствие подтверждения не объявляется доказанным отсутствием reboot.
+`event.minimumCount` всегда 1; `ruleVersion` всегда `extron-reboot-v2`. Основной индекс создаёт событие и для одного пригодного файла, а повторные boot timestamps в пределах пяти секунд объединяет.
 
 ## `buildRebootAnalysisIndex(state, options?)`
 
@@ -22,7 +22,7 @@
 
 ## Presentation contract
 
-- KPI: «Минимум подтверждённых перезагрузок».
+- KPI: «Рассчитанные перезагрузки».
 - Время: оценённый интервал, не ложная точная отметка.
 - Локация/адрес: «по актуальной SR».
 - `insufficient` отличается от достоверного нуля.

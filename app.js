@@ -135,7 +135,7 @@
         { id: "logic-no-network", title: "Как определяется отсутствие ответа", summary: "Перед получением данных инструмент может проверить сетевую доступность; отсутствие ответа отмечается статусом «Нет ответа по сети».", keywords: ["failedStage", "Ping.ok", "ping"] },
         { id: "logic-auth", title: "Как определяется ошибка авторизации", summary: "Для любого устройства Extron подтверждённым признаком является точное значение error = No credentials were accepted.", details: "Категория устройства Extron не ограничивает это правило. Другие значения error, ошибки чтения, обработки и сетевой доступности не называются ошибкой авторизации. Статус применяется после однозначной связи файла с устройством Extron из SR.", keywords: ["authorization", "no credentials were accepted", "extron"] },
         { id: "logic-support", title: "Поддержка автоматического опроса", summary: "Наличие устройства в SR не означает наличие подтверждённого механизма его автоматического опроса.", keywords: ["adapter", "supported", "unsupported"] },
-        { id: "logic-reboots", title: "Правило выявления перезагрузки", summary: "Показывается минимальное подтверждённое количество перезагрузок между соседними пригодными опросами.", details: "Правило reboot-min-v1 вычисляет интервал последнего запуска по времени наблюдения и uptime. Событие создаётся только если этот интервал целиком позже предыдущего наблюдения. Несколько запусков между двумя опросами неразличимы, поэтому одна пара даёт нижнюю границу — минимум одну перезагрузку. Неоднозначные данные не увеличивают счётчик.", keywords: ["reboot", "перезагрузка", "uptime", "минимум"] }
+        { id: "logic-reboots", title: "Правило выявления перезагрузки Extron", summary: "В каждом файле время перезагрузки рассчитывается как Device Status.Date минус Device Status.Uptime.", details: "Правило extron-reboot-v2 строго разбирает локальные дату и время устройства и uptime. Одинаковые расчётные времена запуска в нескольких опросах объединяются с допуском пять секунд; новое время запуска считается следующей перезагрузкой. При неизвестном часовом поясе время явно показывается как локальное время устройства. Неоднозначные данные не увеличивают счётчик.", keywords: ["reboot", "перезагрузка", "uptime", "extron", "date"] }
       ]
     },
     {
@@ -1837,7 +1837,8 @@
     return [...map].map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, "ru")).slice(0, limit);
   }
 
-  const REBOOT_RULE_VERSION = "reboot-min-v1";
+  const REBOOT_RULE_VERSION = "extron-reboot-v2";
+  const REBOOT_BOOT_CLUSTER_TOLERANCE_MS = 5000;
 
   function rebootDeviceStatusBlock(normalizedData) {
     const webBlocks = getCaseInsensitive(normalizedData, "webBlocks");
@@ -1856,11 +1857,28 @@
     return Number.isSafeInteger(total) ? total : null;
   }
 
+  function parseExtronDeviceDate(value) {
+    if (typeof value !== "string") return null;
+    const match = value.trim().match(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat), (\d{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2})$/);
+    if (!match) return null;
+    const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const day = Number(match[2]);
+    const month = months.indexOf(match[3]);
+    const year = Number(match[4]);
+    const hour = Number(match[5]);
+    const minute = Number(match[6]);
+    const second = Number(match[7]);
+    if (month < 0 || hour > 23 || minute > 59 || second > 59) return null;
+    const time = Date.UTC(year, month, day, hour, minute, second);
+    const date = new Date(time);
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month || date.getUTCDate() !== day || weekdays[date.getUTCDay()] !== match[1]) return null;
+    return { iso: date.toISOString(), time, source: "device_status_date", timeBasis: "device_local_unknown_timezone" };
+  }
+
   function extractRebootObservation(result) {
     if (!result || result.parseStatus !== "parsed") return { eligible: false, reason: "unparsed" };
     if (!result.deviceId || ["ambiguous", "category_conflict", "ip_conflict", "historical_only"].includes(result.matchStatus)) return { eligible: false, reason: "unmatched" };
-    const observedAt = normalizeDate(result.observationAt || result.capturedAt);
-    if (!observedAt) return { eligible: false, reason: "missing_time" };
     const status = rebootDeviceStatusBlock(result.normalizedData);
     if (!status) return { eligible: false, reason: "missing_uptime" };
     const numericRaw = getCaseInsensitive(status, "Uptime Seconds");
@@ -1873,67 +1891,83 @@
     const uptimeSeconds = numeric ?? formatted;
     if (uptimeSeconds === null) return { eligible: false, reason: "missing_uptime" };
     const source = numeric !== null ? "uptime_seconds" : "uptime_formatted";
-    const observationSource = result.observationAtSource || result.capturedAtSource || "unknown";
-    const confidence = result.observationConfidence || (observationSource === "payload_captured_at" ? "confirmed" : "limited");
+    const deviceDateRaw = getCaseInsensitive(status, "Date");
+    const deviceDate = parseExtronDeviceDate(deviceDateRaw);
+    if (deviceDateRaw !== undefined && deviceDateRaw !== null && deviceDateRaw !== "" && !deviceDate) return { eligible: false, reason: "invalid_device_date" };
+    const observedAt = deviceDate?.iso || normalizeDate(result.observationAt || result.capturedAt);
+    if (!observedAt) return { eligible: false, reason: "missing_time" };
+    const observationSource = deviceDate?.source || result.observationAtSource || result.capturedAtSource || "unknown";
+    const confidence = deviceDate ? "confirmed" : result.observationConfidence || (["payload_uptime_observed_at", "payload_captured_at"].includes(observationSource) ? "confirmed" : "limited");
+    const timeBasis = deviceDate?.timeBasis || "absolute_time";
+    const observedAtMs = deviceDate?.time ?? new Date(observedAt).getTime();
+    const timeUncertaintyMs = deviceDate ? 1000 : Math.max(0, Number(result.observationUncertaintyMs) || 1000);
+    const uptimeUncertaintySeconds = 1;
+    const bootAtMs = observedAtMs - uptimeSeconds * 1000;
     return {
       eligible: true,
       observation: {
         resultId: result.id,
         deviceId: result.deviceId,
         observedAt,
-        observedAtMs: new Date(observedAt).getTime(),
+        observedAtMs,
         observedAtSource: observationSource,
-        timeUncertaintyMs: Math.max(0, Number(result.observationUncertaintyMs) || 1000),
+        timeBasis,
+        timeUncertaintyMs,
         uptimeSeconds,
         uptimeSource: source,
-        uptimeUncertaintySeconds: 1,
+        uptimeUncertaintySeconds,
+        bootAtMs,
+        bootFromMs: observedAtMs - timeUncertaintyMs - (uptimeSeconds + uptimeUncertaintySeconds) * 1000,
+        bootToMs: observedAtMs + timeUncertaintyMs - uptimeSeconds * 1000,
         confidence,
         rawSha256: result.rawSha256 || null,
-        evidencePaths: source === "uptime_seconds"
-          ? ["$.webBlocks.Device Status.Uptime Seconds"]
-          : ["$.webBlocks.Device Status.Uptime"]
+        evidencePaths: [
+          ...(deviceDate ? ["$.webBlocks.Device Status.Date"] : []),
+          source === "uptime_seconds" ? "$.webBlocks.Device Status.Uptime Seconds" : "$.webBlocks.Device Status.Uptime"
+        ]
       }
     };
   }
 
-  function deriveMinimumReboot(previous, current, device, location) {
-    if (!previous || !current || current.observedAtMs <= previous.observedAtMs) return { status: "unknown", reason: "ambiguous_time" };
-    const previousHigh = previous.observedAtMs + previous.timeUncertaintyMs;
-    const currentLow = current.observedAtMs - current.timeUncertaintyMs;
-    const currentHigh = current.observedAtMs + current.timeUncertaintyMs;
-    if (currentLow <= previousHigh) return { status: "unknown", reason: "overlapping_time" };
-    const bootLow = currentLow - (current.uptimeSeconds + current.uptimeUncertaintySeconds) * 1000;
-    const bootHigh = currentHigh - current.uptimeSeconds * 1000;
-    if (bootLow <= previousHigh) return { status: "not_confirmed" };
-    if (bootHigh > currentHigh) return { status: "unknown", reason: "invalid_boot_interval" };
-    const estimatedAtMs = Math.floor((bootLow + bootHigh) / 2);
-    const event = {
-      id: `${previous.resultId}->${current.resultId}`,
+  function rebootEventFromObservations(observations, device, location) {
+    const ordered = [...observations].sort((left, right) => left.observedAtMs - right.observedAtMs || String(left.resultId).localeCompare(String(right.resultId)));
+    const representative = ordered[ordered.length - 1];
+    const estimatedAtMs = Math.round(ordered.reduce((sum, item) => sum + item.bootAtMs, 0) / ordered.length);
+    return {
+      id: `${device.id}@${Math.round(estimatedAtMs / 1000)}`,
       deviceId: device.id,
       deviceName: device.nameRaw || device.modelRaw || "Устройство без названия",
       category: device.category || "other",
       manufacturer: device.manufacturerRaw || device.manufacturerNormalized || "Не указано",
       model: device.modelRaw || "Не указано",
-      ip: device.ipNormalized || "Не указано",
+      ip: device.ipNormalized || device.ip || "Не указано",
       locationId: location?.id || device.locationId || null,
       locationName: location?.name || "Не указано",
       address: location?.address || "Не указано",
-      previousResultId: previous.resultId,
-      currentResultId: current.resultId,
-      previousObservedAt: previous.observedAt,
-      currentObservedAt: current.observedAt,
-      occurredFrom: new Date(bootLow).toISOString(),
-      occurredTo: new Date(bootHigh).toISOString(),
+      previousResultId: null,
+      currentResultId: representative.resultId,
+      evidenceResultIds: ordered.map((item) => item.resultId),
+      previousObservedAt: null,
+      currentObservedAt: representative.observedAt,
+      occurredFrom: new Date(Math.min(...ordered.map((item) => item.bootFromMs))).toISOString(),
+      occurredTo: new Date(Math.max(...ordered.map((item) => item.bootToMs))).toISOString(),
       estimatedAt: new Date(estimatedAtMs).toISOString(),
+      observedAtSource: representative.observedAtSource,
+      timeBasis: representative.timeBasis,
       minimumCount: 1,
-      uptimeBeforeSeconds: previous.uptimeSeconds,
-      uptimeAfterSeconds: current.uptimeSeconds,
+      uptimeBeforeSeconds: null,
+      uptimeAfterSeconds: representative.uptimeSeconds,
       ruleVersion: REBOOT_RULE_VERSION,
-      confidence: previous.confidence === "confirmed" && current.confidence === "confirmed" ? "confirmed" : "limited",
-      observationSources: [previous.observedAtSource, current.observedAtSource],
-      evidencePaths: [...new Set([...previous.evidencePaths, ...current.evidencePaths])]
+      confidence: ordered.every((item) => item.confidence === "confirmed") ? "confirmed" : "limited",
+      observationSources: [...new Set(ordered.map((item) => item.observedAtSource))],
+      evidencePaths: [...new Set(ordered.flatMap((item) => item.evidencePaths))]
     };
-    return { status: "confirmed", event };
+  }
+
+  function deriveMinimumReboot(previous, current, device, location) {
+    if (!previous || !current || current.observedAtMs <= previous.observedAtMs) return { status: "unknown", reason: "ambiguous_time" };
+    if (Math.abs(current.bootAtMs - previous.bootAtMs) <= REBOOT_BOOT_CLUSTER_TOLERANCE_MS) return { status: "not_confirmed" };
+    return { status: "confirmed", event: rebootEventFromObservations([current], device, location) };
   }
 
   function rebootFilterOptions(events) {
@@ -1971,14 +2005,21 @@
         if (signatures.size > 1) { unknownPairs += 1; exclude("ambiguous_timestamp", group.length); continue; }
         history.push(group[0]);
       }
-      if (history.length > 1) devicesWithComparablePairs += 1;
+      if (history.length) devicesWithComparablePairs += 1;
       const device = devices.get(deviceId);
       const location = locations.get(device.locationId);
-      for (let index = 1; index < history.length; index += 1) {
-        const derived = deriveMinimumReboot(history[index - 1], history[index], device, location);
-        if (derived.status === "confirmed") events.push(derived.event);
-        else if (derived.status === "unknown") { unknownPairs += 1; exclude(derived.reason); }
+      const byBootTime = [...history].sort((left, right) => left.bootAtMs - right.bootAtMs || left.observedAtMs - right.observedAtMs || String(left.resultId).localeCompare(String(right.resultId)));
+      const clusters = [];
+      for (const observation of byBootTime) {
+        const cluster = clusters[clusters.length - 1];
+        if (cluster && Math.abs(observation.bootAtMs - cluster.referenceBootAtMs) <= REBOOT_BOOT_CLUSTER_TOLERANCE_MS) {
+          cluster.observations.push(observation);
+          cluster.referenceBootAtMs = Math.round(cluster.observations.reduce((sum, item) => sum + item.bootAtMs, 0) / cluster.observations.length);
+        } else {
+          clusters.push({ referenceBootAtMs: observation.bootAtMs, observations: [observation] });
+        }
       }
+      clusters.forEach((cluster) => events.push(rebootEventFromObservations(cluster.observations, device, location)));
     }
     events.sort((left, right) => timeValue(right.estimatedAt) - timeValue(left.estimatedAt) || left.id.localeCompare(right.id));
     const coverage = {
@@ -2008,16 +2049,24 @@
     const now = new Date(nowValue || nowIso());
     const nowMs = now.getTime();
     if (!Number.isFinite(nowMs)) return { valid: false, errors: ["Некорректное текущее время"] };
-    let from = null; let to = null;
-    if (period === "today") { const start = new Date(now); start.setHours(0, 0, 0, 0); from = start.getTime(); to = nowMs; }
-    else if (period === "7d" || period === "30d") { from = nowMs - Number.parseInt(period, 10) * 86400000; to = nowMs; }
+    const wallNowMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
+    let from = null; let to = null; let wallFrom = null; let wallTo = null;
+    if (period === "today") {
+      const start = new Date(now); start.setHours(0, 0, 0, 0); from = start.getTime(); to = nowMs;
+      wallFrom = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()); wallTo = wallNowMs;
+    }
+    else if (period === "7d" || period === "30d") {
+      const duration = Number.parseInt(period, 10) * 86400000;
+      from = nowMs - duration; to = nowMs; wallFrom = wallNowMs - duration; wallTo = wallNowMs;
+    }
     else if (period === "custom") {
       const fromDate = filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00`) : null;
       const toDate = filters.dateTo ? new Date(`${filters.dateTo}T23:59:59.999`) : null;
       if (!fromDate || !toDate || !Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime()) || fromDate > toDate) return { valid: false, errors: ["Укажите корректные даты начала и окончания"] };
       from = fromDate.getTime(); to = toDate.getTime();
+      wallFrom = Date.parse(`${filters.dateFrom}T00:00:00.000Z`); wallTo = Date.parse(`${filters.dateTo}T23:59:59.999Z`);
     } else if (period !== "all") return { valid: false, errors: ["Период перезагрузок не поддерживается"] };
-    return { valid: true, errors: [], includes(value) { const time = timeValue(value); return Boolean(time) && (from === null || time >= from) && (to === null || time <= to); } };
+    return { valid: true, errors: [], includes(value, timeBasis) { const time = timeValue(value); const useWall = timeBasis === "device_local_unknown_timezone"; const lower = useWall ? wallFrom : from; const upper = useWall ? wallTo : to; return Boolean(time) && (lower === null || time >= lower) && (upper === null || time <= upper); } };
   }
 
   function aggregateRebootDimension(events, field) {
@@ -2037,7 +2086,7 @@
     const index = buildRebootAnalysisIndex(candidateState || {});
     const period = rebootPeriodScope(filters, settings.now);
     if (!period.valid) return { valid: false, errors: period.errors, events: [], coverage: index.coverage };
-    const match = (event) => period.includes(event.estimatedAt)
+    const match = (event) => period.includes(event.estimatedAt, event.timeBasis)
       && (!filters.category || event.category === filters.category)
       && (!filters.manufacturer || normalizeText(event.manufacturer) === normalizeText(filters.manufacturer))
       && (!filters.model || normalizeText(event.model) === normalizeText(filters.model))
@@ -2048,8 +2097,9 @@
     const timeZone = settings.timeZone;
     const dateMap = new Map(); const hourMap = new Map();
     events.forEach((event) => {
-      const date = rebootLocalPart(event.estimatedAt, "date", timeZone);
-      const hour = rebootLocalPart(event.estimatedAt, "hour", timeZone);
+      const eventTimeZone = event.timeBasis === "device_local_unknown_timezone" ? "UTC" : timeZone;
+      const date = rebootLocalPart(event.estimatedAt, "date", eventTimeZone);
+      const hour = rebootLocalPart(event.estimatedAt, "hour", eventTimeZone);
       dateMap.set(date, (dateMap.get(date) || 0) + 1);
       hourMap.set(hour, (hourMap.get(hour) || 0) + 1);
     });
@@ -2063,7 +2113,7 @@
     let emptyState = null;
     if (!index.coverage.currentDevices) emptyState = "no_sr";
     else if (!index.coverage.pollingResults) emptyState = "no_polling";
-    else if (!index.coverage.devicesWithComparablePairs) emptyState = "insufficient";
+    else if (!index.coverage.eligibleObservations) emptyState = "insufficient";
     else if (!index.events.length) emptyState = "no_events";
     else if (!events.length) emptyState = "filtered_empty";
     return {
@@ -4846,7 +4896,7 @@
       <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${locations.map((item) => `<option value="${escapeHtml(item.id)}"${filters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
       <div class="field"><label>Адрес</label><select name="address">${filterOptions(addresses, filters.address)}</select></div>
       <div class="button-row"><button class="button primary" type="submit">Применить фильтры</button></div>
-    </form>${analytics?.coverage ? `<p class="muted reboot-coverage">Пригодных наблюдений: ${analytics.coverage.eligibleObservations}; устройств с сопоставимыми парами: ${analytics.coverage.devicesWithComparablePairs}; исключено: ${analytics.coverage.excludedResults}.</p>` : ""}</section>`;
+    </form>${analytics?.coverage ? `<p class="muted reboot-coverage">Пригодных файлов: ${analytics.coverage.eligibleObservations}; устройств с рассчитанным временем запуска: ${analytics.coverage.devicesWithComparablePairs}; исключено: ${analytics.coverage.excludedResults}.</p>` : ""}</section>`;
   }
 
   function renderRebootChart(title, rows, options = {}) {
@@ -4857,22 +4907,30 @@
   }
 
   function renderRebootLeader(title, leader) {
-    return `<article class="card reboot-leader"><span>${escapeHtml(title)}</span><strong>${leader.count}</strong><p>${leader.labels.length ? leader.labels.map(escapeHtml).join(" · ") : "Нет подтверждённых событий"}</p></article>`;
+    return `<article class="card reboot-leader"><span>${escapeHtml(title)}</span><strong>${leader.count}</strong><p>${leader.labels.length ? leader.labels.map(escapeHtml).join(" · ") : "Нет рассчитанных событий"}</p></article>`;
   }
 
   function rebootEmptyMessage(kind) {
     return {
       no_sr: "Сначала загрузите актуальную выгрузку SR.",
       no_polling: "Результаты опросов пока не загружены.",
-      insufficient: "Для подтверждения перезагрузки нужны минимум два пригодных наблюдения одного устройства.",
-      no_events: "Пригодные пары проанализированы, подтверждённых перезагрузок не выявлено.",
-      filtered_empty: "Подтверждённые события есть, но не входят в выбранные фильтры."
+      insufficient: "В файлах нет одновременно поддерживаемых Device Status.Date и Device Status.Uptime.",
+      no_events: "Пригодные файлы проанализированы, расчётных перезагрузок не выявлено.",
+      filtered_empty: "Рассчитанные события есть, но не входят в выбранные фильтры."
     }[kind] || "";
+  }
+
+  function formatRebootTimestamp(value, event) {
+    const date = new Date(value || 0);
+    if (!Number.isFinite(date.getTime())) return "Данные отсутствуют";
+    if (event?.timeBasis !== "device_local_unknown_timezone") return formatDateTime(value);
+    const pad = (part) => String(part).padStart(2, "0");
+    return `${pad(date.getUTCDate())}.${pad(date.getUTCMonth() + 1)}.${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
   }
 
   function renderReboots() {
     const analytics = getRebootAnalytics(state, ui.rebootFilters);
-    const header = `<header class="page-header reboot-header"><div><p class="eyebrow">Эксплуатационная аналитика</p><h1>Перезагрузки устройств</h1><p class="page-subtitle">Минимум подтверждённых перезагрузок по соседним результатам uptime. Несколько запусков между опросами учитываются как одно доказанное событие.</p></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
+    const header = `<header class="page-header reboot-header"><div><p class="eyebrow">Эксплуатационная аналитика</p><h1>Перезагрузки устройств</h1><p class="page-subtitle">Для каждого файла Extron время перезагрузки рассчитывается как Device Status.Date минус Device Status.Uptime. Повторные файлы с тем же временем запуска объединяются.</p></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
     const filters = renderRebootFilters(ui.rebootFilters, analytics);
     if (!analytics.valid) return `${header}${filters}<div class="error-panel section-gap" role="alert">${escapeHtml(analytics.errors.join("; "))}</div>`;
     const empty = analytics.emptyState ? `<div class="${analytics.emptyState === "no_events" ? "success" : "info"}-panel section-gap"><strong>${escapeHtml(rebootEmptyMessage(analytics.emptyState))}</strong></div>` : "";
@@ -4880,10 +4938,10 @@
     const displayedEvents = analytics.events;
     return `${header}${filters}${empty}
       <section class="dashboard-kpi-grid reboot-kpi-grid section-gap">
-        ${dashboardRouteKpi("Минимум подтверждённых перезагрузок", analytics.summary.minimumReboots, "Интервалы с доказанным запуском после прошлого наблюдения")}
+        ${dashboardRouteKpi("Рассчитанные перезагрузки", analytics.summary.minimumReboots, "Уникальные времена запуска по Date − Uptime")}
         ${dashboardRouteKpi("Затронутые устройства", analytics.summary.affectedDevices, "По текущей SR")}
         ${dashboardRouteKpi("Затронутые локации", analytics.summary.affectedLocations, "Локация и адрес по актуальной SR")}
-        ${dashboardRouteKpi("Сопоставимые истории", analytics.summary.comparableDevices, "Устройства с двумя и более пригодными наблюдениями")}
+        ${dashboardRouteKpi("Устройства с расчётом", analytics.summary.comparableDevices, "Имеют минимум один пригодный файл Extron")}
       </section>
       <section class="reboot-leader-grid section-gap">${renderRebootLeader("Максимум за дату", leaders.dates)}${renderRebootLeader("Максимум за час", leaders.hours)}${renderRebootLeader("Чаще всего: устройства", leaders.devices)}${renderRebootLeader("Чаще всего: локации", leaders.locations)}${renderRebootLeader("Чаще всего: адреса", leaders.addresses)}</section>
       <section class="reboot-chart-grid section-gap">
@@ -4894,8 +4952,8 @@
         ${renderRebootChart("Адреса", analytics.byAddress, { limit: 15 })}
       </section>
       <section class="card section-gap reboot-events"><div class="section-heading"><div><p class="eyebrow">Доказательства</p><h2>Выявленные события</h2></div><span class="badge info">${analytics.events.length}</span></div>
-        <p class="muted">Время является оценённым интервалом последнего запуска. IP относится к точно сопоставленному устройству; локация и адрес показаны по актуальной SR.</p>
-        ${displayedEvents.length ? `<div class="table-wrap"><table><thead><tr><th>Интервал перезагрузки</th><th>Устройство</th><th>IP</th><th>Локация и адрес</th><th>Пара наблюдений</th><th>Достоверность</th></tr></thead><tbody>${displayedEvents.map((event) => `<tr><td><strong>${escapeHtml(formatDateTime(event.occurredFrom))}</strong><br><small>— ${escapeHtml(formatDateTime(event.occurredTo))}</small></td><td><strong>${escapeHtml(event.deviceName)}</strong><br><small>${escapeHtml(formatCategoryLabel(event.category))} · ${escapeHtml(event.manufacturer)} · ${escapeHtml(event.model)}</small></td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}<br><small>${escapeHtml(event.address)}</small></td><td><small>${escapeHtml(formatDateTime(event.previousObservedAt))}<br>→ ${escapeHtml(formatDateTime(event.currentObservedAt))}</small></td><td><span class="badge ${event.confidence === "confirmed" ? "success" : "warning"}">${event.confidence === "confirmed" ? "Подтверждено" : "Ограниченный источник времени"}</span><br><small>${escapeHtml(event.ruleVersion)}</small></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Таблица появится после выявления подтверждённых событий.</p>`}
+        <p class="muted">При недоступном Time Zone дата и время показаны по локальным часам устройства. IP относится к точно сопоставленному устройству; локация и адрес показаны по актуальной SR.</p>
+        ${displayedEvents.length ? `<div class="table-wrap"><table><thead><tr><th>Расчётное время перезагрузки</th><th>Устройство</th><th>IP</th><th>Локация и адрес</th><th>Доказательство</th><th>Правило</th></tr></thead><tbody>${displayedEvents.map((event) => `<tr><td><strong>${escapeHtml(formatRebootTimestamp(event.estimatedAt, event))}</strong><br><small>${event.timeBasis === "device_local_unknown_timezone" ? "Локальное время устройства; часовой пояс не указан" : `Допуск: ${escapeHtml(formatRebootTimestamp(event.occurredFrom, event))} — ${escapeHtml(formatRebootTimestamp(event.occurredTo, event))}`}</small></td><td><strong>${escapeHtml(event.deviceName)}</strong><br><small>${escapeHtml(formatCategoryLabel(event.category))} · ${escapeHtml(event.manufacturer)} · ${escapeHtml(event.model)}</small></td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}<br><small>${escapeHtml(event.address)}</small></td><td><small>Файлов: ${event.evidenceResultIds?.length || 1}<br>Дата опроса устройства: ${escapeHtml(formatRebootTimestamp(event.currentObservedAt, event))}</small></td><td><span class="badge ${event.confidence === "confirmed" ? "success" : "warning"}">${event.confidence === "confirmed" ? "Date − Uptime" : "Резервный источник времени"}</span><br><small>${escapeHtml(event.ruleVersion)}</small></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Таблица появится после расчёта событий.</p>`}
       </section>`;
   }
 

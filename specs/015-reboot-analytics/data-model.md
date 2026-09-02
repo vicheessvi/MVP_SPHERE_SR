@@ -3,8 +3,9 @@
 ## RebootObservation
 
 - `resultId`, `deviceId` — ссылки на результат и точное SR-устройство.
-- `observedAt`, `observedAtSource` (`payload_uptime_observed_at`, `payload_captured_at` или ограниченный legacy source), `timeUncertaintyMs`.
+- `observedAt`, `observedAtSource` (`device_status_date` основной; payload/file fallback), `timeBasis`, `timeUncertaintyMs`.
 - `uptimeSeconds`, `uptimeSource`, `uptimeUncertaintySeconds`.
+- `bootAtMs`, `bootFromMs`, `bootToMs` — результат `Date − Uptime`.
 - `evidencePaths`, `confidence`.
 
 Невалидный результат имеет reason: `unmatched`, `missing_time`, `missing_uptime`, `conflicting_uptime`, `ambiguous_timestamp` или `historical_device`.
@@ -14,10 +15,10 @@
 - `id`: детерминированная пара result ids.
 - `deviceId`, `deviceName`, `category`, `manufacturer`, `model`, `ip`.
 - `locationId`, `locationName`, `address` — текущая SR.
-- `previousResultId`, `currentResultId`, `previousObservedAt`, `currentObservedAt`.
+- `evidenceResultIds`, `currentResultId`, `currentObservedAt`.
 - `occurredFrom`, `occurredTo`, `estimatedAt` (midpoint только для сортировки/графика).
 - `minimumCount: 1`, `uptimeBeforeSeconds`, `uptimeAfterSeconds`.
-- `ruleVersion: reboot-min-v1`, `confidence`, `observationSources`, `evidencePaths`.
+- `ruleVersion: extron-reboot-v2`, `confidence`, `timeBasis`, `observationSources`, `evidencePaths`.
 
 ## RebootCoverage
 
