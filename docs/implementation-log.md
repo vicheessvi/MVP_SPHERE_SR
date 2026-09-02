@@ -826,3 +826,13 @@ Commit, push и deploy не выполнялись.
 На Python перенесены bounded XLSX reader, SHA-256 credential boundary, общий JSON-каталог устройств, exact-IP sequential polling, Extron HTTPS dynamic-resource adapter, cancellation, progress и pending-result ACK. `/api/storage/*`, DPAPI vault и старые Node/PowerShell production launch/runtime/CLI удалены. State, jobs и secrets остаются только в памяти; готовые redacted JSON пишутся браузером только в выбранную папку.
 
 Справочник, README, Architecture, Constitution 3.2.0, ADR-0014, development workflow и CI синхронизированы. До удаления legacy runtime подтверждены 28/28 Python contract/security tests и 136/136 frontend regression; старый Node suite имел только исторический DPAPI failure среды и больше не является acceptance. После удаления итоговая матрица — 30/30 Python и 136/136 frontend, включая очистку credentials при подготовительных ошибках, 100 последовательных ACK, три пути (обычный, с пробелами и с кириллицей), secret/artifact/IP scan и `git diff --check`. Удалён старый UI autofill `admin/admin`, совпадавший с ранее сообщёнными реальными credentials; локальная роль теперь начинает сеанс без фиктивного пароля, а device credentials принимаются только отдельным XLSX. Commit и push не выполнялись.
+
+## 2026-09-02 — Feature 015: модуль «Перезагрузки устройств»
+
+Добавлен верхнеуровневый route сразу после «Главного экрана» и до «Оборудования». По актуальной SR и полной истории точно сопоставленных JSON модуль строит минимальное подтверждённое количество перезагрузок, затронутые устройства и локации, максимумы по датам/часам и рейтинги устройств, локаций и адресов. Общие фильтры применяются к одному набору событий; таблица и доступные HTML/CSS-графики показывают точные значения без внешних библиотек.
+
+Правило `reboot-min-v1` принимает числовой `Uptime Seconds` либо строгий legacy `Uptime` формата `[Nd ]Hh Mm Ss`, вычисляет интервал последнего запуска и создаёт событие только когда он целиком позже предыдущего наблюдения. Одна пара доказывает минимум одну, а не точное число нескольких перезагрузок. Противоречивые uptime, неоднозначные timestamps, несопоставленные и неполные результаты исключаются. Новые автоматические JSON получают `uptimeObservedAt` непосредственно после чтения uptime; top-level `capturedAt` и legacy timestamp файла остаются раздельными fallback provenance, а ограниченный источник видимо маркируется. Локация и адрес подписаны как данные актуальной SR.
+
+Производные события не сохраняются в state и не меняют raw SR/JSON. Справочник и Dashboard синхронизированы через продуктовый каталог. Решение описано в ADR-0015 и Full SpecKit feature `015-reboot-analytics`.
+
+Commit и push не выполнялись.

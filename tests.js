@@ -1861,9 +1861,131 @@
   test("Dashboard blocked analytics не подменяются нулями", () => {
     const blocked = api.getDashboardSummary(dashboardFixture().state, {}).blockedAnalytics;
     assertEqual(blocked.authorization, null);
-    assertEqual(blocked.reboots, null);
+    assertEqual(blocked.reboots, "available");
     assertEqual(blocked.gcPlus, null);
     assertEqual(blocked.freshnessThreshold, null);
+  });
+
+  function rebootResult(id, deviceId, observedAt, uptimeValue, overrides = {}) {
+    return {
+      id,
+      deviceId,
+      parseStatus: "parsed",
+      matchStatus: "matched",
+      capturedAt: observedAt,
+      capturedAtSource: "file_last_modified",
+      observationAt: observedAt,
+      observationAtSource: "payload_captured_at",
+      normalizedData: { webBlocks: { "Device Status": { "Uptime Seconds": uptimeValue } } },
+      ...overrides
+    };
+  }
+
+  function rebootFixture(results) {
+    const state = api.createDemoState();
+    state.locations.push({ id: "reboot-location", name: "Локация А", address: "Адрес А", inCurrentSr: true, vip: false });
+    state.inventoryDevices.push({
+      id: "reboot-device", name: "Контроллер А", category: "controller", manufacturerRaw: "Производитель А",
+      manufacturerNormalized: "производитель а", modelRaw: "Модель А", ip: "198.51.100.10", locationId: "reboot-location", inCurrentSr: true
+    });
+    state.pollingResults.push(...results);
+    return state;
+  }
+
+  test("Модуль перезагрузок расположен между Главным экраном и Оборудованием", () => {
+    const topRoutes = api.PRODUCT_CATALOG.buildNavigation(api.MODULE_CATALOG).map((item) => item.route);
+    assertEqual(topRoutes.slice(0, 3).join(","), "dashboard,reboots,equipment");
+  });
+
+  test("Uptime извлекается только из поддерживаемого числа или строгой строки", () => {
+    const numeric = api.extractRebootObservation(rebootResult("r1", "reboot-device", "2026-08-10T10:00:00.000Z", 61));
+    assert(numeric.eligible);
+    assertEqual(numeric.observation.uptimeSeconds, 61);
+    const formatted = api.extractRebootObservation(rebootResult("r2", "reboot-device", "2026-08-10T11:00:00.000Z", undefined, { normalizedData: { webBlocks: { "Device Status": { Uptime: "1d 2h 3m 4s" } } } }));
+    assert(formatted.eligible);
+    assertEqual(formatted.observation.uptimeSeconds, 93784);
+    const conflict = api.extractRebootObservation(rebootResult("r3", "reboot-device", "2026-08-10T12:00:00.000Z", 10, { normalizedData: { webBlocks: { "Device Status": { "Uptime Seconds": 10, Uptime: "0h 0m 11s" } } } }));
+    assertEqual(conflict.reason, "conflicting_uptime");
+  });
+
+  test("reboot-min-v1 отличает непрерывный uptime от подтверждённой перезагрузки", () => {
+    const continuous = rebootFixture([
+      rebootResult("r1", "reboot-device", "2026-08-10T10:00:00.000Z", 3600),
+      rebootResult("r2", "reboot-device", "2026-08-10T11:00:00.000Z", 7200)
+    ]);
+    assertEqual(api.getRebootAnalytics(continuous, { period: "all" }).events.length, 0);
+    const rebooted = rebootFixture([
+      rebootResult("r1", "reboot-device", "2026-08-10T10:00:00.000Z", 3600),
+      rebootResult("r2", "reboot-device", "2026-08-10T12:00:00.000Z", 600)
+    ]);
+    const analytics = api.getRebootAnalytics(rebooted, { period: "all" });
+    assertEqual(analytics.events.length, 1);
+    assertEqual(analytics.summary.minimumReboots, 1);
+    assertEqual(analytics.events[0].minimumCount, 1);
+    assertEqual(analytics.events[0].ruleVersion, "reboot-min-v1");
+    const longGap = rebootFixture([
+      rebootResult("r1", "reboot-device", "2026-08-01T10:00:00.000Z", 60),
+      rebootResult("r2", "reboot-device", "2026-08-10T10:00:00.000Z", 86400)
+    ]);
+    assertEqual(api.getRebootAnalytics(longGap, { period: "all" }).events.length, 1, "Reboot после первого опроса определяется даже при большем втором uptime");
+  });
+
+  test("Legacy файл использует timestamp файла с ограниченной достоверностью", () => {
+    const timestamp = api.resolvePollingResultTimestamp({ lastModified: Date.UTC(2026, 7, 10, 10, 0, 0) });
+    const observation = api.resolvePollingObservationTimestamp({}, timestamp);
+    assertEqual(observation.source, "file_last_modified");
+    assertEqual(observation.confidence, "limited");
+    const extracted = api.extractRebootObservation(rebootResult("legacy", "reboot-device", observation.observationAt, undefined, {
+      observationAtSource: observation.source,
+      observationConfidence: observation.confidence,
+      normalizedData: { webBlocks: { "Device Status": { Uptime: "2d 3h 4m 5s" } } }
+    }));
+    assert(extracted.eligible);
+    assertEqual(extracted.observation.confidence, "limited");
+    const automatic = api.resolvePollingObservationTimestamp({ uptimeObservedAt: "2026-08-10T10:00:05.000Z", capturedAt: "2026-08-10T10:00:00.000Z" }, timestamp);
+    assertEqual(automatic.observationAt, "2026-08-10T10:00:05.000Z");
+    assertEqual(automatic.source, "payload_uptime_observed_at");
+    assertEqual(automatic.confidence, "confirmed");
+  });
+
+  test("Поздние данные и одинаковые timestamps пересобирают историю без ложных дублей", () => {
+    const state = rebootFixture([
+      rebootResult("late", "reboot-device", "2026-08-10T12:00:00.000Z", 600),
+      rebootResult("first", "reboot-device", "2026-08-10T10:00:00.000Z", 3600),
+      rebootResult("same-time", "reboot-device", "2026-08-10T12:00:00.000Z", 700)
+    ]);
+    const analytics = api.getRebootAnalytics(state, { period: "all" });
+    assertEqual(analytics.events.length, 0);
+    assert(analytics.coverage.unknownPairs >= 1);
+  });
+
+  test("Фильтры перезагрузок используют единый набор для итогов и распределений", () => {
+    const state = rebootFixture([
+      rebootResult("r1", "reboot-device", "2026-08-10T10:00:00.000Z", 3600),
+      rebootResult("r2", "reboot-device", "2026-08-10T12:00:00.000Z", 600)
+    ]);
+    const included = api.getRebootAnalytics(state, { period: "all", address: "Адрес А" }, { timeZone: "UTC" });
+    assertEqual(included.summary.minimumReboots, included.events.length);
+    assertEqual(included.byDate.reduce((sum, item) => sum + item.count, 0), included.events.length);
+    assertEqual(included.byHour.reduce((sum, item) => sum + item.count, 0), included.events.length);
+    assertEqual(api.getRebootAnalytics(state, { period: "all", address: "Другой адрес" }).events.length, 0);
+  });
+
+  test("Аналитика перезагрузок обрабатывает 5000 устройств и 25000 результатов быстрее 2 секунд", () => {
+    const state = api.createDemoState();
+    state.locations.push({ id: "reboot-large-location", name: "Synthetic", address: "Synthetic", inCurrentSr: true });
+    for (let deviceIndex = 0; deviceIndex < 5000; deviceIndex += 1) {
+      const deviceId = `reboot-large-${deviceIndex}`;
+      state.inventoryDevices.push({ id: deviceId, nameRaw: `Device ${deviceIndex}`, category: "controller", manufacturerRaw: "Synthetic", modelRaw: "Synthetic", ipNormalized: `198.51.${Math.floor(deviceIndex / 250) % 250}.${deviceIndex % 250 + 1}`, locationId: "reboot-large-location", inCurrentSr: true });
+      for (let resultIndex = 0; resultIndex < 5; resultIndex += 1) {
+        state.pollingResults.push(rebootResult(`${deviceId}-${resultIndex}`, deviceId, new Date(Date.UTC(2026, 7, 1, resultIndex, 0, 0)).toISOString(), 3600 + resultIndex * 3600));
+      }
+    }
+    const started = Date.now();
+    const analytics = api.getRebootAnalytics(state, { period: "all" }, { timeZone: "UTC" });
+    const elapsed = Date.now() - started;
+    assertEqual(analytics.events.length, 0);
+    assert(elapsed < 2000, `Расчёт занял ${elapsed} мс`);
   });
 
   test("Inventory drill-down filters поддерживают ping/change/support/model/location", () => {
@@ -1898,7 +2020,7 @@
     assert(entries.length >= 35, `Ожидалось не менее 35 карточек, получено ${entries.length}`);
     assertEqual(entries.find((entry) => entry.id === "term-sr")?.status, "needs_clarification");
     assertEqual(entries.find((entry) => entry.id === "abbr-gcplus")?.status, "needs_clarification");
-    assertEqual(entries.find((entry) => entry.id === "logic-reboots")?.status, "in_development");
+    assertEqual(entries.find((entry) => entry.id === "logic-reboots")?.status, undefined);
   });
 
   test("Поиск Справочника находит термины, сокращения, определения и синонимы", () => {

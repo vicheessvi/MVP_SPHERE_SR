@@ -340,6 +340,7 @@ def poll_extron_device(device: dict[str, Any], credentials: Any, options: dict[s
         return {**base, "failedStage": "bundle", "safeError": _transport_code(error)}
     values: dict[str, Any] = {}
     resource_errors: dict[str, str] = {}
+    uptime_observed_at: str | None = None
     for key, uri in discovery["resources"].items():
         try:
             response = request({"ip": ip, "method": "GET", "path": f"/api/swis/resource{uri}", "headers": {"Cookie": cookie}, "reject_unauthorized": reject_unauthorized, "timeout_ms": timeout_ms, "max_bytes": 8 * 1024 * 1024})
@@ -357,6 +358,8 @@ def poll_extron_device(device: dict[str, Any], credentials: Any, options: dict[s
             if isinstance(value, dict) and isinstance(value.get("error"), str):
                 resource_errors[key] = value["error"]
             values[key] = value
+            if key == "uptime":
+                uptime_observed_at = _utc_iso(settings.get("now"))
         except BaseException as error:
             if isinstance(error, (KeyboardInterrupt, SystemExit)):
                 raise
@@ -364,4 +367,4 @@ def poll_extron_device(device: dict[str, Any], credentials: Any, options: dict[s
     evidence = sum(values.get(key) is not None for key in ("modelName", "serialNumber", "fwVersion", "macAddress"))
     if evidence == 0:
         return {**base, "failedStage": "resources", "safeError": "resource_schema_unconfirmed", "webInterface": {"ok": True, "evidence": "Extron web UI markers and dynamic resources found", "markers": discovery["markers"]}, "diagnostics": {"discoveredResourceKeys": list(discovery["resources"]), "resourceErrors": resource_errors}}
-    return {**base, "ok": True, "webInterface": {"ok": True, "evidence": "Extron web UI markers and dynamic resources found", "markers": discovery["markers"], "insecureTls": not reject_unauthorized}, "webBlocks": build_web_blocks(values, ip), "readMode": "targeted", "diagnostics": {"discoveredResourceKeys": list(discovery["resources"]), "resourceErrors": resource_errors}}
+    return {**base, "ok": True, "uptimeObservedAt": uptime_observed_at, "webInterface": {"ok": True, "evidence": "Extron web UI markers and dynamic resources found", "markers": discovery["markers"], "insecureTls": not reject_unauthorized}, "webBlocks": build_web_blocks(values, ip), "readMode": "targeted", "diagnostics": {"discoveredResourceKeys": list(discovery["resources"]), "resourceErrors": resource_errors}}

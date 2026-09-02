@@ -135,7 +135,7 @@
         { id: "logic-no-network", title: "Как определяется отсутствие ответа", summary: "Перед получением данных инструмент может проверить сетевую доступность; отсутствие ответа отмечается статусом «Нет ответа по сети».", keywords: ["failedStage", "Ping.ok", "ping"] },
         { id: "logic-auth", title: "Как определяется ошибка авторизации", summary: "Для любого устройства Extron подтверждённым признаком является точное значение error = No credentials were accepted.", details: "Категория устройства Extron не ограничивает это правило. Другие значения error, ошибки чтения, обработки и сетевой доступности не называются ошибкой авторизации. Статус применяется после однозначной связи файла с устройством Extron из SR.", keywords: ["authorization", "no credentials were accepted", "extron"] },
         { id: "logic-support", title: "Поддержка автоматического опроса", summary: "Наличие устройства в SR не означает наличие подтверждённого механизма его автоматического опроса.", keywords: ["adapter", "supported", "unsupported"] },
-        { id: "logic-reboots", title: "Анализ перезагрузок", summary: "Функция находится в разработке.", details: "Показатели появятся только после подтверждения достоверного технического правила определения перезагрузки.", keywords: ["reboot", "перезагрузка"], status: "in_development" }
+        { id: "logic-reboots", title: "Правило выявления перезагрузки", summary: "Показывается минимальное подтверждённое количество перезагрузок между соседними пригодными опросами.", details: "Правило reboot-min-v1 вычисляет интервал последнего запуска по времени наблюдения и uptime. Событие создаётся только если этот интервал целиком позже предыдущего наблюдения. Несколько запусков между двумя опросами неразличимы, поэтому одна пара даёт нижнюю границу — минимум одну перезагрузку. Неоднозначные данные не увеличивают счётчик.", keywords: ["reboot", "перезагрузка", "uptime", "минимум"] }
       ]
     },
     {
@@ -1137,6 +1137,22 @@
     return { capturedAt: null, source: "unavailable", sourceLastModified: null };
   }
 
+  function resolvePollingObservationTimestamp(payload, resultTimestamp) {
+    const uptimeObservedAt = normalizeDate(getCaseInsensitive(payload, "uptimeObservedAt"));
+    if (uptimeObservedAt) {
+      return { observationAt: uptimeObservedAt, source: "payload_uptime_observed_at", confidence: "confirmed", uncertaintyMs: 1000 };
+    }
+    const payloadCapturedAt = normalizeDate(getCaseInsensitive(payload, "capturedAt"));
+    if (payloadCapturedAt) {
+      return { observationAt: payloadCapturedAt, source: "payload_captured_at", confidence: "confirmed", uncertaintyMs: 1000 };
+    }
+    const fallback = normalizeDate(resultTimestamp?.capturedAt);
+    if (fallback) {
+      return { observationAt: fallback, source: resultTimestamp.source || "file_last_modified", confidence: "limited", uncertaintyMs: 1000 };
+    }
+    return { observationAt: null, source: "unavailable", confidence: "unknown", uncertaintyMs: null };
+  }
+
   function resolvePollingCapability(device) {
     const category = normalizeText(device && device.category);
     const manufacturerNormalized = normalizeManufacturer(device && (device.manufacturerNormalized || device.manufacturerRaw));
@@ -1821,6 +1837,243 @@
     return [...map].map(([label, count]) => ({ label, count })).sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, "ru")).slice(0, limit);
   }
 
+  const REBOOT_RULE_VERSION = "reboot-min-v1";
+
+  function rebootDeviceStatusBlock(normalizedData) {
+    const webBlocks = getCaseInsensitive(normalizedData, "webBlocks");
+    return getCaseInsensitive(webBlocks, "Device Status") || null;
+  }
+
+  function parseFormattedUptime(value) {
+    const match = String(value ?? "").match(/^(?:(\d+)d )?(\d+)h (\d+)m (\d+)s$/);
+    if (!match) return null;
+    const days = Number(match[1] || 0);
+    const hours = Number(match[2]);
+    const minutes = Number(match[3]);
+    const seconds = Number(match[4]);
+    if (![days, hours, minutes, seconds].every(Number.isSafeInteger) || hours > 23 || minutes > 59 || seconds > 59) return null;
+    const total = days * 86400 + hours * 3600 + minutes * 60 + seconds;
+    return Number.isSafeInteger(total) ? total : null;
+  }
+
+  function extractRebootObservation(result) {
+    if (!result || result.parseStatus !== "parsed") return { eligible: false, reason: "unparsed" };
+    if (!result.deviceId || ["ambiguous", "category_conflict", "ip_conflict", "historical_only"].includes(result.matchStatus)) return { eligible: false, reason: "unmatched" };
+    const observedAt = normalizeDate(result.observationAt || result.capturedAt);
+    if (!observedAt) return { eligible: false, reason: "missing_time" };
+    const status = rebootDeviceStatusBlock(result.normalizedData);
+    if (!status) return { eligible: false, reason: "missing_uptime" };
+    const numericRaw = getCaseInsensitive(status, "Uptime Seconds");
+    const numeric = typeof numericRaw === "number" && Number.isSafeInteger(numericRaw) && numericRaw >= 0 ? numericRaw : null;
+    const formattedRaw = getCaseInsensitive(status, "Uptime");
+    const formatted = formattedRaw === undefined || formattedRaw === null || formattedRaw === "" ? null : parseFormattedUptime(formattedRaw);
+    if (numericRaw !== undefined && numericRaw !== null && numeric === null) return { eligible: false, reason: "invalid_uptime" };
+    if (formattedRaw !== undefined && formattedRaw !== null && formattedRaw !== "" && formatted === null) return { eligible: false, reason: "invalid_uptime" };
+    if (numeric !== null && formatted !== null && numeric !== formatted) return { eligible: false, reason: "conflicting_uptime" };
+    const uptimeSeconds = numeric ?? formatted;
+    if (uptimeSeconds === null) return { eligible: false, reason: "missing_uptime" };
+    const source = numeric !== null ? "uptime_seconds" : "uptime_formatted";
+    const observationSource = result.observationAtSource || result.capturedAtSource || "unknown";
+    const confidence = result.observationConfidence || (observationSource === "payload_captured_at" ? "confirmed" : "limited");
+    return {
+      eligible: true,
+      observation: {
+        resultId: result.id,
+        deviceId: result.deviceId,
+        observedAt,
+        observedAtMs: new Date(observedAt).getTime(),
+        observedAtSource: observationSource,
+        timeUncertaintyMs: Math.max(0, Number(result.observationUncertaintyMs) || 1000),
+        uptimeSeconds,
+        uptimeSource: source,
+        uptimeUncertaintySeconds: 1,
+        confidence,
+        rawSha256: result.rawSha256 || null,
+        evidencePaths: source === "uptime_seconds"
+          ? ["$.webBlocks.Device Status.Uptime Seconds"]
+          : ["$.webBlocks.Device Status.Uptime"]
+      }
+    };
+  }
+
+  function deriveMinimumReboot(previous, current, device, location) {
+    if (!previous || !current || current.observedAtMs <= previous.observedAtMs) return { status: "unknown", reason: "ambiguous_time" };
+    const previousHigh = previous.observedAtMs + previous.timeUncertaintyMs;
+    const currentLow = current.observedAtMs - current.timeUncertaintyMs;
+    const currentHigh = current.observedAtMs + current.timeUncertaintyMs;
+    if (currentLow <= previousHigh) return { status: "unknown", reason: "overlapping_time" };
+    const bootLow = currentLow - (current.uptimeSeconds + current.uptimeUncertaintySeconds) * 1000;
+    const bootHigh = currentHigh - current.uptimeSeconds * 1000;
+    if (bootLow <= previousHigh) return { status: "not_confirmed" };
+    if (bootHigh > currentHigh) return { status: "unknown", reason: "invalid_boot_interval" };
+    const estimatedAtMs = Math.floor((bootLow + bootHigh) / 2);
+    const event = {
+      id: `${previous.resultId}->${current.resultId}`,
+      deviceId: device.id,
+      deviceName: device.nameRaw || device.modelRaw || "Устройство без названия",
+      category: device.category || "other",
+      manufacturer: device.manufacturerRaw || device.manufacturerNormalized || "Не указано",
+      model: device.modelRaw || "Не указано",
+      ip: device.ipNormalized || "Не указано",
+      locationId: location?.id || device.locationId || null,
+      locationName: location?.name || "Не указано",
+      address: location?.address || "Не указано",
+      previousResultId: previous.resultId,
+      currentResultId: current.resultId,
+      previousObservedAt: previous.observedAt,
+      currentObservedAt: current.observedAt,
+      occurredFrom: new Date(bootLow).toISOString(),
+      occurredTo: new Date(bootHigh).toISOString(),
+      estimatedAt: new Date(estimatedAtMs).toISOString(),
+      minimumCount: 1,
+      uptimeBeforeSeconds: previous.uptimeSeconds,
+      uptimeAfterSeconds: current.uptimeSeconds,
+      ruleVersion: REBOOT_RULE_VERSION,
+      confidence: previous.confidence === "confirmed" && current.confidence === "confirmed" ? "confirmed" : "limited",
+      observationSources: [previous.observedAtSource, current.observedAtSource],
+      evidencePaths: [...new Set([...previous.evidencePaths, ...current.evidencePaths])]
+    };
+    return { status: "confirmed", event };
+  }
+
+  function rebootFilterOptions(events) {
+    const values = (field) => [...new Set(events.map((item) => normalizeDisplay(item[field])).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ru"));
+    return { categories: values("category"), manufacturers: values("manufacturer"), models: values("model"), locations: values("locationName"), addresses: values("address") };
+  }
+
+  function buildRebootAnalysisIndex(candidateState) {
+    const devices = new Map((candidateState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
+    const locations = new Map((candidateState?.locations || []).map((item) => [item.id, item]));
+    const histories = new Map();
+    const excludedByReason = {};
+    let eligibleObservations = 0;
+    const exclude = (reason, count = 1) => { excludedByReason[reason] = (excludedByReason[reason] || 0) + count; };
+    for (const result of candidateState?.pollingResults || []) {
+      if (!devices.has(result.deviceId)) { exclude(result.deviceId ? "historical_device" : "unmatched"); continue; }
+      const extracted = extractRebootObservation(result);
+      if (!extracted.eligible) { exclude(extracted.reason); continue; }
+      eligibleObservations += 1;
+      const list = histories.get(result.deviceId) || [];
+      list.push(extracted.observation);
+      histories.set(result.deviceId, list);
+    }
+    const events = [];
+    let unknownPairs = 0;
+    let devicesWithComparablePairs = 0;
+    for (const [deviceId, rawHistory] of histories) {
+      rawHistory.sort((left, right) => left.observedAtMs - right.observedAtMs || String(left.resultId).localeCompare(String(right.resultId)));
+      const history = [];
+      for (let index = 0; index < rawHistory.length;) {
+        const timestamp = rawHistory[index].observedAtMs;
+        const group = [];
+        while (index < rawHistory.length && rawHistory[index].observedAtMs === timestamp) group.push(rawHistory[index++]);
+        const signatures = new Set(group.map((item) => `${item.uptimeSeconds}|${item.rawSha256 || ""}`));
+        if (signatures.size > 1) { unknownPairs += 1; exclude("ambiguous_timestamp", group.length); continue; }
+        history.push(group[0]);
+      }
+      if (history.length > 1) devicesWithComparablePairs += 1;
+      const device = devices.get(deviceId);
+      const location = locations.get(device.locationId);
+      for (let index = 1; index < history.length; index += 1) {
+        const derived = deriveMinimumReboot(history[index - 1], history[index], device, location);
+        if (derived.status === "confirmed") events.push(derived.event);
+        else if (derived.status === "unknown") { unknownPairs += 1; exclude(derived.reason); }
+      }
+    }
+    events.sort((left, right) => timeValue(right.estimatedAt) - timeValue(left.estimatedAt) || left.id.localeCompare(right.id));
+    const coverage = {
+      currentDevices: devices.size,
+      pollingResults: (candidateState?.pollingResults || []).length,
+      eligibleObservations,
+      devicesWithObservations: histories.size,
+      devicesWithComparablePairs,
+      excludedResults: Object.values(excludedByReason).reduce((sum, count) => sum + count, 0),
+      unknownPairs,
+      excludedByReason
+    };
+    return { events, coverage, filterOptions: rebootFilterOptions(events) };
+  }
+
+  function rebootLocalPart(value, type, timeZone) {
+    const options = type === "date"
+      ? { year: "numeric", month: "2-digit", day: "2-digit", timeZone }
+      : { hour: "2-digit", hourCycle: "h23", timeZone };
+    const parts = new Intl.DateTimeFormat("en-GB", options).formatToParts(new Date(value));
+    const get = (part) => parts.find((item) => item.type === part)?.value || "";
+    return type === "date" ? `${get("year")}-${get("month")}-${get("day")}` : get("hour").padStart(2, "0");
+  }
+
+  function rebootPeriodScope(filters, nowValue) {
+    const period = filters.period || "all";
+    const now = new Date(nowValue || nowIso());
+    const nowMs = now.getTime();
+    if (!Number.isFinite(nowMs)) return { valid: false, errors: ["Некорректное текущее время"] };
+    let from = null; let to = null;
+    if (period === "today") { const start = new Date(now); start.setHours(0, 0, 0, 0); from = start.getTime(); to = nowMs; }
+    else if (period === "7d" || period === "30d") { from = nowMs - Number.parseInt(period, 10) * 86400000; to = nowMs; }
+    else if (period === "custom") {
+      const fromDate = filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00`) : null;
+      const toDate = filters.dateTo ? new Date(`${filters.dateTo}T23:59:59.999`) : null;
+      if (!fromDate || !toDate || !Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime()) || fromDate > toDate) return { valid: false, errors: ["Укажите корректные даты начала и окончания"] };
+      from = fromDate.getTime(); to = toDate.getTime();
+    } else if (period !== "all") return { valid: false, errors: ["Период перезагрузок не поддерживается"] };
+    return { valid: true, errors: [], includes(value) { const time = timeValue(value); return Boolean(time) && (from === null || time >= from) && (to === null || time <= to); } };
+  }
+
+  function aggregateRebootDimension(events, field) {
+    const map = new Map();
+    events.forEach((event) => incrementDistribution(map, event[field]));
+    return distributionRows(map, Number.MAX_SAFE_INTEGER);
+  }
+
+  function rebootLeaders(rows) {
+    const maximum = rows[0]?.count || 0;
+    return { count: maximum, labels: maximum ? rows.filter((item) => item.count === maximum).map((item) => item.label) : [] };
+  }
+
+  function getRebootAnalytics(candidateState, inputFilters, options) {
+    const filters = { period: "all", ...(inputFilters || {}) };
+    const settings = options || {};
+    const index = buildRebootAnalysisIndex(candidateState || {});
+    const period = rebootPeriodScope(filters, settings.now);
+    if (!period.valid) return { valid: false, errors: period.errors, events: [], coverage: index.coverage };
+    const match = (event) => period.includes(event.estimatedAt)
+      && (!filters.category || event.category === filters.category)
+      && (!filters.manufacturer || normalizeText(event.manufacturer) === normalizeText(filters.manufacturer))
+      && (!filters.model || normalizeText(event.model) === normalizeText(filters.model))
+      && (!filters.locationId || event.locationId === filters.locationId)
+      && (!filters.location || normalizeText(event.locationName) === normalizeText(filters.location))
+      && (!filters.address || normalizeText(event.address) === normalizeText(filters.address));
+    const events = index.events.filter(match);
+    const timeZone = settings.timeZone;
+    const dateMap = new Map(); const hourMap = new Map();
+    events.forEach((event) => {
+      const date = rebootLocalPart(event.estimatedAt, "date", timeZone);
+      const hour = rebootLocalPart(event.estimatedAt, "hour", timeZone);
+      dateMap.set(date, (dateMap.get(date) || 0) + 1);
+      hourMap.set(hour, (hourMap.get(hour) || 0) + 1);
+    });
+    const byDate = [...dateMap].map(([label, count]) => ({ label, count })).sort((a, b) => a.label.localeCompare(b.label));
+    const byHour = Array.from({ length: 24 }, (_, hour) => ({ label: String(hour).padStart(2, "0"), count: hourMap.get(String(hour).padStart(2, "0")) || 0 }));
+    const byDevice = aggregateRebootDimension(events, "deviceName");
+    const byLocation = aggregateRebootDimension(events, "locationName");
+    const byAddress = aggregateRebootDimension(events, "address");
+    const affectedDevices = new Set(events.map((event) => event.deviceId)).size;
+    const affectedLocations = new Set(events.map((event) => event.locationId).filter(Boolean)).size;
+    let emptyState = null;
+    if (!index.coverage.currentDevices) emptyState = "no_sr";
+    else if (!index.coverage.pollingResults) emptyState = "no_polling";
+    else if (!index.coverage.devicesWithComparablePairs) emptyState = "insufficient";
+    else if (!index.events.length) emptyState = "no_events";
+    else if (!events.length) emptyState = "filtered_empty";
+    return {
+      valid: true, errors: [], events, coverage: index.coverage, filterOptions: index.filterOptions, emptyState,
+      summary: { minimumReboots: events.length, affectedDevices, affectedLocations, comparableDevices: index.coverage.devicesWithComparablePairs, excludedResults: index.coverage.excludedResults },
+      byDate, byHour, byDevice, byLocation, byAddress,
+      leaders: { dates: rebootLeaders([...byDate].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))), hours: rebootLeaders([...byHour].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))), devices: rebootLeaders(byDevice), locations: rebootLeaders(byLocation), addresses: rebootLeaders(byAddress) }
+    };
+  }
+
   function getDashboardSummary(candidateState, inputFilters, options) {
     const filters = { ...(inputFilters || {}) };
     const settings = options || {};
@@ -1931,7 +2184,7 @@
       drilldown: { byCategory: drilldownByCategory },
       distributions: { categories: distributionRows(new Map(EQUIPMENT_CATEGORY_IDS.map((category) => [formatCategoryLabel(category), categoryCounts[category]])), EQUIPMENT_CATEGORY_IDS.length), manufacturers: distributionRows(manufacturerCounts, limit), models: distributionRows(modelCounts, limit) },
       freshness: { latestTimestamp, noData: states.filter((item) => !item.latestResult).length, outdated: null },
-      blockedAnalytics: { authorization: null, reboots: null, gcPlus: null, freshnessThreshold: null }
+      blockedAnalytics: { authorization: null, reboots: "available", gcPlus: null, freshnessThreshold: null }
     };
   }
 
@@ -2038,10 +2291,12 @@
     });
     const device = match.device;
     const status = payload ? scopePollingStatusToInventory(derivePollingStatus(payload), device) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", authorizationEvidence: null, rebootCount: null, gcPlus: null };
+    const observationTimestamp = resolvePollingObservationTimestamp(payload, resultTimestamp);
     const result = {
       id: createId("polling-result"), runId: run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
       deviceId: device?.id || null, capturedAt: resultTimestamp.capturedAt, capturedAtSource: resultTimestamp.source, sourceLastModified: resultTimestamp.sourceLastModified, importedAt: input.importedAt || nowIso(),
+      observationAt: observationTimestamp.observationAt, observationAtSource: observationTimestamp.source, observationConfidence: observationTimestamp.confidence, observationUncertaintyMs: observationTimestamp.uncertaintyMs,
       rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
       detectedCategory, matchStatus: match.matchStatus,
       classificationConflict: match.matchStatus === "category_conflict",
@@ -2330,6 +2585,7 @@
     const status = payload ? scopePollingStatusToInventory(derivePollingStatus(payload), device) : { pollStatus: "processing_error", pingStatus: "unknown", authorizationStatus: "unknown", authorizationEvidence: null, rebootCount: null, gcPlus: null };
     const normalizedData = payload ? pollingPayloadProjection(payload) : {};
     const timestamp = resolvePollingResultTimestamp(input);
+    const observationTimestamp = resolvePollingObservationTimestamp(payload, timestamp);
     metrics.normalized += 1;
     metrics.stagesMs.normalization += monotonicNow() - normalizationStarted;
 
@@ -2337,6 +2593,7 @@
       id: createId("polling-result"), runId: input.run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
       deviceId: device?.id || null, capturedAt: timestamp.capturedAt, capturedAtSource: timestamp.source, sourceLastModified: timestamp.sourceLastModified, importedAt: input.importedAt || nowIso(),
+      observationAt: observationTimestamp.observationAt, observationAtSource: observationTimestamp.source, observationConfidence: observationTimestamp.confidence, observationUncertaintyMs: observationTimestamp.uncertaintyMs,
       rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
       detectedCategory, matchStatus: match.matchStatus,
       classificationConflict: match.matchStatus === "category_conflict",
@@ -4068,6 +4325,7 @@
     extractPollingInternalIpEvidence,
     resolvePollingInventoryMatch,
     resolvePollingResultTimestamp,
+    resolvePollingObservationTimestamp,
     detectExtronJsonDeviceType,
     detectSecrets,
     detectSnapshotProfile,
@@ -4086,6 +4344,10 @@
     getBaselineDrift,
     getInventoryAnalytics,
     getDashboardSummary,
+    extractRebootObservation,
+    deriveMinimumReboot,
+    buildRebootAnalysisIndex,
+    getRebootAnalytics,
     getChangeEvents,
     getLatestReviewDecision,
     getProjectCurrentSnapshot,
@@ -4230,6 +4492,7 @@
     inventoryBusy: false,
     equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
+    rebootFilters: { period: "all" },
     helpQuery: "",
     helpTopicId: null
   };
@@ -4490,6 +4753,7 @@
     if (descriptor.renderer === "reference") return renderReference();
     if (descriptor.renderer === "settings") return renderSettings(user);
     if (descriptor.renderer === "upload") return renderUpload();
+    if (descriptor.renderer === "reboots") return renderReboots();
     if (descriptor.renderer === "equipment") return renderEquipmentOverview();
     if (descriptor.renderer === "inventory") return renderInventoryRoute(descriptor.route);
     return renderDashboard();
@@ -4565,7 +4829,74 @@
         ${renderDistribution("По моделям", summary.distributions.models, summary.inventory.total)}
         ${renderDistribution("По категориям", summary.distributions.categories, summary.inventory.total)}
       </div>
-      <section class="card section-gap blocked-analytics"><h2>Показатели, ожидающие достоверных данных</h2><div class="blocked-grid"><div><strong>Авторизация</strong><span>Недостаточно данных</span></div><div><strong>Перезагрузки</strong><span>Функция находится в разработке</span></div><div><strong>GCPlus</strong><span>Требует уточнения</span></div><div><strong>Актуальность данных</strong><span>Порог не настроен</span></div></div></section>`;
+      <section class="card section-gap blocked-analytics"><h2>Дополнительная аналитика</h2><div class="blocked-grid"><div><strong>Авторизация</strong><span>Недостаточно данных</span></div><div><strong>Перезагрузки устройств</strong><span>Доступны в отдельном модуле</span><button class="text-button" type="button" data-route="reboots">Открыть аналитику</button></div><div><strong>GCPlus</strong><span>Требует уточнения</span></div><div><strong>Актуальность данных</strong><span>Порог не настроен</span></div></div></section>`;
+  }
+
+  function renderRebootFilters(filters, analytics) {
+    const devices = state.inventoryDevices.filter((item) => item.inCurrentSr !== false);
+    const values = (field) => [...new Set(devices.map((item) => item[field]).filter(Boolean))];
+    const locationIds = new Set(devices.map((item) => item.locationId).filter(Boolean));
+    const locations = state.locations.filter((item) => locationIds.has(item.id)).sort((a, b) => String(a.name).localeCompare(String(b.name), "ru"));
+    const addresses = [...new Set(locations.map((item) => item.address).filter(Boolean))];
+    return `<section class="card reboot-filters"><div class="section-heading"><div><p class="eyebrow">Область анализа</p><h2>Фильтры перезагрузок</h2></div><button class="button secondary" type="button" data-clear-reboot-filters>Сбросить фильтры</button></div><form class="filter-grid reboot-filter-grid" data-reboot-filters>
+      <div class="field"><label>Период событий</label><select name="period"><option value="all"${filters.period === "all" || !filters.period ? " selected" : ""}>Вся история</option><option value="today"${filters.period === "today" ? " selected" : ""}>Сегодня</option><option value="7d"${filters.period === "7d" ? " selected" : ""}>7 дней</option><option value="30d"${filters.period === "30d" ? " selected" : ""}>30 дней</option><option value="custom"${filters.period === "custom" ? " selected" : ""}>Произвольный</option></select></div>
+      <div class="field"><label>Дата от</label><input type="date" name="dateFrom" value="${escapeHtml(filters.dateFrom || "")}"></div><div class="field"><label>Дата до</label><input type="date" name="dateTo" value="${escapeHtml(filters.dateTo || "")}"></div>
+      <div class="field"><label>Категория</label><select name="category"><option value="">Все</option>${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<option value="${item.id}"${filters.category === item.id ? " selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}</select></div>
+      <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(values("manufacturerRaw"), filters.manufacturer)}</select></div><div class="field"><label>Модель</label><select name="model">${filterOptions(values("modelRaw"), filters.model)}</select></div>
+      <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${locations.map((item) => `<option value="${escapeHtml(item.id)}"${filters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
+      <div class="field"><label>Адрес</label><select name="address">${filterOptions(addresses, filters.address)}</select></div>
+      <div class="button-row"><button class="button primary" type="submit">Применить фильтры</button></div>
+    </form>${analytics?.coverage ? `<p class="muted reboot-coverage">Пригодных наблюдений: ${analytics.coverage.eligibleObservations}; устройств с сопоставимыми парами: ${analytics.coverage.devicesWithComparablePairs}; исключено: ${analytics.coverage.excludedResults}.</p>` : ""}</section>`;
+  }
+
+  function renderRebootChart(title, rows, options = {}) {
+    const visible = options.includeZero ? rows : rows.filter((item) => item.count > 0);
+    const limited = visible.slice(0, options.limit || 15);
+    const maximum = Math.max(1, ...visible.map((item) => item.count));
+    return `<figure class="card reboot-chart"><figcaption><h2>${escapeHtml(title)}</h2>${visible.length > limited.length ? `<small>Показано ${limited.length} из ${visible.length}; итоги рассчитаны по полной выборке.</small>` : ""}</figcaption>${limited.length ? `<div class="reboot-bars">${limited.map((item) => `<div class="reboot-bar-row"><span title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</span><progress max="${maximum}" value="${item.count}">${item.count}</progress><strong>${item.count}</strong></div>`).join("")}</div>` : `<p class="muted">Событий нет.</p>`}</figure>`;
+  }
+
+  function renderRebootLeader(title, leader) {
+    return `<article class="card reboot-leader"><span>${escapeHtml(title)}</span><strong>${leader.count}</strong><p>${leader.labels.length ? leader.labels.map(escapeHtml).join(" · ") : "Нет подтверждённых событий"}</p></article>`;
+  }
+
+  function rebootEmptyMessage(kind) {
+    return {
+      no_sr: "Сначала загрузите актуальную выгрузку SR.",
+      no_polling: "Результаты опросов пока не загружены.",
+      insufficient: "Для подтверждения перезагрузки нужны минимум два пригодных наблюдения одного устройства.",
+      no_events: "Пригодные пары проанализированы, подтверждённых перезагрузок не выявлено.",
+      filtered_empty: "Подтверждённые события есть, но не входят в выбранные фильтры."
+    }[kind] || "";
+  }
+
+  function renderReboots() {
+    const analytics = getRebootAnalytics(state, ui.rebootFilters);
+    const header = `<header class="page-header reboot-header"><div><p class="eyebrow">Эксплуатационная аналитика</p><h1>Перезагрузки устройств</h1><p class="page-subtitle">Минимум подтверждённых перезагрузок по соседним результатам uptime. Несколько запусков между опросами учитываются как одно доказанное событие.</p></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
+    const filters = renderRebootFilters(ui.rebootFilters, analytics);
+    if (!analytics.valid) return `${header}${filters}<div class="error-panel section-gap" role="alert">${escapeHtml(analytics.errors.join("; "))}</div>`;
+    const empty = analytics.emptyState ? `<div class="${analytics.emptyState === "no_events" ? "success" : "info"}-panel section-gap"><strong>${escapeHtml(rebootEmptyMessage(analytics.emptyState))}</strong></div>` : "";
+    const leaders = analytics.leaders;
+    const displayedEvents = analytics.events;
+    return `${header}${filters}${empty}
+      <section class="dashboard-kpi-grid reboot-kpi-grid section-gap">
+        ${dashboardRouteKpi("Минимум подтверждённых перезагрузок", analytics.summary.minimumReboots, "Интервалы с доказанным запуском после прошлого наблюдения")}
+        ${dashboardRouteKpi("Затронутые устройства", analytics.summary.affectedDevices, "По текущей SR")}
+        ${dashboardRouteKpi("Затронутые локации", analytics.summary.affectedLocations, "Локация и адрес по актуальной SR")}
+        ${dashboardRouteKpi("Сопоставимые истории", analytics.summary.comparableDevices, "Устройства с двумя и более пригодными наблюдениями")}
+      </section>
+      <section class="reboot-leader-grid section-gap">${renderRebootLeader("Максимум за дату", leaders.dates)}${renderRebootLeader("Максимум за час", leaders.hours)}${renderRebootLeader("Чаще всего: устройства", leaders.devices)}${renderRebootLeader("Чаще всего: локации", leaders.locations)}${renderRebootLeader("Чаще всего: адреса", leaders.addresses)}</section>
+      <section class="reboot-chart-grid section-gap">
+        ${renderRebootChart("Динамика по датам", analytics.byDate, { limit: 31 })}
+        ${renderRebootChart("Распределение по часам", analytics.byHour, { limit: 24, includeZero: true })}
+        ${renderRebootChart("Устройства", analytics.byDevice, { limit: 15 })}
+        ${renderRebootChart("Локации", analytics.byLocation, { limit: 15 })}
+        ${renderRebootChart("Адреса", analytics.byAddress, { limit: 15 })}
+      </section>
+      <section class="card section-gap reboot-events"><div class="section-heading"><div><p class="eyebrow">Доказательства</p><h2>Выявленные события</h2></div><span class="badge info">${analytics.events.length}</span></div>
+        <p class="muted">Время является оценённым интервалом последнего запуска. IP относится к точно сопоставленному устройству; локация и адрес показаны по актуальной SR.</p>
+        ${displayedEvents.length ? `<div class="table-wrap"><table><thead><tr><th>Интервал перезагрузки</th><th>Устройство</th><th>IP</th><th>Локация и адрес</th><th>Пара наблюдений</th><th>Достоверность</th></tr></thead><tbody>${displayedEvents.map((event) => `<tr><td><strong>${escapeHtml(formatDateTime(event.occurredFrom))}</strong><br><small>— ${escapeHtml(formatDateTime(event.occurredTo))}</small></td><td><strong>${escapeHtml(event.deviceName)}</strong><br><small>${escapeHtml(formatCategoryLabel(event.category))} · ${escapeHtml(event.manufacturer)} · ${escapeHtml(event.model)}</small></td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}<br><small>${escapeHtml(event.address)}</small></td><td><small>${escapeHtml(formatDateTime(event.previousObservedAt))}<br>→ ${escapeHtml(formatDateTime(event.currentObservedAt))}</small></td><td><span class="badge ${event.confidence === "confirmed" ? "success" : "warning"}">${event.confidence === "confirmed" ? "Подтверждено" : "Ограниченный источник времени"}</span><br><small>${escapeHtml(event.ruleVersion)}</small></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Таблица появится после выявления подтверждённых событий.</p>`}
+      </section>`;
   }
 
   function dashboardRunLabel(run) {
@@ -5329,6 +5660,12 @@
       return;
     }
 
+    if (event.target.closest("[data-clear-reboot-filters]")) {
+      ui.rebootFilters = { period: "all" };
+      render();
+      return;
+    }
+
     if (navigationAction?.type === "navigate") {
       const navigation = reduceNavigationState(ui, navigationAction);
       ui.route = navigation.route;
@@ -5532,6 +5869,15 @@
       event.preventDefault();
       const formData = new FormData(dashboardFilterForm);
       ui.dashboardFilters = Object.fromEntries(["period", "dateFrom", "dateTo", "category", "manufacturer", "model", "locationId", "vip", "pollStatus"].map((key) => [key, String(formData.get(key) || "")]));
+      render();
+      return;
+    }
+
+    const rebootFilterForm = event.target.closest("[data-reboot-filters]");
+    if (rebootFilterForm) {
+      event.preventDefault();
+      const formData = new FormData(rebootFilterForm);
+      ui.rebootFilters = Object.fromEntries(["period", "dateFrom", "dateTo", "category", "manufacturer", "model", "locationId", "address"].map((key) => [key, String(formData.get(key) || "")]));
       render();
       return;
     }

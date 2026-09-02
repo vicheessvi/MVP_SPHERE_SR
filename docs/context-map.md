@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 014
+## Текущая feature 015
+
+- Спецификация, правило, модель, контракт и задачи: `specs/015-reboot-analytics/`.
+- Производный индекс, фильтры, KPI и renderer: `app.js`.
+- Маршрут и пользовательская справка: `product-catalog.js`.
+- Архитектурное решение: `docs/decisions/ADR-0015-reboot-analytics.md`.
+
+## Production runtime feature 014
 
 - Спецификация, план, задачи и контракты: `specs/014-python-runtime-migration/`.
 - Пользовательский запуск: `START_MVP_SPHERE_SR.py`, `mvp_runtime/launcher.py`.
@@ -9,7 +16,7 @@
 - План, exact-IP allowlist, job и ACK: `mvp_runtime/polling.py`, `mvp_runtime/polling_job.py`.
 - Подтверждённый Extron adapter: `mvp_runtime/adapters/extron.py`.
 - Общий каталог устройств: `runtime/device-catalog.json`; CommonJS migration/reference loader: `runtime/model-catalog.js`.
-- Архитектурное решение: `docs/decisions/ADR-0014-python-runtime-migration.md`.
+- Архитектурное решение runtime: `docs/decisions/ADR-0014-python-runtime-migration.md`.
 
 ## Постоянные инструкции
 

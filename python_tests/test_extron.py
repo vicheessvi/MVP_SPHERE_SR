@@ -32,6 +32,7 @@ class ExtronTests(unittest.TestCase):
     def test_login_discovery_and_resources_are_https_contract_only(self) -> None:
         serial_uri = "/QUJDREVGR0hJSktMTU5PUA=="
         firmware_uri = "/YWJjZGVmZ2hpamtsbW5vcA=="
+        uptime_uri = "/dXB0aW1lLXN5bnRoZXRpYw=="
         calls: list[dict] = []
 
         def request(options: dict) -> dict:
@@ -39,8 +40,8 @@ class ExtronTests(unittest.TestCase):
             if options["path"].startswith("/api/login"):
                 return {"status_code": 200, "headers": [("Set-Cookie", "NortxeSession=synthetic-cookie; Secure")], "body": ""}
             if options["path"] == "/www/main.js":
-                return {"status_code": 200, "headers": [], "body": f"serialNumber: '{serial_uri}'; fwVersion: '{firmware_uri}'; this.unitInfo"}
-            values = {f"/api/swis/resource{serial_uri}": "SYNTHETIC-SERIAL", f"/api/swis/resource{firmware_uri}": "1.0.0"}
+                return {"status_code": 200, "headers": [], "body": f"serialNumber: '{serial_uri}'; fwVersion: '{firmware_uri}'; uptime: '{uptime_uri}'; this.unitInfo"}
+            values = {f"/api/swis/resource{serial_uri}": "SYNTHETIC-SERIAL", f"/api/swis/resource{firmware_uri}": "1.0.0", f"/api/swis/resource{uptime_uri}": 90061}
             return {"status_code": 200, "headers": [], "body": json.dumps({"value": values[options["path"]]})}
 
         result = poll_extron_device(
@@ -51,6 +52,7 @@ class ExtronTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["webInterface"]["insecureTls"])
         self.assertEqual(result["webBlocks"]["Device Info"]["Serial Number"], "SYNTHETIC-SERIAL")
+        self.assertEqual(result["uptimeObservedAt"], "2023-11-14T22:13:20.000Z")
         self.assertEqual([item["path"] for item in calls[:2]], ["/api/login?rnd=1700000000000", "/www/main.js"])
         self.assertTrue(all(item["reject_unauthorized"] is False for item in calls))
         self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))

@@ -1385,6 +1385,92 @@ table .mono {
   border: 0;
 }
 
+.reboot-coverage {
+  margin: 14px 0 0;
+}
+
+.reboot-filter-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.reboot-leader-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.reboot-leader {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.reboot-leader > span,
+.reboot-leader > p {
+  color: var(--muted);
+}
+
+.reboot-leader > strong {
+  font-size: clamp(1.6rem, 3vw, 2.5rem);
+}
+
+.reboot-leader > p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.reboot-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.reboot-chart:first-child {
+  grid-column: 1 / -1;
+}
+
+.reboot-chart figcaption {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
+.reboot-chart figcaption h2 {
+  margin: 0;
+}
+
+.reboot-bars {
+  display: grid;
+  gap: 10px;
+}
+
+.reboot-bar-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.2fr) minmax(120px, 3fr) 44px;
+  align-items: center;
+  gap: 10px;
+}
+
+.reboot-bar-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reboot-bar-row progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.reboot-bar-row > strong {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.reboot-events td {
+  vertical-align: top;
+}
+
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -1412,6 +1498,14 @@ table .mono {
 
   .dashboard-filter-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .reboot-filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .reboot-leader-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .reference-grid {
@@ -1472,6 +1566,20 @@ table .mono {
   .attention-grid,
   .blocked-grid {
     grid-template-columns: 1fr;
+  }
+
+  .reboot-filter-grid,
+  .reboot-leader-grid,
+  .reboot-chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .reboot-chart:first-child {
+    grid-column: auto;
+  }
+
+  .reboot-bar-row {
+    grid-template-columns: minmax(80px, 1fr) minmax(90px, 2fr) 38px;
   }
 
   .dashboard-context strong,

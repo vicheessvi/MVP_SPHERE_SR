@@ -59,7 +59,7 @@ index.html (file://) -> volatile browser state -> manual import/analytics only
 
 State schema v3 остаётся в памяти каждой страницы. Все строки актуальной SR участвуют в inventory. Новый результат связывается только с текущим IP актуальной SR; `ipHistory`, похожие имена и соседние адреса не назначают `deviceId`. Подтверждённый внутренний IP и категория проверяются до привязки. Конфликт сохраняется как отдельная диагностируемая запись.
 
-Массовый импорт использует bounded parallel reading, cooperative yield, progress throttling и временные indexes. Dashboard и таблицы считают один актуальный inventory scope; отсутствие polling JSON не удаляет устройство.
+Массовый импорт использует bounded parallel reading, cooperative yield, progress throttling и временные indexes. Dashboard и таблицы считают один актуальный inventory scope; отсутствие polling JSON не удаляет устройство. Модуль перезагрузок строит непостоянный индекс полных per-device histories: правило `reboot-min-v1` подтверждает только нижнюю границу событий по соседним наблюдениям uptime, а неизвестные и конфликтные данные сохраняет вне счётчика.
 
 ## Расширение адаптеров
 

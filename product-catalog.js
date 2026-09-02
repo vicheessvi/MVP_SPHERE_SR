@@ -62,6 +62,12 @@
       keywords: ["главный экран", "дашборд", "показатели"]
     },
     {
+      route: "reboots", renderer: "reboots", title: "Перезагрузки устройств", order: 15, helpId: "module-reboots", contextHelp: true,
+      summary: "Выявляет минимальное подтверждённое количество перезагрузок по истории uptime и показывает временные и территориальные закономерности.",
+      details: "Правило reboot-min-v1 сравнивает соседние по времени результаты одного точно сопоставленного устройства. Перезагрузка подтверждается только когда рассчитанный интервал последнего запуска целиком находится после предыдущего наблюдения. Одна пара подтверждает минимум одну перезагрузку, но не точное количество внутри интервала. IP берётся из сопоставленного устройства, а локация и адрес — по актуальной SR. Неизвестные, конфликтные и недостаточные данные не увеличивают счётчик.",
+      keywords: ["перезагрузки", "uptime", "время безотказной работы", "аналитика", "события"]
+    },
+    {
       route: "equipment", renderer: "equipment", title: "Оборудование", order: 20, helpId: "module-equipment", contextHelp: true,
       summary: "Единая точка доступа к семи категориям оборудования мультимедийной инфраструктуры.",
       details: "Раскрывает Терминалы ВКС, Контроллеры, Панели управления, Коммутаторы, Матричные коммутаторы, Скалеры и Аудио процессоры. Количество определяется актуальной SR: отсутствие JSON не удаляет устройство, а конфликт идентификаторов между разными строками сохраняется как отдельная диагностируемая запись.",
@@ -191,7 +197,7 @@
     const terms = input.uiTerms || UI_TERMS;
     const statusDescriptors = input.statusDescriptors || STATUS_DESCRIPTORS;
     const pollingHelpEntries = input.pollingHelpEntries || POLLING_HELP_ENTRIES;
-    const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "equipment", "inventory", "upload", "settings", "reference"]);
+    const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "reboots", "equipment", "inventory", "upload", "settings", "reference"]);
     const errors = [];
     const russian = /[А-Яа-яЁё]/;
 
