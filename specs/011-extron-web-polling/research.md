@@ -4,8 +4,9 @@
 
 На локальном Extron IPCP Pro 250 xi подтверждён следующий порядок:
 
-1. `POST /api/login?rnd=<timestamp>` с Basic authorization и пустым body.
-2. Сохранение cookie `NortxeSession` только в памяти текущего процесса.
+1. `GET /www/index.html` с теми же `Accept`, `Accept-Language`, `Referer` и `User-Agent`, которые использует web-интерфейс устройства; `401` с локальной страницей входа является ожидаемым ответом до авторизации.
+2. `POST /api/login?rnd=<timestamp>` с теми же браузерными заголовками, Basic authorization и пустым body.
+3. Сохранение cookie `NortxeSession` только в памяти текущего процесса.
 3. `GET /www/main.js` в той же session.
 4. Извлечение resource URI из bundle по подтверждённым семантическим ключам.
 5. `GET /api/swis/resource<uri>` без дополнительных query-параметров.

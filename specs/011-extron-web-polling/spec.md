@@ -91,7 +91,7 @@
 ### Functional Requirements
 
 - **FR-001**: Система MUST предоставлять generic Extron web adapter для категорий `controller` и `panel`, применимый ко всем моделям с подтверждённым web contract независимо от названия модели.
-- **FR-002**: Adapter MUST выполнить login через `POST /api/login?rnd=<timestamp>` с Basic authorization, сохранить session cookie только в памяти процесса и не раскрывать его наружу.
+- **FR-002**: Adapter MUST сначала открыть `/www/index.html`, затем выполнить login через `POST /api/login?rnd=<timestamp>` с Basic authorization и подтверждёнными браузерными заголовками Extron, сохранить session cookie только в памяти процесса и не раскрывать её наружу.
 - **FR-003**: Adapter MUST загрузить `/www/main.js` после login и динамически извлечь только подтверждённые resource URI; hardcoded session-bound URI запрещены.
 - **FR-004**: Resource GET MUST использовать точный `/api/swis/resource<uri>`; для project resources запрещено добавлять `rnd` или иные query-параметры.
 - **FR-005**: Adapter MUST нормализовать доступные поля в совместимую legacy-структуру `webBlocks`, сохраняя полученные raw scalar/structured values без изменения исходных файлов.

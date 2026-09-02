@@ -13,7 +13,7 @@
 3. Custom `ThreadingHTTPServer` слушает только случайный порт `127.0.0.1`, обслуживает точный static/API allowlist и сохраняет one-time session, Host/Origin/CSRF boundary feature 013.
 4. Учётный XLSX разбирается ограниченным ZIP/XML reader: только первая таблица, без formulas/macros/external links. Exact bytes сверяются по SHA-256.
 5. Polling job работает в одном worker thread, выполняет устройства последовательно и выдаёт один redacted result до browser ACK.
-6. Extron adapter перенесён без изменения evidence contract: HTTPS/443, `/api/login`, `/www/main.js`, dynamic resource URI и exact `/api/swis/resource<uri>`.
+6. Extron adapter использует подтверждённый browser-compatible evidence contract: HTTPS/443, предварительный `/www/index.html`, браузерные origin headers, `/api/login`, `/www/main.js`, dynamic resource URI и exact `/api/swis/resource<uri>`.
 7. Каталог transport/manufacturer/model вынесен в общий `runtime/device-catalog.json`; новые adapters регистрируются изолированно после evidence review.
 8. Неиспользуемое `/api/storage/*`, DPAPI vault, Node/PowerShell runtime и CLI удалены. Browser/runtime state и secrets остаются только в памяти.
 9. Прямой `index.html` сохраняет ручной режим без автоматической сети. Node.js остаётся только development/CI средством тестирования JavaScript.

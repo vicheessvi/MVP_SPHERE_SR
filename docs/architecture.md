@@ -63,7 +63,7 @@ State schema v3 остаётся в памяти каждой страницы. 
 
 ## Расширение адаптеров
 
-Новый transport добавляется только после evidence review: производитель/категория в общем каталоге, подтверждённые endpoint и auth flow, TLS/port, bounded response schema, safe errors, synthetic tests и redaction tests. Job/server/browser API при добавлении адаптера не изменяются. Неизвестный manifest остаётся `protocol_required` или `unsupported` без network attempt.
+Новый transport добавляется только после evidence review: производитель/категория в общем каталоге, подтверждённые endpoint и auth flow, TLS/port, bounded response schema, safe errors, synthetic tests и redaction tests. Подтверждённый Extron flow воспроизводит browser-compatible последовательность `/www/index.html` → `/api/login` → `/www/main.js` → exact dynamic resources; browser headers и session cookie остаются внутри adapter. Job/server/browser API при добавлении адаптера не изменяются. Неизвестный manifest остаётся `protocol_required` или `unsupported` без network attempt.
 
 ## Ограничения
 

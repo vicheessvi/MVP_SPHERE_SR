@@ -14,9 +14,10 @@ pollExtronDevice(device, credential, {
 
 ## Request sequence
 
-1. `POST https://<ip>/api/login?rnd=<unix-ms>`.
-2. `GET https://<ip>/www/main.js` с session cookie.
-3. `GET https://<ip>/api/swis/resource<dynamic-uri>` с той же cookie.
+1. `GET https://<ip>/www/index.html` с браузерными `Accept`, `Accept-Language`, `Referer` и `User-Agent`; ответ `401` с локальной страницей входа допустим.
+2. `POST https://<ip>/api/login?rnd=<unix-ms>` с теми же браузерными заголовками, Basic authorization и пустым body.
+3. `GET https://<ip>/www/main.js` с session cookie и теми же browser-origin headers.
+4. `GET https://<ip>/api/swis/resource<dynamic-uri>` с той же cookie и browser-origin headers.
 
 Resource URL строится exact concatenation; query запрещён. Redirect на другой host/IP запрещён.
 

@@ -55,6 +55,11 @@ SAFE_TRANSPORT_CODES = {
     "response_too_large",
 }
 RESOURCE_PATH = re.compile(r"^/[A-Za-z0-9_-]{16,}={0,2}$")
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/147.0.0.0 Safari/537.36"
+)
 
 
 class ExtronTransportError(RuntimeError):
@@ -66,6 +71,16 @@ class ExtronTransportError(RuntimeError):
 def _utc_iso(now: Callable[[], float] | None = None) -> str:
     stamp = (now or time.time)()
     return datetime.fromtimestamp(float(stamp), timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def browser_request_headers(ip: str, accept: str = "application/json, text/plain, */*") -> dict[str, str]:
+    """Headers required by the confirmed Extron browser login flow."""
+    return {
+        "Accept": accept,
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": f"https://{ip}/www/",
+        "User-Agent": BROWSER_USER_AGENT,
+    }
 
 
 def is_safe_resource_uri(value: Any) -> bool:
@@ -307,12 +322,26 @@ def poll_extron_device(device: dict[str, Any], credentials: Any, options: dict[s
         return {**base, "failedStage": "credentials", "safeError": "credential_missing"}
     reject_unauthorized = not (device.get("allowInsecureTls") is True or settings.get("allow_insecure_tls") is True)
     timeout_ms = settings.get("timeout_ms")
+    try:
+        request({
+            "ip": ip,
+            "method": "GET",
+            "path": "/www/index.html",
+            "headers": browser_request_headers(ip, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+            "reject_unauthorized": reject_unauthorized,
+            "timeout_ms": timeout_ms,
+            "max_bytes": 2 * 1024 * 1024,
+        })
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        return {**base, "failedStage": "login", "safeError": _transport_code(error)}
     cookie = None
     for index, candidate in enumerate(pool):
         try:
             authorization = base64.b64encode(f"{candidate['username']}:{candidate['password']}".encode()).decode("ascii")
             now_ms = int(float((settings.get("now") or time.time)()) * 1000)
-            login = request({"ip": ip, "method": "POST", "path": f"/api/login?rnd={now_ms}", "headers": {"Authorization": f"Basic {authorization}", "Content-Length": "0"}, "body": b"", "reject_unauthorized": reject_unauthorized, "timeout_ms": timeout_ms, "max_bytes": 1024 * 1024})
+            login = request({"ip": ip, "method": "POST", "path": f"/api/login?rnd={now_ms}", "headers": {**browser_request_headers(ip), "Authorization": f"Basic {authorization}", "Content-Length": "0"}, "body": b"", "reject_unauthorized": reject_unauthorized, "timeout_ms": timeout_ms, "max_bytes": 1024 * 1024})
             cookie = session_cookie(login.get("headers"))
             login_ok = 200 <= int(login.get("status_code") or 0) < 300 and bool(cookie)
             base["loginAttempts"].append({"attempt": index + 1, "ok": login_ok})
@@ -328,7 +357,7 @@ def poll_extron_device(device: dict[str, Any], credentials: Any, options: dict[s
     if not cookie:
         return {**base, "failedStage": "authorization", "safeError": "authorization_failed"}
     try:
-        bundle = request({"ip": ip, "method": "GET", "path": "/www/main.js", "headers": {"Cookie": cookie}, "reject_unauthorized": reject_unauthorized, "timeout_ms": timeout_ms, "max_bytes": 8 * 1024 * 1024})
+        bundle = request({"ip": ip, "method": "GET", "path": "/www/main.js", "headers": {**browser_request_headers(ip, "application/javascript,*/*;q=0.8"), "Cookie": cookie}, "reject_unauthorized": reject_unauthorized, "timeout_ms": timeout_ms, "max_bytes": 8 * 1024 * 1024})
         if int(bundle.get("status_code") or 0) != 200:
             return {**base, "failedStage": "bundle", "safeError": "web_bundle_unavailable"}
         discovery = extract_resource_uris(bundle.get("body"))
@@ -343,7 +372,7 @@ def poll_extron_device(device: dict[str, Any], credentials: Any, options: dict[s
     uptime_observed_at: str | None = None
     for key, uri in discovery["resources"].items():
         try:
-            response = request({"ip": ip, "method": "GET", "path": f"/api/swis/resource{uri}", "headers": {"Cookie": cookie}, "reject_unauthorized": reject_unauthorized, "timeout_ms": timeout_ms, "max_bytes": 8 * 1024 * 1024})
+            response = request({"ip": ip, "method": "GET", "path": f"/api/swis/resource{uri}", "headers": {**browser_request_headers(ip), "Cookie": cookie}, "reject_unauthorized": reject_unauthorized, "timeout_ms": timeout_ms, "max_bytes": 8 * 1024 * 1024})
             status = int(response.get("status_code") or 0)
             if status != 200:
                 resource_errors[key] = f"http_{status}"

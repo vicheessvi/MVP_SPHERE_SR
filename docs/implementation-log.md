@@ -2,6 +2,10 @@
 
 Этот журнал фиксирует только значимые изменения проекта.
 
+## 2026-09-02 — Исправлена авторизация массового Extron-опроса
+
+На реальном контроллере воспроизведён полный путь Python-runtime с XLSX credential pool и exact-IP plan. Причиной `authorization_failed` оказалось отсутствие browser-compatible шага и заголовков: устройство отвергало прямой Basic POST, но принимало ту же пару после предварительного `GET /www/index.html` и с `Accept`, `Accept-Language`, `Referer`, `User-Agent`. Adapter обновлён на подтверждённую последовательность; login body, Authorization и `NortxeSession` по-прежнему не попадают в результат, логи или state.
+
 ## 2026-09-01 — Запуск двойным щелчком в Windows
 
 - В корень проекта добавлен переносимый `START_MVP_SPHERE_SR.cmd`, поэтому пользователю больше не требуется вводить команду PowerShell.

@@ -37,7 +37,11 @@ class ExtronTests(unittest.TestCase):
 
         def request(options: dict) -> dict:
             calls.append(options)
+            if options["path"] == "/www/index.html":
+                return {"status_code": 401, "headers": [], "body": "synthetic login page"}
             if options["path"].startswith("/api/login"):
+                self.assertEqual(options["headers"]["Referer"], "https://192.0.2.10/www/")
+                self.assertIn("Mozilla/5.0", options["headers"]["User-Agent"])
                 return {"status_code": 200, "headers": [("Set-Cookie", "NortxeSession=synthetic-cookie; Secure")], "body": ""}
             if options["path"] == "/www/main.js":
                 return {"status_code": 200, "headers": [], "body": f"serialNumber: '{serial_uri}'; fwVersion: '{firmware_uri}'; uptime: '{uptime_uri}'; this.unitInfo"}
@@ -53,8 +57,9 @@ class ExtronTests(unittest.TestCase):
         self.assertTrue(result["webInterface"]["insecureTls"])
         self.assertEqual(result["webBlocks"]["Device Info"]["Serial Number"], "SYNTHETIC-SERIAL")
         self.assertEqual(result["uptimeObservedAt"], "2023-11-14T22:13:20.000Z")
-        self.assertEqual([item["path"] for item in calls[:2]], ["/api/login?rnd=1700000000000", "/www/main.js"])
+        self.assertEqual([item["path"] for item in calls[:3]], ["/www/index.html", "/api/login?rnd=1700000000000", "/www/main.js"])
         self.assertTrue(all(item["reject_unauthorized"] is False for item in calls))
+        self.assertTrue(all(item["headers"].get("Referer") == "https://192.0.2.10/www/" for item in calls))
         self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
 
     def test_authorization_failure_and_cookie_parser_are_safe(self) -> None:
