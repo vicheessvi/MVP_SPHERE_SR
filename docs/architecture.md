@@ -33,6 +33,7 @@ index.html (file://) -> volatile browser state -> manual import/analytics only
 - `mvp_runtime/polling.py` нормализует unicast IPv4, создаёт allowlist ровно из плана, выполняет последовательный ping/dispatch/interval и содержит additive adapter registry.
 - `mvp_runtime/polling_job.py` управляет schedule, отменой, counters и одним pending result; следующий шаг невозможен до ACK.
 - `mvp_runtime/adapters/extron.py` реализует только подтверждённый Extron HTTPS dynamic-resource contract.
+- `mvp_runtime/adapters/huawei_te40.py` реализует отдельный подтверждённый Huawei TE40 HTTPS web-CGI contract с фиксированным read-only allowlist.
 - `mvp_runtime/redaction.py` рекурсивно запрещает secrets в plan и удаляет Authorization/cookie/credential material из результата.
 
 ## Browser-компоненты
@@ -51,7 +52,7 @@ index.html (file://) -> volatile browser state -> manual import/analytics only
 - Browser state, folder handle, credential pool, session и jobs не сериализуются.
 - XLSX ограничен 10 MiB; ZIP/XML имеют отдельные limits. Secret-bearing планы отвергаются рекурсивно.
 - Network target должен быть точным допустимым IPv4 из текущего плана. Похожий, исторический или отличающийся последним октетом IP не разрешается.
-- Extron использует HTTPS/443. Unverified TLS context создаётся только для текущего задания при явном согласии; HTTP fallback и глобальное отключение проверки отсутствуют.
+- Extron и Huawei TE40 используют HTTPS/443. Unverified TLS context создаётся только для текущего задания при явном согласии; HTTP fallback и глобальное отключение проверки отсутствуют. Huawei legacy TLS ослабляется только внутри соединения конкретного задания.
 - Каждый результат проходит redaction до browser API. Runtime ждёт успешной записи и только затем начинает интервал.
 - Terminal status очищает session credentials и внутреннюю копию задания.
 
@@ -63,7 +64,7 @@ State schema v3 остаётся в памяти каждой страницы. 
 
 ## Расширение адаптеров
 
-Новый transport добавляется только после evidence review: производитель/категория в общем каталоге, подтверждённые endpoint и auth flow, TLS/port, bounded response schema, safe errors, synthetic tests и redaction tests. Подтверждённый Extron flow воспроизводит browser-compatible последовательность `/www/index.html` → `/api/login` → `/www/main.js` → exact dynamic resources; browser headers и session cookie остаются внутри adapter. Job/server/browser API при добавлении адаптера не изменяются. Неизвестный manifest остаётся `protocol_required` или `unsupported` без network attempt.
+Новый transport добавляется только после evidence review: производитель/категория/модель в общем каталоге, подтверждённые endpoint и auth flow, TLS/port, bounded response schema, safe errors, synthetic tests и redaction tests. Подтверждённый Extron flow воспроизводит browser-compatible последовательность `/www/index.html` → `/api/login` → `/www/main.js` → exact dynamic resources. Отдельный Huawei TE40 flow выполняет login bundle validation, `WEB_GetLoginInfo` → `Web_RequestSessionID` → `Web_RequestCertificate` → `WEB_ChangeSessionID`, затем читает только шесть подтверждённых CGI actions. Browser headers, cookie, CSRF и credentials остаются внутри adapter. Exact-model-first resolver направляет только TE40 в Huawei transport; остальные Huawei manifest остаются `protocol_required` без network attempt. Job/server/browser API при добавлении адаптера не изменяются.
 
 ## Ограничения
 

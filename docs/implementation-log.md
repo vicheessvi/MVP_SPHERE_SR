@@ -840,3 +840,11 @@ Commit, push и deploy не выполнялись.
 Производные события не сохраняются в state и не меняют raw SR/JSON. Справочник и Dashboard синхронизированы через продуктовый каталог. Решение описано в ADR-0015 и Full SpecKit feature `015-reboot-analytics`.
 
 Commit и push не выполнялись.
+
+## 2026-09-03 — Feature 016: автоматический опрос Huawei TE40
+
+После воспроизводимой локальной проверки web-интерфейса добавлен отдельный Python-адаптер `huawei_te40_web_cgi_v1` только для сочетания Терминалы ВКС / Huawei / TE40. Адаптер через HTTPS/443 проверяет login bundle, выполняет browser-compatible последовательность `WEB_GetLoginInfo` → `Web_RequestSessionID` → `Web_RequestCertificate` → `WEB_ChangeSessionID` и читает фиксированный read-only набор сведений о серийном номере, MAC, версии, возможностях, локальном времени и DHCP. Самоподписанный сертификат и legacy TLS допускаются только при явном разрешении текущего задания; HTTP fallback отсутствует.
+
+Каталог получил exact-model-first routing: TE40 использует свой transport, остальные Huawei модели остаются `protocol_required` без сетевого запроса. Extron сохраняет прежний независимый адаптер. Credentials из XLSX, cookie и CSRF остаются в памяти, не входят в plan/JSON/log/API; ответы ограничены по размеру, схемы валидируются, неизвестный firmware и активная чужая web-сессия отклоняются безопасно. Итог использует существующий workflow общей папки → `YYYY-MM-DD_HH-mm-ss` → один redacted JSON на IP с ACK перед следующим устройством. Ручной импорт сохранён.
+
+Решение описано в ADR-0016 и Full SpecKit feature `016-huawei-te40-polling`. Реальные IP, MAC, serial, credentials, transcripts и результаты опроса в репозиторий не добавлялись. Commit и push не выполнялись.

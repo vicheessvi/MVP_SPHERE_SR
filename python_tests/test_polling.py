@@ -7,6 +7,7 @@ from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError
 
 
 SUPPORTED = {"category": "controller", "manufacturer": "Extron", "model": "IPCP Pro 250", "pollingSupported": True}
+HUAWEI = {"category": "vcs", "manufacturer": "Huawei", "model": "TE40", "pollingSupported": True}
 
 
 class PollingTests(unittest.TestCase):
@@ -47,6 +48,53 @@ class PollingTests(unittest.TestCase):
         self.assertFalse(result["networkAttempted"])
         self.assertEqual(result["vendorPolling"]["status"], "unsupported")
         ADAPTER_REGISTRY.pop("synthetic_test_only", None)
+
+    def test_huawei_te40_uses_its_transport_and_shared_credential_pool(self) -> None:
+        observed = []
+
+        def huawei_adapter(device, credentials, _options):
+            observed.append((device["ipNormalized"], len(credentials)))
+            return {"ok": True, "capturedAt": "synthetic", "vendorPolling": {"status": "supported"}}
+
+        result = run_plan(
+            {"devices": [{**HUAWEI, "ip": "192.0.2.40"}]},
+            {
+                "ping": lambda *_args: {"ok": True, "durationMs": 1},
+                "get_credentials": lambda *_args: [{"username": "u1", "password": "p1"}, {"username": "u2", "password": "p2"}],
+                "adapters": {"huawei_te40_web_cgi_v1": huawei_adapter},
+            },
+        )[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual(observed, [("192.0.2.40", 2)])
+
+    def test_mixed_huawei_extron_plan_keeps_adapters_separate_and_te20_offline(self) -> None:
+        calls = []
+
+        def adapter(name):
+            def execute(device, _credentials, _options):
+                calls.append((name, device["ipNormalized"]))
+                return {"ok": True, "capturedAt": "synthetic", "vendorPolling": {"status": "supported"}}
+            return execute
+
+        plan = {
+            "devices": [
+                {**HUAWEI, "ip": "192.0.2.40"},
+                {**SUPPORTED, "ip": "192.0.2.41"},
+                {"category": "vcs", "manufacturer": "Huawei", "model": "TE20", "ip": "192.0.2.42"},
+            ]
+        }
+        results = run_plan(plan, {
+            "ping": lambda *_args: {"ok": True, "durationMs": 1},
+            "get_credentials": lambda *_args: [{"username": "u", "password": "p"}],
+            "adapters": {
+                "huawei_te40_web_cgi_v1": adapter("huawei"),
+                "extron_web_dynamic_resources_v1": adapter("extron"),
+            },
+        })
+        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41")])
+        self.assertEqual([item["ip"] for item in results], ["192.0.2.40", "192.0.2.41", "192.0.2.42"])
+        self.assertFalse(results[2]["networkAttempted"])
+        self.assertEqual(results[2]["vendorPolling"]["status"], "protocol_required")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,26 @@
 {
   "schemaVersion": 1,
-  "adapters": ["extron_web_dynamic_resources_v1"],
+  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te40_web_cgi_v1"],
   "entries": [
+    {
+      "key": "vcs/huawei/te40",
+      "category": "vcs",
+      "manufacturer": "huawei",
+      "aliases": ["huawey"],
+      "models": ["TE40"],
+      "protocolStatus": "supported",
+      "transport": "huawei_te40_web_cgi_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
     {
       "key": "vcs/huawei",
       "category": "vcs",
       "manufacturer": "huawei",
       "aliases": ["huawey"],
-      "models": ["TE20", "TE40", "CloudLinc Bar 310", "TE50", "TE30", "CloudLinc Bar 300", "CloudLinc Box 310", "CloudLinc Box 300", "CloudLinc Box 610", "CloudLinc Box 600", "TE60"],
+      "models": ["TE20", "CloudLinc Bar 310", "TE50", "TE30", "CloudLinc Bar 300", "CloudLinc Box 310", "CloudLinc Box 300", "CloudLinc Box 610", "CloudLinc Box 600", "TE60"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "vcs/polycom",
@@ -20,7 +30,7 @@
       "models": ["RealPresence Group 310", "HDX 7000", "RealPresence Group 500", "HDX 4002", "HDX 6000", "HDX 8000", "HDX 9000", "RealPresence Group 700", "RealPresence Group 300", "HDX 4500"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "vcs/cisco",
@@ -30,7 +40,7 @@
       "models": ["Webex DX80", "Webex Room Kit", "Webex Room Kit Plus", "Webex Room Kit Mini CS-KIT-MINI-K7", "Webex Codec Plus", "Webex Board 55S", "Webex Board 85S", "Webex Codec Pro", "Webex Board 70S"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "vcs/yealink",
@@ -40,7 +50,7 @@
       "models": ["VC120"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "controller/extron",
@@ -50,7 +60,7 @@
       "models": ["IPCP Pro 355M", "IPCP Pro 255", "HCR 102", "IPCP Pro 250", "IPCP Pro 360", "IPCP Pro 350", "IPL Pro S1", "IPCP Pro 555Q xi", "IPCP Pro 555", "IPCP 250 xi", "IPCP Pro 350M", "IPCP Pro 550", "IPCP Pro 255Q xi", "IPCP Pro S1 xi", "IPL PRO S6", "IPL Pro S3", "IPCP Pro 355MQ xi", "IPCP Pro 360Q xi"],
       "protocolStatus": "supported",
       "transport": "extron_web_dynamic_resources_v1",
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "memory_xlsx_pool"
     },
     {
       "key": "controller/aten",
@@ -60,7 +70,7 @@
       "models": ["VK2200", "VK2100A", "VK1200"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "controller/crestron",
@@ -70,7 +80,7 @@
       "models": ["RMC3", "RMC4", "PRO2", "DMPS3-300-C", "CP2E", "CP3", "DMPS3-200-C", "CP4", "PRO3", "CP4N", "AV3", "VC4", "CP3N", "MC2E"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "controller/amx",
@@ -80,7 +90,7 @@
       "models": ["DGX1600-ENC"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "controller/videon",
@@ -90,7 +100,7 @@
       "models": ["OptiPlex 3080"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "controller/iridi",
@@ -100,7 +110,7 @@
       "models": ["PX-VP100-Advanced-off"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "controller/hp",
@@ -110,7 +120,7 @@
       "models": ["H8TN6-2120"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "controller/t-labs",
@@ -120,7 +130,7 @@
       "models": ["Synapse TLS-C1"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "controller/intel",
@@ -130,7 +140,7 @@
       "models": ["BOXNUC7I5BNHXF"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "panel/extron",
@@ -140,7 +150,7 @@
       "models": ["TLP Pro 725T", "TLP Pro 725C", "TLP Pro 520M", "TLP Pro 1025T", "TLP Pro 1725TG", "TLP Pro 720C", "TLP Pro 1720TG", "TLP Pro 1520TG", "TLP Pro 1022T", "TLP Pro 1725MG", "TLP Pro 725M", "TLP Pro 1025M", "TLP Pro 1520MG", "TLP Pro 1225TG", "TLP Pro 525M", "TLP Pro 1720MG", "TLP Pro 1525TG", "TLP Pro 1230WTG", "TLP Pro 720T", "TLP Pro 300M", "TLP Pro 1220TG", "TLP Pro 1020T"],
       "protocolStatus": "supported",
       "transport": "extron_web_dynamic_resources_v1",
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "memory_xlsx_pool"
     },
     {
       "key": "panel/aten",
@@ -150,7 +160,7 @@
       "models": ["VK330"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "panel/crestron",
@@ -160,7 +170,7 @@
       "models": ["TSW-760", "TS-1070", "TSW-560", "TS-770", "TSW-752", "TSWC-730", "TSW-1060", "TS-1542", "TSW-770", "TPMC-9", "TSW-750", "TPS-6X", "TSW-1052", "TSW-1050", "TPMC-V15", "TSW-1070-B-S", "TPS-15", "TST-902", "TPS-4000", "TPMC-V12"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "panel/elo",
@@ -170,7 +180,7 @@
       "models": ["2200L"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "panel/amx",
@@ -180,7 +190,7 @@
       "models": ["MT-1002"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     },
     {
       "key": "panel/iridi",
@@ -190,7 +200,7 @@
       "models": ["P10-T"],
       "protocolStatus": "protocol_required",
       "transport": null,
-      "credentialMode": "vault_by_ip"
+      "credentialMode": "not_configured"
     }
   ]
 }

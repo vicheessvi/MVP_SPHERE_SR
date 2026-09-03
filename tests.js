@@ -18,6 +18,7 @@
   }
 
   const api = global.MvpSphereSR;
+  const runtimeModelCatalog = typeof require === "function" ? require("./runtime/model-catalog") : null;
   const fixtures = global.MvpSphereSRFixtures;
   const timelineExpected = global.MvpSphereSRTimelineExpectations;
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
@@ -305,6 +306,31 @@
     assertEqual(panel.support, "implemented");
     assertEqual(controller.poll, undefined);
     assertEqual(panel.transport, "extron_web_dynamic_resources_v1");
+  });
+
+  test("Huawei TE40 поддерживается только своим VCS transport, а прямой HTML остаётся ручным", () => {
+    const te40 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE40" });
+    const te20 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE20" });
+    assertEqual(te40.support, "implemented");
+    assertEqual(te40.transport, "huawei_te40_web_cgi_v1");
+    assertEqual(te20.support, "not_implemented");
+    assertEqual(te20.transport, null);
+    const fileMode = api.resolveLaunchMode({ protocol: "file:", fileMarker: true });
+    assertEqual(fileMode.kind, "file");
+    assertEqual(fileMode.credentialsAvailable, false);
+  });
+
+  test("Runtime catalog выбирает Huawei TE40 раньше закрытого vendor fallback", () => {
+    if (!runtimeModelCatalog) return;
+    const te40 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "TE40" });
+    const te20 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "TE20" });
+    const unknown = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "Unknown Huawei" });
+    assertEqual(te40.key, "vcs/huawei/te40");
+    assertEqual(te40.transport, "huawei_te40_web_cgi_v1");
+    assertEqual(te20.key, "vcs/huawei");
+    assertEqual(te20.protocolStatus, "protocol_required");
+    assertEqual(unknown.key, "vcs/huawei");
+    assertEqual(unknown.transport, null);
   });
 
   test("Первый load создаёт и сохраняет demo state", () => {

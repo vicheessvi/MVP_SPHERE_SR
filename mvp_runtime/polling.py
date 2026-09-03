@@ -76,7 +76,14 @@ def _default_extron(device: dict[str, Any], credential: Any, options: dict[str, 
     return poll_extron_device(device, credential, options)
 
 
+def _default_huawei_te40(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
+    from .adapters.huawei_te40 import poll_huawei_te40_device
+
+    return poll_huawei_te40_device(device, credential, options)
+
+
 register_adapter("extron_web_dynamic_resources_v1", _default_extron)
+register_adapter("huawei_te40_web_cgi_v1", _default_huawei_te40)
 
 
 def plan_device_supported(device: dict[str, Any]) -> bool:

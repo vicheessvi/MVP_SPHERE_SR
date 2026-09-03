@@ -20,7 +20,10 @@ function resolveManifest(device) {
   const category = normalize(device && device.category);
   const manufacturer = normalize(device && (device.manufacturerNormalized || device.manufacturerRaw || device.manufacturer));
   const model = normalize(device && (device.modelNormalized || device.modelRaw || device.model));
-  const manifest = CATALOG.find((item) => item.category === category && [item.manufacturer, ...item.aliases].map(normalize).includes(manufacturer));
+  const candidates = CATALOG.filter((item) => item.category === category && [item.manufacturer, ...item.aliases].map(normalize).includes(manufacturer));
+  const manifest = candidates.find((item) => itemHasModel(item, model))
+    || candidates.find((item) => item.protocolStatus !== "supported")
+    || candidates[0];
   if (!manifest) return { key: `${category || "unknown"}/${manufacturer || "unknown"}`, category, manufacturer, model, knownModel: false, protocolStatus: "unsupported", transport: null, credentialMode: "none" };
   return { ...manifest, model, knownModel: itemHasModel(manifest, model) };
 }

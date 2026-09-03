@@ -215,7 +215,7 @@
       support: "implemented",
       transport: "extron_web_dynamic_resources_v1",
       normalizerKey: "extron-json-v1",
-      credentialMode: "local_dpapi_by_device_scope"
+      credentialMode: "memory_xlsx_pool"
     }),
     Object.freeze({
       key: "panel/extron",
@@ -224,7 +224,17 @@
       support: "implemented",
       transport: "extron_web_dynamic_resources_v1",
       normalizerKey: "extron-json-v1",
-      credentialMode: "local_dpapi_by_device_scope"
+      credentialMode: "memory_xlsx_pool"
+    }),
+    Object.freeze({
+      key: "vcs/huawei/te40",
+      category: "vcs",
+      manufacturerNormalized: "huawei",
+      modelNormalized: "te40",
+      support: "implemented",
+      transport: "huawei_te40_web_cgi_v1",
+      normalizerKey: "huawei-te40-json-v1",
+      credentialMode: "memory_xlsx_pool"
     })
   ]);
 
@@ -1122,8 +1132,10 @@
 
   function scopePollingStatusToInventory(status, device) {
     if (status?.pollStatus !== "authorization_error") return status;
-    const supportedScope = device
-      && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "extron";
+    const supportedScope = device && (
+      normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "extron"
+      || resolvePollingCapability(device).support === "implemented"
+    );
     if (supportedScope) return status;
     return { ...status, pollStatus: "processing_error", authorizationStatus: "unknown", authorizationEvidence: null };
   }
@@ -1156,12 +1168,16 @@
   function resolvePollingCapability(device) {
     const category = normalizeText(device && device.category);
     const manufacturerNormalized = normalizeManufacturer(device && (device.manufacturerNormalized || device.manufacturerRaw));
-    const descriptor = POLLING_ADAPTERS.find((item) => item.category === category && item.manufacturerNormalized === manufacturerNormalized);
+    const modelNormalized = normalizeText(device && (device.modelNormalized || device.modelRaw || device.model));
+    const descriptor = POLLING_ADAPTERS.find((item) => item.category === category
+      && item.manufacturerNormalized === manufacturerNormalized
+      && (!item.modelNormalized || normalizeText(item.modelNormalized) === modelNormalized));
     if (descriptor) return deepClone(descriptor);
     return {
       key: null,
       category,
       manufacturerNormalized,
+      modelNormalized,
       support: category && manufacturerNormalized ? "not_implemented" : "unknown",
       transport: null,
       normalizerKey: null,

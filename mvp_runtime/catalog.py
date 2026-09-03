@@ -68,16 +68,21 @@ def resolve_manifest(device: dict[str, Any] | None, catalog: dict[str, Any] = CA
         or source.get("manufacturer")
     )
     model = normalize(source.get("modelNormalized") or source.get("modelRaw") or source.get("model"))
+    candidates = []
     for entry in catalog["entries"]:
         manufacturers = [entry["manufacturer"], *[normalize(item) for item in entry["aliases"]]]
         if entry["category"] == category and manufacturer in manufacturers:
-            return {
-                **entry,
-                "aliases": list(entry["aliases"]),
-                "models": list(entry["models"]),
-                "model": model,
-                "knownModel": any(normalize(item) == model for item in entry["models"]),
-            }
+            candidates.append(entry)
+    if candidates:
+        exact = next((entry for entry in candidates if any(normalize(item) == model for item in entry["models"])), None)
+        manifest = exact or next((entry for entry in candidates if entry["protocolStatus"] != "supported"), candidates[0])
+        return {
+            **manifest,
+            "aliases": list(manifest["aliases"]),
+            "models": list(manifest["models"]),
+            "model": model,
+            "knownModel": any(normalize(item) == model for item in manifest["models"]),
+        }
     return {
         "key": f"{category or 'unknown'}/{manufacturer or 'unknown'}",
         "category": category,

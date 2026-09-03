@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 015
+## Текущая feature 016
+
+- Спецификация, план, контракт и задачи: `specs/016-huawei-te40-polling/`.
+- Подтверждённый адаптер Huawei TE40: `mvp_runtime/adapters/huawei_te40.py`.
+- Exact-model-first routing: `mvp_runtime/catalog.py`, `runtime/model-catalog.js`, `runtime/device-catalog.json`.
+- Архитектурное решение: `docs/decisions/ADR-0016-huawei-te40-polling.md`.
+
+## Feature 015
 
 - Спецификация, правило, модель, контракт и задачи: `specs/015-reboot-analytics/`.
 - Производный индекс, фильтры, KPI и renderer: `app.js`.
@@ -15,6 +22,7 @@
 - XLSX credentials и redaction: `mvp_runtime/credentials.py`, `mvp_runtime/redaction.py`, `runtime/credential-pool.js`.
 - План, exact-IP allowlist, job и ACK: `mvp_runtime/polling.py`, `mvp_runtime/polling_job.py`.
 - Подтверждённый Extron adapter: `mvp_runtime/adapters/extron.py`.
+- Подтверждённый Huawei TE40 adapter: `mvp_runtime/adapters/huawei_te40.py`.
 - Общий каталог устройств: `runtime/device-catalog.json`; CommonJS migration/reference loader: `runtime/model-catalog.js`.
 - Архитектурное решение runtime: `docs/decisions/ADR-0014-python-runtime-migration.md`.
 
@@ -39,7 +47,7 @@
 - `START_MVP_SPHERE_SR.py` — полный режим; прямой `index.html` — ручной режим.
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
-- Подтверждён только локальный динамический HTTPS web contract Extron controller/panel; остальные vendor adapters — `protocol_required`.
+- Подтверждены локальный динамический HTTPS web contract Extron controller/panel и отдельный HTTPS web-CGI contract Huawei TE40; остальные vendor/model adapters — `protocol_required`.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 
 ## История
