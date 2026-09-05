@@ -12,7 +12,7 @@
 - Хранение: только память вкладки/runtime; выбранные готовые JSON пишутся только в указанную пользователем папку; `localStorage`/`IndexedDB` не используются.
 - Роль: только «Администратор МЦТП».
 - Constitution: версия 3.2.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/016-huawei-te40-polling/`.
+- Текущая feature: `specs/017-polling-target-domain/`.
 
 ## Правила работы агента
 

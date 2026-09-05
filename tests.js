@@ -1722,6 +1722,118 @@
     assertEqual(changed.selectedDevices.length, 0);
   });
 
+  test("Адресный режим выбирает только один точный current-SR IP и не сохраняет строку поиска", () => {
+    const imported = api.importSrRows(api.createDemoState(), {
+      filename: "single-ip.xlsx", headers: srHeaders(), rows: [
+        srRow({ "Инвентарный номер": "IP-1", "Серийный номер": "IP-SN-1", MAC: "02-00-00-00-10-01", IP: "192.0.2.10", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "TE40" }),
+        srRow({ "Инвентарный номер": "IP-2", "Серийный номер": "IP-SN-2", MAC: "02-00-00-00-10-02", IP: "192.0.2.20", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron", Модель: "IPCP Pro 255" })
+      ]
+    });
+    assertEqual(api.resolvePollingIpTarget(imported.state, "").status, "empty");
+    assertEqual(api.resolvePollingIpTarget(imported.state, "not-an-ip").status, "invalid");
+    assertEqual(api.resolvePollingIpTarget(imported.state, "192.0.2.99").status, "not_found");
+    const found = api.resolvePollingIpTarget(imported.state, " 192.000.002.010 ");
+    assertEqual(found.status, "found");
+    assertEqual(found.device.inventoryNumber, "IP-1");
+    const projection = api.deriveAutomaticPollingPlan(imported.state, { mode: "single_ip", ipAddress: "192.0.2.10" });
+    assertEqual(projection.selectedDevices.length, 1);
+    assertEqual(projection.selectedDevices[0].inventoryNumber, "IP-1");
+    const plan = api.createPollingPlan(imported.state, { mode: "single_ip", ipAddress: "192.0.2.10", scheduledAt: "2026-09-05T10:00:00", intervalSeconds: 0, credentialsReady: true, credentialSourceSha256: "b".repeat(64), actorId: "user-administrator" });
+    assert(plan.ok, plan.errors?.join("; "));
+    assertEqual(plan.plan.deviceIds.length, 1);
+    assertEqual(plan.plan.selection.mode, "single_ip");
+    assert(!Object.prototype.hasOwnProperty.call(plan.plan.selection, "ipAddress"));
+    const exported = api.buildPollingPlanExport(plan.state, plan.plan.id);
+    assert(exported.ok);
+    assertEqual(exported.payload.schemaVersion, 2);
+    assertEqual(exported.payload.devices.length, 1);
+    assertEqual(exported.payload.devices[0].ip, "192.0.2.10");
+    assert(!Object.prototype.hasOwnProperty.call(exported.payload.selection, "ipAddress"));
+    assert(!/password|login|credential/i.test(JSON.stringify(exported.payload)));
+  });
+
+  test("Адресный режим безопасно блокирует historical, duplicate и неподдерживаемую цель", () => {
+    const imported = api.importSrRows(api.createDemoState(), {
+      filename: "single-ip-errors.xlsx", headers: srHeaders(), rows: [
+        srRow({ "Инвентарный номер": "DUP-1", "Серийный номер": "DUP-SN-1", MAC: "02-00-00-00-11-01", IP: "192.0.2.30", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron" }),
+        srRow({ "Инвентарный номер": "DUP-2", "Серийный номер": "DUP-SN-2", MAC: "02-00-00-00-11-02", IP: "192.0.2.30", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron" }),
+        srRow({ "Инвентарный номер": "UNSUPPORTED-1", "Серийный номер": "UNSUPPORTED-SN-1", MAC: "02-00-00-00-11-03", IP: "192.0.2.40", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Crestron", Модель: "CP4" })
+      ]
+    });
+    const historical = { ...imported.state.inventoryDevices[0], id: "historical-only", ipNormalized: "192.0.2.50", inCurrentSr: false };
+    imported.state.inventoryDevices.push(historical);
+    assertEqual(api.resolvePollingIpTarget(imported.state, "192.0.2.30").status, "ambiguous");
+    assertEqual(api.resolvePollingIpTarget(imported.state, "192.0.2.50").status, "not_found");
+    const unsupported = api.deriveAutomaticPollingPlan(imported.state, { mode: "single_ip", ipAddress: "192.0.2.40" });
+    assertEqual(unsupported.selectedDevices.length, 1);
+    assertEqual(unsupported.supportedDevices.length, 0);
+    const blocked = api.createPollingPlan(imported.state, { mode: "single_ip", ipAddress: "192.0.2.40", scheduledAt: "2026-09-05T10:00:00", intervalSeconds: 0, credentialsReady: true, credentialSourceSha256: "c".repeat(64) });
+    assert(!blocked.ok);
+    assert(blocked.errors.some((item) => item.includes("поддерживаемым автоматическим опросом")));
+  });
+
+  test("Домен дополняет каскад: нормализация, один, несколько, все и не указано", () => {
+    const headers = [...srHeaders(), "Домен"];
+    const rows = [
+      srRow({ "Инвентарный номер": "DOM-1", "Серийный номер": "DOM-SN-1", MAC: "02-00-00-00-12-01", IP: "192.0.2.61", "Домен": " Domain-A ", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron", Модель: "Model A" }),
+      srRow({ "Инвентарный номер": "DOM-2", "Серийный номер": "DOM-SN-2", MAC: "02-00-00-00-12-02", IP: "192.0.2.62", "Домен": "domain-a", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron", Модель: "Model B" }),
+      srRow({ "Инвентарный номер": "DOM-3", "Серийный номер": "DOM-SN-3", MAC: "02-00-00-00-12-03", IP: "192.0.2.63", "Домен": "Domain-B", "Тип модели": "Панель управления", Производитель: "Extron", Модель: "Panel A" }),
+      srRow({ "Инвентарный номер": "DOM-4", "Серийный номер": "DOM-SN-4", MAC: "02-00-00-00-12-04", IP: "192.0.2.64", "Домен": "", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Crestron", Модель: "Model C" })
+    ];
+    const imported = api.importSrRows(api.createDemoState(), { filename: "domains.xlsx", headers, rows });
+    const base = { categories: [api.POLLING_ALL], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL] };
+    const allImplicit = api.deriveAutomaticPollingPlan(imported.state, base);
+    const allExplicit = api.deriveAutomaticPollingPlan(imported.state, { ...base, domains: [api.POLLING_ALL, "domain-a"] });
+    assertEqual(allImplicit.selectedDevices.length, 4);
+    assertEqual(allExplicit.selectedDevices.length, 4);
+    assertEqual(allExplicit.selection.domains.join(","), api.POLLING_ALL);
+    assertEqual(allExplicit.availableDomains.length, 3);
+    assertEqual(allExplicit.availableDomains.filter((item) => item.value === "domain-a").length, 1);
+    assertEqual(api.deriveAutomaticPollingPlan(imported.state, { ...base, domains: ["domain-a"] }).selectedDevices.length, 2);
+    assertEqual(api.deriveAutomaticPollingPlan(imported.state, { ...base, domains: ["domain-a", "domain-b"] }).selectedDevices.length, 3);
+    assertEqual(api.deriveAutomaticPollingPlan(imported.state, { ...base, domains: [api.POLLING_MISSING] }).selectedDevices.length, 1);
+    const reset = api.deriveAutomaticPollingPlan(imported.state, { domains: ["domain-b"], categories: ["controller"], manufacturers: ["extron"], models: ["model a"] });
+    assertEqual(reset.selection.categories.length, 0);
+    assertEqual(reset.selection.manufacturers.length, 0);
+    assertEqual(reset.selection.models.length, 0);
+    assertEqual(reset.selectedDevices.length, 0);
+    const intersection = api.deriveAutomaticPollingPlan(imported.state, { domains: ["domain-a"], categories: ["controller"], manufacturers: ["extron"], models: ["model b"] });
+    assertEqual(intersection.selectedDevices.length, 1);
+    assertEqual(intersection.selectedDevices[0].inventoryNumber, "DOM-2");
+  });
+
+  test("Повторная загрузка SR немедленно пересчитывает адресную цель", () => {
+    const headers = [...srHeaders(), "Домен"];
+    const first = api.importSrRows(api.createDemoState(), { filename: "before.xlsx", headers, rows: [srRow({ "Инвентарный номер": "MOVE-1", "Серийный номер": "MOVE-SN-1", MAC: "02-00-00-00-13-01", IP: "192.0.2.70", "Домен": "Domain-A", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron" })] });
+    assertEqual(api.resolvePollingIpTarget(first.state, "192.0.2.70").status, "found");
+    const second = api.importSrRows(first.state, { filename: "after.xlsx", headers, rows: [srRow({ "Инвентарный номер": "MOVE-1", "Серийный номер": "MOVE-SN-1", MAC: "02-00-00-00-13-01", IP: "192.0.2.71", "Домен": "Domain-B", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron" })] });
+    assertEqual(api.resolvePollingIpTarget(second.state, "192.0.2.70").status, "not_found");
+    assertEqual(api.resolvePollingIpTarget(second.state, "192.0.2.71").status, "found");
+  });
+
+  test("Адресный поиск и доменный каскад обрабатывают 25000 устройств быстрее 2 секунд", () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = Array.from({ length: 25000 }, (_, index) => ({
+      id: `polling-device-${index}`,
+      inCurrentSr: true,
+      category: index % 2 ? "controller" : "panel",
+      domain: index % 11 ? `Domain-${index % 10}` : null,
+      manufacturerRaw: "Extron",
+      manufacturerNormalized: "extron",
+      modelRaw: `Model ${index % 100}`,
+      modelNormalized: `model ${index % 100}`,
+      ipNormalized: index === 24999 ? "192.0.2.80" : null,
+      pollingCapability: { support: "implemented", transport: "synthetic-test" }
+    }));
+    const startedAt = Date.now();
+    const byIp = api.deriveAutomaticPollingPlan(state, { mode: "single_ip", ipAddress: "192.0.2.80" });
+    const byFilters = api.deriveAutomaticPollingPlan(state, { domains: [api.POLLING_ALL], categories: [api.POLLING_ALL], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL] });
+    const elapsed = Date.now() - startedAt;
+    assertEqual(byIp.selectedDevices.length, 1);
+    assertEqual(byFilters.selectedDevices.length, 25000);
+    assert(elapsed < 2000, `Selection занял ${elapsed} мс`);
+  });
+
   test("Каскад покрывает один, несколько и все значения каждого уровня", () => {
     const rows = [
       srRow({ "Инвентарный номер": "C-1", "Серийный номер": "CS-1", MAC: "02-00-00-00-01-01", IP: "10.30.0.1", "Тип оборудования": "controller", "Тип модели": "Контроллер", Производитель: "Extron", Модель: "Model A" }),
@@ -1759,6 +1871,14 @@
     assert(!source.includes("Первый непустой лист; «Домен» необязателен"));
     assert(!source.includes("План локального опроса"));
     assert(!source.includes("Производитель, необязательно"));
+  });
+
+  test("Экран Загрузка содержит адресный режим, IP-поле и локальную карточку цели", () => {
+    if (typeof require !== "function") return;
+    const fs = require("fs");
+    const source = fs.readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    ["По фильтрам", "По IP-адресу", "IP-адрес", "Карточка выбранного устройства", "Домен", "Локация / адрес", "Инвентарный / серийный"].forEach((text) => assert(source.includes(text), `Нет элемента адресного плана: ${text}`));
+    assert(source.includes("data-polling-ip-result"));
   });
 
   test("Polling plan v2 включает supported и unsupported без credentials", () => {

@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 016
+## Текущая feature 017
+
+- Спецификация, план, контракт и задачи: `specs/017-polling-target-domain/`.
+- Exact current-SR IP selector, карточка цели и доменный каскад: `app.js`, `styles.css`.
+- Пользовательская справка: `product-catalog.js`.
+- Архитектурное решение: `docs/decisions/ADR-0017-polling-target-domain.md`.
+
+## Feature 016
 
 - Спецификация, план, контракт и задачи: `specs/016-huawei-te40-polling/`.
 - Подтверждённый адаптер Huawei TE40: `mvp_runtime/adapters/huawei_te40.py`.
