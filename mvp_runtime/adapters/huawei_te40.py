@@ -1,4 +1,4 @@
-"""Bounded Huawei TE40 legacy web CGI polling adapter."""
+"""Bounded shared Huawei TE30/TE40/TE50/TE60 legacy web CGI adapter."""
 
 from __future__ import annotations
 
@@ -61,6 +61,7 @@ RESOURCE_FIELDS: dict[str, dict[str, tuple[type, ...]]] = {
 MAC_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 MAX_COOKIE_COUNT = 16
 MAX_COOKIE_LENGTH = 4096
+SUPPORTED_MODELS = frozenset({"te30", "te40", "te50", "te60"})
 
 
 class HuaweiTransportError(RuntimeError):
@@ -222,6 +223,16 @@ def _compact(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item is not None and item != ""}
 
 
+def _normalized_planned_model(device: dict[str, Any]) -> str:
+    return str(device.get("model") or device.get("modelRaw") or device.get("modelNormalized") or "").strip().casefold()
+
+
+def _contains_model_token(value: Any, planned_model: str) -> bool:
+    if planned_model not in SUPPORTED_MODELS:
+        return False
+    return bool(re.search(rf"(?:^|[^a-z0-9]){re.escape(planned_model)}(?:[^a-z0-9]|$)", str(value or ""), re.IGNORECASE))
+
+
 def _resource(resources: dict[str, Any], key: str) -> dict[str, Any]:
     return resources.get(key) or resources.get(RESOURCE_ACTIONS[key]) or {}
 
@@ -268,7 +279,7 @@ def build_web_blocks(resources: dict[str, Any], ip: str) -> dict[str, Any]:
     }
 
 
-def poll_huawei_te40_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None) -> dict[str, Any]:
+def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None) -> dict[str, Any]:
     from mvp_runtime.polling import normalize_ipv4
 
     settings = options or {}
@@ -276,6 +287,7 @@ def poll_huawei_te40_device(device: dict[str, Any], credentials: Any, options: d
     nonce = settings.get("nonce") or (lambda: str(random.random()))
     ip = normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
     captured_at = _utc_iso(settings.get("now"))
+    planned_model = _normalized_planned_model(device)
     base: dict[str, Any] = {
         "ip": ip,
         "capturedAt": captured_at,
@@ -283,9 +295,9 @@ def poll_huawei_te40_device(device: dict[str, Any], credentials: Any, options: d
         "failedStage": None,
         "loginAttempts": [],
         "credentialAttempts": 0,
-        "vendorPolling": {"status": "supported", "contract": "huawei-te40-web-cgi-v1"},
+        "vendorPolling": {"status": "supported", "contract": "huawei-te-web-cgi-v1", "model": planned_model.upper()},
     }
-    if not ip or str(device.get("model") or device.get("modelRaw") or device.get("modelNormalized") or "").strip().casefold() != "te40":
+    if not ip or planned_model not in SUPPORTED_MODELS:
         return {**base, "failedStage": "validation", "safeError": "invalid_or_unsupported_target"}
     pool = credentials if isinstance(credentials, list) else [credentials]
     pool = [item for item in pool if isinstance(item, dict) and item.get("username") and item.get("password")]
@@ -327,6 +339,8 @@ def poll_huawei_te40_device(device: dict[str, Any], credentials: Any, options: d
             return {**base, "failedStage": "login", "safeError": "resource_envelope_invalid"}
         if data.get("AlreadyLogin") == 1:
             return {**base, "failedStage": "authorization", "safeError": "interactive_session_active"}
+        if not _contains_model_token(data.get("szTermType"), planned_model):
+            return {**base, "failedStage": "validation", "safeError": "target_model_mismatch"}
         outer, _data = action("Web_RequestSessionID")
         if outer.get("success") != 1:
             return {**base, "failedStage": "login", "safeError": "session_request_failed"}
@@ -388,25 +402,29 @@ def poll_huawei_te40_device(device: dict[str, Any], credentials: Any, options: d
 
     version = resources.get("versionInfo") or {}
     model = str(version.get("model") or "").strip()
-    model_matches_te40 = bool(re.search(r"(?:^|[^a-z0-9])te40(?:[^a-z0-9]|$)", model, re.IGNORECASE))
+    model_matches_planned = _contains_model_token(model, planned_model)
     esn = str((resources.get("productEsn") or {}).get("product_esn") or "").strip()
     mac_data = resources.get("systemMac") or {}
     has_mac = any(isinstance(value, str) and MAC_PATTERN.fullmatch(value.strip()) for value in mac_data.values())
-    if not model_matches_te40 or not (esn or has_mac):
+    if not model_matches_planned or not (esn or has_mac):
         return {
             **base,
             "failedStage": "resources",
             "safeError": "resource_schema_unconfirmed",
-            "webInterface": {"ok": True, "evidence": "Huawei TE40 login and resource markers found", "insecureTls": not reject_unauthorized},
+            "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized},
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
         }
     safe_resources = sanitize_result(resources)
     return {
         **base,
         "ok": True,
-        "webInterface": {"ok": True, "evidence": "Huawei TE40 login and resource markers found", "insecureTls": not reject_unauthorized},
+        "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized},
         "webBlocks": build_web_blocks(resources, ip),
         "rawResources": safe_resources,
         "readMode": "targeted",
         "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
     }
+
+
+# Compatibility entry point for historical imports; both names execute one implementation.
+poll_huawei_te40_device = poll_huawei_te_device

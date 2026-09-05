@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
-  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te40_web_cgi_v1"],
+  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te_web_cgi_v1"],
   "entries": [
     {
-      "key": "vcs/huawei/te40",
+      "key": "vcs/huawei/te-family",
       "category": "vcs",
       "manufacturer": "huawei",
       "aliases": ["huawey"],
-      "models": ["TE40"],
+      "models": ["TE30", "TE40", "TE50", "TE60"],
       "protocolStatus": "supported",
-      "transport": "huawei_te40_web_cgi_v1",
+      "transport": "huawei_te_web_cgi_v1",
       "credentialMode": "memory_xlsx_pool"
     },
     {
@@ -17,7 +17,7 @@
       "category": "vcs",
       "manufacturer": "huawei",
       "aliases": ["huawey"],
-      "models": ["TE20", "CloudLinc Bar 310", "TE50", "TE30", "CloudLinc Bar 300", "CloudLinc Box 310", "CloudLinc Box 300", "CloudLinc Box 610", "CloudLinc Box 600", "TE60"],
+      "models": ["TE20", "TX50", "CloudLinc Bar 310", "CloudLinc Bar 300", "CloudLinc Box 310", "CloudLinc Box 300", "CloudLinc Box 610", "CloudLinc Box 600"],
       "protocolStatus": "protocol_required",
       "transport": null,
       "credentialMode": "not_configured"

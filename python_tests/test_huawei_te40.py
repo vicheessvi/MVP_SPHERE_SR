@@ -4,7 +4,7 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import HuaweiTransportError, build_web_blocks, poll_huawei_te40_device
+from mvp_runtime.adapters.huawei_te40 import HuaweiTransportError, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.redaction import sanitize_result
 
 
@@ -19,11 +19,11 @@ def envelope(data=None, success=1, exception_id=None):
     return {"status_code": 200, "headers": [], "body": json.dumps(payload)}
 
 
-def synthetic_resources():
+def synthetic_resources(model="TE40"):
     return {
         "WEB_GetProductEsnAPI": {"product_esn": "SYNTHETIC-ESN"},
         "WEB_GetSystemMacAddrAPI": {"system_wanMAC_addr": "00:00:00:00:00:01", "system_lanMAC_addr": "00:00:00:00:00:02"},
-        "WEB_GetVersionInfoAPI": {"model": "TE40", "softVersion": "V1", "hardVersion": "H1", "logicVersion": "L1", "micVersion": [], "inCamVersion": "C1"},
+        "WEB_GetVersionInfoAPI": {"model": model, "softVersion": "V1", "hardVersion": "H1", "logicVersion": "L1", "micVersion": [], "inCamVersion": "C1"},
         "WEB_GetTermSpecsInfoAPI": {"audioProtocol": "SYNTHETIC", "videoProtocol": "SYNTHETIC", "ipSpeed": 1024, "maxEnc": 1, "maxDec": 1},
         "WEB_GetSysLocalTimeAPI": {"year": 2026, "month": 9, "day": 3, "hour": 12, "minute": 0, "second": 1, "daylight": 0, "isDst": 0},
         "WEB_GetDhcpIPInfoAPI": {"IPv4DhcpAddr": "192.0.2.40", "IPv4DhcpNetMask": "255.255.255.0", "IPv4DhcpGaweWay": "192.0.2.1"},
@@ -31,8 +31,8 @@ def synthetic_resources():
 
 
 class HuaweiTe40Tests(unittest.TestCase):
-    def success_request(self, calls, overrides=None):
-        resources = synthetic_resources()
+    def success_request(self, calls, overrides=None, terminal_model="TE40"):
+        resources = synthetic_resources(terminal_model)
         overrides = overrides or {}
 
         def request(options):
@@ -53,7 +53,7 @@ class HuaweiTe40Tests(unittest.TestCase):
                 return {"status_code": 200, "headers": [], "body": RESOURCE_MARKERS}
             action = path.split("ActionID=", 1)[1].split("?rmd=", 1)[0]
             if action == "WEB_GetLoginInfo":
-                return envelope({"AlreadyLogin": 0, "szTermType": "TE40"})
+                return envelope({"AlreadyLogin": 0, "szTermType": terminal_model})
             if action == "Web_RequestSessionID":
                 return envelope({"acSessionId": ""})
             if action == "Web_RequestCertificate":
@@ -66,7 +66,7 @@ class HuaweiTe40Tests(unittest.TestCase):
 
     def test_browser_compatible_login_cookie_csrf_and_resource_order(self):
         calls = []
-        result = poll_huawei_te40_device(
+        result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
             {"request": self.success_request(calls), "now": lambda: 1_700_000_000.0, "nonce": lambda: "0.25"},
@@ -84,6 +84,54 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertTrue(all(item["reject_unauthorized"] is False for item in calls))
         self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
         self.assertNotIn("SYNTHETIC-CSRF", json.dumps(result))
+
+    def test_te30_te40_te50_te60_share_one_guarded_contract(self):
+        for index, model in enumerate(("TE30", "TE40", "TE50", "TE60")):
+            calls = []
+            result = poll_huawei_te_device(
+                {"ip": f"192.0.2.{30 + index * 10}", "model": model, "allowInsecureTls": True},
+                [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+                {"request": self.success_request(calls, terminal_model=model), "nonce": lambda: "0.25"},
+            )
+            self.assertTrue(result["ok"], model)
+            self.assertEqual(result["webBlocks"]["Device Info"]["Model"], model)
+            self.assertEqual(result["vendorPolling"]["contract"], "huawei-te-web-cgi-v1")
+            self.assertEqual(len([item for item in calls if "Web_RequestCertificate" in item["path"]]), 1)
+
+    def test_planned_model_is_checked_before_credentials_and_after_version(self):
+        pre_auth_calls = []
+        pre_auth_result = poll_huawei_te_device(
+            {"ip": "192.0.2.50", "model": "TE50", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(pre_auth_calls, terminal_model="TE40")},
+        )
+        self.assertEqual(pre_auth_result["safeError"], "target_model_mismatch")
+        self.assertFalse(any("Web_RequestCertificate" in item["path"] for item in pre_auth_calls))
+
+        post_auth_calls = []
+        normal = self.success_request(post_auth_calls, terminal_model="TE50")
+
+        def mismatched_version(options):
+            if "ActionID=WEB_GetVersionInfoAPI" in options["path"]:
+                post_auth_calls.append(options)
+                return envelope(synthetic_resources("TE40")["WEB_GetVersionInfoAPI"])
+            return normal(options)
+
+        post_auth_result = poll_huawei_te_device(
+            {"ip": "192.0.2.50", "model": "TE50", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": mismatched_version},
+        )
+        self.assertEqual(post_auth_result["safeError"], "resource_schema_unconfirmed")
+
+        blocked_calls = []
+        blocked = poll_huawei_te_device(
+            {"ip": "192.0.2.70", "model": "TX50", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": lambda options: blocked_calls.append(options)},
+        )
+        self.assertEqual(blocked["safeError"], "invalid_or_unsupported_target")
+        self.assertEqual(blocked_calls, [])
 
     def test_projection_contains_confirmed_identity_firmware_time_network_and_capabilities(self):
         blocks = build_web_blocks(synthetic_resources(), "192.0.2.40")
@@ -108,7 +156,7 @@ class HuaweiTe40Tests(unittest.TestCase):
                 return envelope(resources["WEB_GetVersionInfoAPI"])
             return base(options)
 
-        result = poll_huawei_te40_device(
+        result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "u", "password": "p"}],
             {"request": request},
@@ -126,7 +174,7 @@ class HuaweiTe40Tests(unittest.TestCase):
                 return bad_certificate
             return request(options)
 
-        result = poll_huawei_te40_device(
+        result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
             {"request": auth_fail},
@@ -138,7 +186,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         active = self.success_request(active_calls, {
             "/action.cgi?ActionID=WEB_GetLoginInfo?rmd=0.5": envelope({"AlreadyLogin": 1})
         })
-        active_result = poll_huawei_te40_device(
+        active_result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "u", "password": "p"}],
             {"request": active, "nonce": lambda: "0.5"},
@@ -148,7 +196,7 @@ class HuaweiTe40Tests(unittest.TestCase):
 
         unknown_calls = []
         unknown = self.success_request(unknown_calls, {"/system/login/login.js": {"status_code": 200, "headers": [], "body": "unknown"}})
-        unknown_result = poll_huawei_te40_device(
+        unknown_result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "u", "password": "p"}],
             {"request": unknown},
@@ -163,7 +211,7 @@ class HuaweiTe40Tests(unittest.TestCase):
             (TimeoutError("synthetic"), "request_timeout"),
             (HuaweiTransportError("response_too_large"), "response_too_large"),
         ):
-            result = poll_huawei_te40_device(
+            result = poll_huawei_te_device(
                 {"ip": "192.0.2.40", "model": "TE40"},
                 [{"username": "u", "password": "p"}],
                 {"request": lambda _options, current=error: (_ for _ in ()).throw(current)},
@@ -174,7 +222,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         malformed = self.success_request(calls, {
             "/action.cgi?ActionID=WEB_GetProductEsnAPI?rmd=0.5": {"status_code": 200, "headers": [], "body": "not-json"}
         })
-        result = poll_huawei_te40_device(
+        result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "secret-user", "password": "SECRET-PASSWORD"}],
             {"request": malformed, "nonce": lambda: "0.5"},
@@ -192,7 +240,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         drift = self.success_request(drift_calls, {
             "/action.cgi?ActionID=WEB_GetVersionInfoAPI?rmd=0.75": envelope({"model": "UNKNOWN", "unexpected": "schema"})
         })
-        drift_result = poll_huawei_te40_device(
+        drift_result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "u", "password": "p"}],
             {"request": drift, "nonce": lambda: "0.75"},

@@ -27,17 +27,18 @@ class CatalogTests(unittest.TestCase):
         self.assertIsNone(unknown["transport"])
         self.assertEqual(normalize("  T  Labs "), "t labs")
 
-    def test_huawei_te40_exact_model_precedes_protocol_required_fallback(self) -> None:
-        supported = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "TE40"})
-        self.assertEqual(supported["key"], "vcs/huawei/te40")
-        self.assertEqual(supported["transport"], "huawei_te40_web_cgi_v1")
-        self.assertEqual(supported["protocolStatus"], "supported")
-        self.assertTrue(supported["knownModel"])
+    def test_huawei_te_family_shared_manifest_precedes_protocol_required_fallback(self) -> None:
+        for model in ("TE30", "TE40", "TE50", "TE60"):
+            supported = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": model})
+            self.assertEqual(supported["key"], "vcs/huawei/te-family")
+            self.assertEqual(supported["transport"], "huawei_te_web_cgi_v1")
+            self.assertEqual(supported["protocolStatus"], "supported")
+            self.assertTrue(supported["knownModel"])
 
         aliased = resolve_manifest({"category": "vcs", "manufacturer": "Huawey", "model": "TE40"})
-        self.assertEqual(aliased["key"], "vcs/huawei/te40")
+        self.assertEqual(aliased["key"], "vcs/huawei/te-family")
 
-        for model in ("TE20", "Unknown Huawei"):
+        for model in ("TE20", "TX50", "Unknown Huawei"):
             fallback = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": model})
             self.assertEqual(fallback["key"], "vcs/huawei")
             self.assertEqual(fallback["protocolStatus"], "protocol_required")

@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 017
+## Текущая feature 018
+
+- Спецификация, план, общий контракт и задачи: `specs/018-huawei-te-family/`.
+- Общий guarded transport Huawei TE30/TE40/TE50/TE60: `mvp_runtime/adapters/huawei_te40.py`, `mvp_runtime/polling.py`.
+- Exact-model routing: `runtime/device-catalog.json`, `runtime/model-catalog.js`, `app.js`.
+- Архитектурное решение: `docs/decisions/ADR-0018-huawei-te-family.md`.
+
+## Feature 017
 
 - Спецификация, план, контракт и задачи: `specs/017-polling-target-domain/`.
 - Exact current-SR IP selector, карточка цели и доменный каскад: `app.js`, `styles.css`.
@@ -29,7 +36,7 @@
 - XLSX credentials и redaction: `mvp_runtime/credentials.py`, `mvp_runtime/redaction.py`, `runtime/credential-pool.js`.
 - План, exact-IP allowlist, job и ACK: `mvp_runtime/polling.py`, `mvp_runtime/polling_job.py`.
 - Подтверждённый Extron adapter: `mvp_runtime/adapters/extron.py`.
-- Подтверждённый Huawei TE40 adapter: `mvp_runtime/adapters/huawei_te40.py`.
+- Общий Huawei TE30/TE40/TE50/TE60 adapter: `mvp_runtime/adapters/huawei_te40.py`.
 - Общий каталог устройств: `runtime/device-catalog.json`; CommonJS migration/reference loader: `runtime/model-catalog.js`.
 - Архитектурное решение runtime: `docs/decisions/ADR-0014-python-runtime-migration.md`.
 
@@ -54,7 +61,7 @@
 - `START_MVP_SPHERE_SR.py` — полный режим; прямой `index.html` — ручной режим.
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
-- Подтверждены локальный динамический HTTPS web contract Extron controller/panel и отдельный HTTPS web-CGI contract Huawei TE40; остальные vendor/model adapters — `protocol_required`.
+- Подтверждены локальный динамический HTTPS web contract Extron controller/panel и общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60. TE40 проверен на реальном устройстве; TE30/TE50/TE60 ожидают live-проверку. Остальные vendor/model adapters — `protocol_required`.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 
 ## История

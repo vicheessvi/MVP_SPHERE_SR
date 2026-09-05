@@ -308,27 +308,40 @@
     assertEqual(panel.transport, "extron_web_dynamic_resources_v1");
   });
 
-  test("Huawei TE40 поддерживается только своим VCS transport, а прямой HTML остаётся ручным", () => {
-    const te40 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE40" });
+  test("Huawei TE30, TE40, TE50 и TE60 используют один VCS transport, остальные модели закрыты", () => {
+    const supported = ["TE30", "TE40", "TE50", "TE60"].map((modelRaw) => api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw }));
     const te20 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE20" });
-    assertEqual(te40.support, "implemented");
-    assertEqual(te40.transport, "huawei_te40_web_cgi_v1");
+    const tx50 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TX50" });
+    supported.forEach((item) => {
+      assertEqual(item.support, "implemented");
+      assertEqual(item.transport, "huawei_te_web_cgi_v1");
+    });
+    ["te30", "te40", "te50", "te60"].forEach((modelNormalized) => {
+      assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === modelNormalized).length, 2);
+    });
     assertEqual(te20.support, "not_implemented");
     assertEqual(te20.transport, null);
+    assertEqual(tx50.support, "not_implemented");
+    assertEqual(tx50.transport, null);
     const fileMode = api.resolveLaunchMode({ protocol: "file:", fileMarker: true });
     assertEqual(fileMode.kind, "file");
     assertEqual(fileMode.credentialsAvailable, false);
   });
 
-  test("Runtime catalog выбирает Huawei TE40 раньше закрытого vendor fallback", () => {
+  test("Runtime catalog выбирает общий Huawei TE-family manifest раньше закрытого fallback", () => {
     if (!runtimeModelCatalog) return;
-    const te40 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "TE40" });
+    const supported = ["TE30", "TE40", "TE50", "TE60"].map((model) => runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model }));
     const te20 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "TE20" });
+    const tx50 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "TX50" });
     const unknown = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "Unknown Huawei" });
-    assertEqual(te40.key, "vcs/huawei/te40");
-    assertEqual(te40.transport, "huawei_te40_web_cgi_v1");
+    supported.forEach((item) => {
+      assertEqual(item.key, "vcs/huawei/te-family");
+      assertEqual(item.transport, "huawei_te_web_cgi_v1");
+    });
     assertEqual(te20.key, "vcs/huawei");
     assertEqual(te20.protocolStatus, "protocol_required");
+    assertEqual(tx50.key, "vcs/huawei");
+    assertEqual(tx50.transport, null);
     assertEqual(unknown.key, "vcs/huawei");
     assertEqual(unknown.transport, null);
   });

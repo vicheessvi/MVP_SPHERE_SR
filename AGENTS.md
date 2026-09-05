@@ -12,7 +12,7 @@
 - Хранение: только память вкладки/runtime; выбранные готовые JSON пишутся только в указанную пользователем папку; `localStorage`/`IndexedDB` не используются.
 - Роль: только «Администратор МЦТП».
 - Constitution: версия 3.2.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/017-polling-target-domain/`.
+- Текущая feature: `specs/018-huawei-te-family/`.
 
 ## Правила работы агента
 
@@ -20,7 +20,7 @@
 - Не загружать весь репозиторий без необходимости и не менять несвязанные файлы.
 - Не выдумывать vendor API, команды, transport или схемы ответов; неизвестное отмечать `TBD`/`protocol_required`.
 - Для Extron controller/panel разрешён только подтверждённый контракт `mvp_runtime/adapters/extron.py`: HTTPS/443, dynamic URI из текущего bundle и exact resource URL.
-- Для Huawei TE40 разрешён только подтверждённый контракт `mvp_runtime/adapters/huawei_te40.py`: HTTPS/443, browser-compatible web-CGI login и фиксированный read-only action allowlist. Другие Huawei модели остаются `protocol_required`.
+- Для точных Huawei TE30/TE40/TE50/TE60 разрешён только общий guarded-контракт `mvp_runtime/adapters/huawei_te40.py`: HTTPS/443, browser-compatible web-CGI login, совпадение модели до credentials и после входа, фиксированный read-only action allowlist. TE40 подтверждён на устройстве; TE30/TE50/TE60 считаются provisional до live-проверки. Другие Huawei модели остаются `protocol_required`.
 - Новый adapter регистрировать через `mvp_runtime/polling.py` и `runtime/device-catalog.json` только после evidence review, описанного в `docs/development-workflow.md`.
 - Не изменять raw SR/JSON и внутренние enum-коды ради локализации; русские подписи брать из централизованного presentation dictionary в `app.js`.
 - Термины SR, GCPlus и перезагрузок не трактовать без подтверждения; использовать «Требует уточнения» и «В разработке».

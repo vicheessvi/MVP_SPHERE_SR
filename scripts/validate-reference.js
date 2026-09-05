@@ -18,6 +18,8 @@ if (deviceCatalog.schemaVersion !== 1 || !Array.isArray(deviceCatalog.entries) |
 const keys = (deviceCatalog.entries || []).map((entry) => entry.key);
 if (new Set(keys).size !== keys.length) errors.push("В общем каталоге устройств повторяется key");
 if (!(deviceCatalog.adapters || []).includes("extron_web_dynamic_resources_v1")) errors.push("В общем каталоге отсутствует подтверждённый Extron transport");
+if (!(deviceCatalog.adapters || []).includes("huawei_te_web_cgi_v1")) errors.push("В общем каталоге отсутствует общий Huawei TE transport");
+if ((deviceCatalog.adapters || []).includes("huawei_te40_web_cgi_v1")) errors.push("В общем каталоге остался устаревший Huawei TE40-only transport");
 
 if (errors.length) {
   errors.forEach((error) => process.stderr.write(`ОШИБКА: ${error}\n`));
