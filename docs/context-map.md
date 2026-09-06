@@ -5,7 +5,7 @@
 - Спецификация, plan v3, management-action contract и задачи: `specs/019-close-insecure-ports/`.
 - Opt-in checkbox и capability projection: `app.js`, `product-catalog.js`, `runtime/device-catalog.json`.
 - Guarded TE40 read/write/re-read/TCP verification: `mvp_runtime/adapters/huawei_te40.py`, `mvp_runtime/polling.py`, `mvp_runtime/server.py`.
-- Архитектурное решение и незакрытый live-критерий TCP/80: `docs/decisions/ADR-0019-huawei-te40-close-ports.md`.
+- Архитектурное решение и критерий успеха по значениям меню кодека: `docs/decisions/ADR-0019-huawei-te40-close-ports.md`.
 
 ## Feature 018
 
@@ -69,7 +69,7 @@
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
 - Подтверждены локальный динамический HTTPS web contract Extron controller/panel и общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60. Все четыре Huawei-модели проверены контролируемыми опросами реальных устройств. Остальные vendor/model adapters — `protocol_required`.
-- Opt-in write-задача отключения HTTP/Telnet реализована fail closed только для exact TE40 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Полный критерий закрытия TCP/80 на тестовом firmware не подтверждён; параметр UI отключён, но listener остаётся доступен.
+- Opt-in write-задача отключения HTTP/Telnet реализована только для exact TE40 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. По решению пользователя достаточно подтверждённо изменить значения HTTP/Telnet в меню кодека; TCP listener не влияет на статус отчёта.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 
 ## История

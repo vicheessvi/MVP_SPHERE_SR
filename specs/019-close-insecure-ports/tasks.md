@@ -20,9 +20,9 @@
 ## Phase 4: Controlled validation
 
 - [x] T009 Подтвердить login, model, firmware settings, save envelope и TCP/23/443 на реальном TE40
-- [ ] T010 Получить подтверждённый способ фактически закрыть TCP/80 на тестовом firmware; текущий `enable_http=1` оставляет listener доступным
+- [x] T010 Зафиксировать уточнение пользователя: подтверждённых значений меню достаточно, фактическое состояние TCP/80 вне scope
 
 ## Phase 5: Final validation
 
-- [x] T011 Выполнить полную regression/reference/syntax/secret scan и зафиксировать feature как fail-closed partial до решения T010
+- [x] T011 Выполнить полную regression/reference/syntax/secret scan
 - [x] T012 Отделить источник целей write-задачи от основной SR: отдельный атомарно проверяемый XLSX только в памяти

@@ -31,7 +31,7 @@
 - `status`: `applied`, `already_compliant`, `skipped_unsupported` или `failed`;
 - `transport`: `https/443` для выполненной попытки;
 - `writeAttempted`, `changed`;
-- `before` / `after`: логические состояния HTTP/Telnet и безопасные `open`/`closed` для 23/80/443;
+- `before` / `after`: подтверждённые логические состояния HTTP/Telnet из меню кодека;
 - `safeError`: только стабильный безопасный код ошибки.
 
 Credentials, cookie, CSRF, headers и raw response запрещены.

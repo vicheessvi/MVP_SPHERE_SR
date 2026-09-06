@@ -276,22 +276,11 @@ def _safe_management_state(values: dict[str, int]) -> dict[str, str]:
     }
 
 
-def native_port_probe(ip: str, port: int, timeout_seconds: float = 1.0) -> bool:
-    connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        connection.settimeout(max(0.25, min(float(timeout_seconds), 3.0)))
-        return connection.connect_ex((ip, int(port))) == 0
-    finally:
-        connection.close()
-
-
 def _disable_insecure_management_services(
-    ip: str,
     planned_model: str,
     bundle_text: str,
     csrf_token: str,
     action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
-    port_probe: Callable[[str, int], bool],
     settle: Callable[[], Any],
 ) -> dict[str, Any]:
     base = {"id": DISABLE_INSECURE_SERVICES_ACTION, "transport": "https/443", "changed": False, "writeAttempted": False}
@@ -306,26 +295,16 @@ def _disable_insecure_management_services(
             raise HuaweiContractError("configuration_read_failed")
         return _configuration_values(data)
 
-    def read_state(values: dict[str, int]) -> dict[str, Any]:
-        state: dict[str, Any] = _safe_management_state(values)
-        state["tcpConnectivity"] = {
-            "port23": "open" if port_probe(ip, 23) else "closed",
-            "port80": "open" if port_probe(ip, 80) else "closed",
-            "port443": "open" if port_probe(ip, 443) else "closed",
-        }
-        return state
-
-    def state_is_compliant(values: dict[str, int], state: dict[str, Any]) -> bool:
-        connectivity = state["tcpConnectivity"]
-        return values == MANAGEMENT_TARGET_VALUES and connectivity == {"port23": "closed", "port80": "closed", "port443": "open"}
+    def state_is_compliant(values: dict[str, int]) -> bool:
+        return values == MANAGEMENT_TARGET_VALUES
 
     before = None
     after = None
     write_attempted = False
     try:
         before_values = read_values()
-        before = read_state(before_values)
-        if state_is_compliant(before_values, before):
+        before = _safe_management_state(before_values)
+        if state_is_compliant(before_values):
             return {**base, "status": "already_compliant", "before": before, "after": before}
         payload = {
             "CfgItemInt": [
@@ -341,8 +320,8 @@ def _disable_insecure_management_services(
             raise HuaweiContractError("configuration_write_failed")
         settle()
         after_values = read_values()
-        after = read_state(after_values)
-        if not state_is_compliant(after_values, after):
+        after = _safe_management_state(after_values)
+        if not state_is_compliant(after_values):
             raise HuaweiContractError("configuration_verification_failed")
         return {**base, "status": "applied", "changed": True, "writeAttempted": True, "before": before, "after": after}
     except BaseException as error:
@@ -409,7 +388,6 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     captured_at = _utc_iso(settings.get("now"))
     planned_model = _normalized_planned_model(device)
     requested_management_tasks = [str(item) for item in settings.get("management_tasks", []) if str(item).strip()]
-    port_probe = settings.get("port_probe") or native_port_probe
     settle = settings.get("management_settle") or (lambda: time.sleep(1.0))
     base: dict[str, Any] = {
         "ip": ip,
@@ -539,7 +517,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         }
     management_actions = []
     if DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks:
-        management_actions.append(_disable_insecure_management_services(ip, planned_model, bundle_text, csrf_token, action, port_probe, settle))
+        management_actions.append(_disable_insecure_management_services(planned_model, bundle_text, csrf_token, action, settle))
     safe_resources = sanitize_result(resources)
     result = {
         **base,

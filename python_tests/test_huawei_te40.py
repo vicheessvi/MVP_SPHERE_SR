@@ -107,12 +107,12 @@ class HuaweiTe40Tests(unittest.TestCase):
             self.assertEqual(result["vendorPolling"]["contract"], "huawei-te-web-cgi-v1")
             self.assertEqual(len([item for item in calls if "Web_RequestCertificate" in item["path"]]), 1)
 
-    def test_opt_in_te40_action_reads_writes_exact_values_and_verifies(self):
+    def test_opt_in_te40_action_reads_writes_exact_values_and_verifies_menu_state(self):
         calls = []
         result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
-            {"request": self.success_request(calls), "nonce": lambda: "0.25", "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "port_probe": lambda _ip, port: port == 443, "management_settle": lambda: None},
+            {"request": self.success_request(calls), "nonce": lambda: "0.25", "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "management_settle": lambda: None},
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["managementActions"], [{
@@ -121,8 +121,8 @@ class HuaweiTe40Tests(unittest.TestCase):
             "changed": True,
             "writeAttempted": True,
             "status": "applied",
-            "before": {"httpPort80": "enabled", "telnetPort23": "enabled", "tcpConnectivity": {"port23": "closed", "port80": "closed", "port443": "open"}},
-            "after": {"httpPort80": "disabled", "telnetPort23": "disabled", "tcpConnectivity": {"port23": "closed", "port80": "closed", "port443": "open"}},
+            "before": {"httpPort80": "enabled", "telnetPort23": "enabled"},
+            "after": {"httpPort80": "disabled", "telnetPort23": "disabled"},
         }])
         config_calls = [item for item in calls if "WEB_GetCfgParamAPI" in item["path"]]
         save_calls = [item for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
@@ -152,7 +152,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         compliant = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "u", "password": "p"}],
-            {"request": self.success_request(compliant_calls, configuration={"enabletelnet": 0, "enable_http": 1}), "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "port_probe": lambda _ip, port: port == 443},
+            {"request": self.success_request(compliant_calls, configuration={"enabletelnet": 0, "enable_http": 1}), "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION]},
         )
         self.assertTrue(compliant["ok"])
         self.assertEqual(compliant["managementActions"][0]["status"], "already_compliant")
@@ -163,7 +163,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         result = poll_huawei_te_device(
             {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
             [{"username": "u", "password": "p"}],
-            {"request": self.success_request(calls, persist_save=False), "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "port_probe": lambda _ip, port: port == 443, "management_settle": lambda: None},
+            {"request": self.success_request(calls, persist_save=False), "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "management_settle": lambda: None},
         )
         self.assertFalse(result["ok"])
         self.assertEqual(result["failedStage"], "management_action")

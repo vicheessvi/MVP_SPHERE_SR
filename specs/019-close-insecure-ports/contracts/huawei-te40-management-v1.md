@@ -10,10 +10,8 @@
 ## Operations
 
 1. `WEB_GetCfgParamAPI` для `enabletelnet`, `enable_http`.
-2. Если конфигурация и TCP-состояние не соответствуют цели, один `WEB_SaveCfgParamAPI` с:
+2. Если конфигурация не соответствует цели, один `WEB_SaveCfgParamAPI` с:
    - `enabletelnet = 0`;
    - `enable_http = 1`.
 3. Повторный `WEB_GetCfgParamAPI` по той же HTTPS-сессии.
-4. TCP verification: 23 closed, 80 closed, 443 open.
-
-Любой другой config ID запрещён. Успех save-envelope без успешной post-verification не является успехом операции.
+Любой другой config ID запрещён. Успех save-envelope без успешного post-read целевых значений меню не является успехом операции. Состояние TCP listener не входит в критерий.

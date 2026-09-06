@@ -6,4 +6,4 @@
 4. Установить «Закрыть порты 80, 23 (http, telnet)» и подтвердить число целей.
 5. После сохранения JSON проверить `managementActions[0]`.
 
-Успешны только `applied` и `already_compliant`, если `after.tcpConnectivity` одновременно содержит `port23=closed`, `port80=closed`, `port443=open`. Любой `failed` требует ручной проверки и не должен трактоваться как закрытие портов.
+Успешны `applied` и `already_compliant`, если `after` содержит `telnetPort23=disabled` и `httpPort80=disabled`, полученные повторным чтением меню кодека. Состояние TCP listener не проверяется. Любой `failed` требует ручной проверки.
