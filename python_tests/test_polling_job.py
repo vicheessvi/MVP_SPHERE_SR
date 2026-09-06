@@ -65,7 +65,7 @@ class PollingJobTests(unittest.TestCase):
 
     def test_one_hundred_results_keep_order_and_ack_backpressure(self) -> None:
         devices = [{"ip": f"192.0.2.{index}", "category": "controller", "manufacturer": "Unknown", "model": "Synthetic", "pollingSupported": False} for index in range(1, 101)]
-        job = create_polling_job({"plan": {"schemaVersion": 2, "intervalSeconds": 0, "devices": devices}, "credentials": [{"username": "u", "password": "p"}]})
+        job = create_polling_job({"plan": {"schemaVersion": 3, "intervalSeconds": 0, "managementTasks": [], "devices": devices}, "credentials": [{"username": "u", "password": "p"}]})
         started = time.monotonic()
         previous = None
         filenames = []

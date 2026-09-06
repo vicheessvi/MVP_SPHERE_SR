@@ -26,7 +26,7 @@ def load_catalog(path: Path | str = DEFAULT_CATALOG_PATH) -> dict[str, Any]:
         payload = json.loads(catalog_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise CatalogError("device_catalog_invalid") from error
-    if payload.get("schemaVersion") != 1 or not isinstance(payload.get("entries"), list):
+    if payload.get("schemaVersion") != 2 or not isinstance(payload.get("entries"), list) or not isinstance(payload.get("managementActions"), list):
         raise CatalogError("device_catalog_invalid")
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -53,7 +53,35 @@ def load_catalog(path: Path | str = DEFAULT_CATALOG_PATH) -> dict[str, Any]:
             raise CatalogError("device_catalog_invalid")
         seen.add(entry["key"])
         entries.append(entry)
-    return {"schemaVersion": 1, "adapters": list(payload.get("adapters") or []), "entries": entries}
+    management_actions: list[dict[str, Any]] = []
+    action_ids: set[str] = set()
+    for raw in payload["managementActions"]:
+        if not isinstance(raw, dict):
+            raise CatalogError("device_catalog_invalid")
+        action = {
+            "id": str(raw.get("id") or "").strip(),
+            "label": str(raw.get("label") or "").strip(),
+            "category": normalize(raw.get("category")),
+            "manufacturer": normalize(raw.get("manufacturer")),
+            "aliases": [str(item) for item in raw.get("aliases", []) if str(item).strip()],
+            "models": [str(item) for item in raw.get("models", []) if str(item).strip()],
+            "protocolStatus": str(raw.get("protocolStatus") or "unsupported"),
+            "transport": raw.get("transport") or None,
+        }
+        if (
+            not action["id"]
+            or action["id"] in action_ids
+            or not action["label"]
+            or not action["category"]
+            or not action["manufacturer"]
+            or not action["models"]
+            or action["protocolStatus"] != "supported"
+            or not action["transport"]
+        ):
+            raise CatalogError("device_catalog_invalid")
+        action_ids.add(action["id"])
+        management_actions.append(action)
+    return {"schemaVersion": 2, "adapters": list(payload.get("adapters") or []), "entries": entries, "managementActions": management_actions}
 
 
 CATALOG = load_catalog()
@@ -95,3 +123,25 @@ def resolve_manifest(device: dict[str, Any] | None, catalog: dict[str, Any] = CA
         "aliases": [],
         "models": [],
     }
+
+
+def resolve_management_action(device: dict[str, Any] | None, action_id: Any, catalog: dict[str, Any] = CATALOG) -> dict[str, Any]:
+    source = device or {}
+    category = normalize(source.get("category"))
+    manufacturer = normalize(
+        source.get("manufacturerNormalized")
+        or source.get("manufacturerRaw")
+        or source.get("manufacturer")
+    )
+    model = normalize(source.get("modelNormalized") or source.get("modelRaw") or source.get("model"))
+    requested = str(action_id or "").strip()
+    for action in catalog.get("managementActions", []):
+        manufacturers = [action["manufacturer"], *[normalize(item) for item in action["aliases"]]]
+        if (
+            action["id"] == requested
+            and action["category"] == category
+            and manufacturer in manufacturers
+            and any(normalize(item) == model for item in action["models"])
+        ):
+            return {**action, "aliases": list(action["aliases"]), "models": list(action["models"]), "supported": True}
+    return {"id": requested, "label": "", "category": category, "manufacturer": manufacturer, "models": [], "protocolStatus": "unsupported", "transport": None, "supported": False}

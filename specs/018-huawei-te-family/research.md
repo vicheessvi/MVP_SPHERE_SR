@@ -22,6 +22,6 @@
 
 ## Live confirmation
 
-**Decision**: Mark compatibility as provisionally enabled behind runtime fingerprinting until real TE30, TE50 and TE60 addresses from current SR are polled and their redacted JSON is reviewed.
+**Decision**: Confirm the shared algorithm for TE30, TE40, TE50 and TE60 after the user completed successful controlled polling of real devices. Keep runtime fingerprinting mandatory for every run.
 
-**Rationale**: Synthetic tests prove control flow and safety, not the exact firmware installed on the user's terminals.
+**Rationale**: Synthetic tests proved control flow and safety; controlled live runs subsequently confirmed the common flow on the tested installed firmware without placing device data or credentials in Git.

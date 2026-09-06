@@ -1,6 +1,18 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "adapters": ["extron_web_dynamic_resources_v1", "huawei_te_web_cgi_v1"],
+  "managementActions": [
+    {
+      "id": "disable_insecure_management_services",
+      "label": "Закрыть порты 80, 23 (http, telnet)",
+      "category": "vcs",
+      "manufacturer": "huawei",
+      "aliases": ["huawey"],
+      "models": ["TE40"],
+      "protocolStatus": "supported",
+      "transport": "huawei_te_web_cgi_v1"
+    }
+  ],
   "entries": [
     {
       "key": "vcs/huawei/te-family",

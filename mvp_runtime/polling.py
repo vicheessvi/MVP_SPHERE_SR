@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .catalog import resolve_manifest
+from .catalog import CATALOG, resolve_management_action, resolve_manifest
 
 
 class PollingError(RuntimeError):
@@ -96,6 +96,27 @@ def plan_device_supported(device: dict[str, Any]) -> bool:
     )
 
 
+def _complete_management_actions(device: dict[str, Any], requested: list[str], result: dict[str, Any]) -> dict[str, Any]:
+    if not requested:
+        return result
+    existing = {
+        str(item.get("id")): item
+        for item in result.get("managementActions", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    completed = []
+    for action_id in requested:
+        if action_id in existing:
+            completed.append(existing[action_id])
+            continue
+        capability = resolve_management_action(device, action_id)
+        if not capability.get("supported"):
+            completed.append({"id": action_id, "status": "skipped_unsupported", "changed": False, "safeError": "management_action_unsupported"})
+        else:
+            completed.append({"id": action_id, "status": "failed", "changed": False, "safeError": "polling_prerequisite_failed"})
+    return {**result, "managementActions": completed}
+
+
 def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = options or {}
     ip = normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
@@ -104,29 +125,36 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
         raise PollingError("Polling target is invalid or absent from the explicit plan allowlist")
     captured_at = utc_now()
     manifest = resolve_manifest(device)
+    requested_management_tasks = [str(item) for item in settings.get("management_tasks", [])]
+    supported_management_tasks = [item for item in requested_management_tasks if resolve_management_action(device, item).get("supported")]
     transport = manifest.get("transport")
     if device.get("pollingSupported") is False or not transport or manifest.get("protocolStatus") != "supported":
-        return {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": None, "durationMs": None}, "networkAttempted": False, "vendorPolling": {"status": manifest["protocolStatus"], "knownModel": manifest["knownModel"]}, "safeError": "verified_protocol_contract_required" if manifest["protocolStatus"] == "protocol_required" else "adapter_unsupported"}
+        result = {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": None, "durationMs": None}, "networkAttempted": False, "vendorPolling": {"status": manifest["protocolStatus"], "knownModel": manifest["knownModel"]}, "safeError": "verified_protocol_contract_required" if manifest["protocolStatus"] == "protocol_required" else "adapter_unsupported"}
+        return _complete_management_actions(device, requested_management_tasks, result)
     ping = (settings.get("ping") or ping_device)(ip, settings.get("timeout_ms"))
     if not ping.get("ok"):
-        return {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "ping", "ping": {"ok": False, "durationMs": ping.get("durationMs")}, "vendorPolling": {"status": "not_started"}, "safeError": ping.get("safeError") or "no_ping_response"}
+        result = {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "ping", "ping": {"ok": False, "durationMs": ping.get("durationMs")}, "vendorPolling": {"status": "not_started"}, "safeError": ping.get("safeError") or "no_ping_response"}
+        return _complete_management_actions(device, requested_management_tasks, result)
     registry = settings["adapters"] if isinstance(settings.get("adapters"), dict) else ADAPTER_REGISTRY
     adapter = registry.get(str(transport))
     if not callable(adapter):
-        return {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": True, "durationMs": ping.get("durationMs")}, "networkAttempted": False, "vendorPolling": {"status": "protocol_required", "knownModel": manifest["knownModel"]}, "safeError": "verified_protocol_contract_required"}
+        result = {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": True, "durationMs": ping.get("durationMs")}, "networkAttempted": False, "vendorPolling": {"status": "protocol_required", "knownModel": manifest["knownModel"]}, "safeError": "verified_protocol_contract_required"}
+        return _complete_management_actions(device, requested_management_tasks, result)
     credential_provider = settings.get("get_credentials") or settings.get("get_credential") or (lambda *_args: None)
     credential = credential_provider(ip, {**device, "ipNormalized": ip})
     try:
         result = adapter(
             {**device, "ipNormalized": ip, "allowInsecureTls": device.get("allowInsecureTls") is True or settings.get("allow_insecure_tls") is True},
             credential,
-            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True},
+            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks},
         )
-        return {**result, "ip": ip, "capturedAt": result.get("capturedAt") or captured_at, "adapterKey": manifest["key"], "networkAttempted": True, "ping": {"ok": True, "durationMs": ping.get("durationMs")}}
+        merged = {**result, "ip": ip, "capturedAt": result.get("capturedAt") or captured_at, "adapterKey": manifest["key"], "networkAttempted": True, "ping": {"ok": True, "durationMs": ping.get("durationMs")}}
+        return _complete_management_actions(device, requested_management_tasks, merged)
     except BaseException as error:
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise
-        return {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": True, "durationMs": ping.get("durationMs")}, "networkAttempted": True, "vendorPolling": {"status": "supported", "knownModel": manifest["knownModel"]}, "safeError": "adapter_failed"}
+        result = {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": True, "durationMs": ping.get("durationMs")}, "networkAttempted": True, "vendorPolling": {"status": "supported", "knownModel": manifest["knownModel"]}, "safeError": "adapter_failed"}
+        return _complete_management_actions(device, requested_management_tasks, result)
 
 
 def abortable_wait(milliseconds: Any, cancel_event: threading.Event | None = None, wait: Callable[[float, threading.Event | None], Any] | None = None) -> None:
@@ -150,6 +178,18 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
     if not isinstance(plan, dict) or not isinstance(plan.get("devices"), list):
         raise PollingError("Polling plan must contain devices[]")
     settings = options or {}
+    requested_management_tasks = plan.get("managementTasks") or []
+    known_management_tasks = {str(item.get("id")) for item in CATALOG.get("managementActions", [])}
+    if (
+        not isinstance(requested_management_tasks, list)
+        or any(not isinstance(item, str) or item not in known_management_tasks for item in requested_management_tasks)
+        or len(set(requested_management_tasks)) != len(requested_management_tasks)
+    ):
+        raise PollingError("Polling plan contains an unknown management task")
+    if "disable_insecure_management_services" in requested_management_tasks:
+        source_digest = str(plan.get("targetSourceSha256") or "").casefold()
+        if plan.get("targetSource") != "port_closure_list" or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest):
+            raise PollingError("Port-closure task requires a verified dedicated target list")
     devices = [dict(device) for device in plan["devices"]]
     ips = [normalize_ipv4(device.get("ipNormalized") or device.get("ip")) for device in devices]
     valid_ips = [ip for ip in ips if ip]
@@ -177,11 +217,12 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
         if not ip or not plan_device_supported(device):
             manifest = resolve_manifest(device)
             result = {"ip": ip, "capturedAt": utc_now(), "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": None, "durationMs": None}, "networkAttempted": False, "vendorPolling": {"status": manifest.get("protocolStatus") or "protocol_required", "knownModel": manifest["knownModel"]}, "safeError": "verified_protocol_contract_required" if ip else "invalid_or_missing_ip"}
+            result = _complete_management_actions(device, requested_management_tasks, result)
         else:
             progress = settings.get("on_progress")
             if progress:
                 progress({"stage": "polling", "index": index, "total": len(devices), "device": {"ip": ip, "category": device.get("category"), "manufacturer": device.get("manufacturer"), "model": device.get("model")}})
-            result = probe_device(device, {**settings, "allowed_ips": allowed_ips})
+            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks})
         results.append(result)
         if settings.get("on_result"):
             settings["on_result"](result, {"index": index, "total": len(devices), "device": device})

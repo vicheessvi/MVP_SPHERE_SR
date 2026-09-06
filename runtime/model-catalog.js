@@ -12,6 +12,12 @@ const CATALOG = Object.freeze(source.entries.map((item) => Object.freeze({
   models: Object.freeze([...(item.models || [])])
 })));
 
+const MANAGEMENT_ACTIONS = Object.freeze((source.managementActions || []).map((item) => Object.freeze({
+  ...item,
+  aliases: Object.freeze([...(item.aliases || [])]),
+  models: Object.freeze([...(item.models || [])])
+})));
+
 function itemHasModel(manifest, normalizedModel) {
   return manifest.models.some((model) => normalize(model) === normalizedModel);
 }
@@ -28,4 +34,15 @@ function resolveManifest(device) {
   return { ...manifest, model, knownModel: itemHasModel(manifest, model) };
 }
 
-module.exports = { CATALOG, normalize, resolveManifest };
+function resolveManagementAction(device, actionId) {
+  const category = normalize(device && device.category);
+  const manufacturer = normalize(device && (device.manufacturerNormalized || device.manufacturerRaw || device.manufacturer));
+  const model = normalize(device && (device.modelNormalized || device.modelRaw || device.model));
+  const action = MANAGEMENT_ACTIONS.find((item) => item.id === String(actionId || "")
+    && item.category === category
+    && [item.manufacturer, ...item.aliases].map(normalize).includes(manufacturer)
+    && item.models.some((itemModel) => normalize(itemModel) === model));
+  return action ? { ...action, supported: true } : { id: String(actionId || ""), category, manufacturer, model, protocolStatus: "unsupported", transport: null, supported: false };
+}
+
+module.exports = { CATALOG, MANAGEMENT_ACTIONS, normalize, resolveManifest, resolveManagementAction };

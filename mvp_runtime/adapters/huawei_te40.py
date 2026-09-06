@@ -62,6 +62,10 @@ MAC_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 MAX_COOKIE_COUNT = 16
 MAX_COOKIE_LENGTH = 4096
 SUPPORTED_MODELS = frozenset({"te30", "te40", "te50", "te60"})
+DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
+MANAGEMENT_ACTION_MARKERS = ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "enabletelnet", "enable_http")
+MANAGEMENT_CONFIG_IDS = ("enabletelnet", "enable_http")
+MANAGEMENT_TARGET_VALUES = {"enabletelnet": 0, "enable_http": 1}
 
 
 class HuaweiTransportError(RuntimeError):
@@ -191,6 +195,8 @@ def _decode_envelope(response: dict[str, Any]) -> tuple[dict[str, Any], Any]:
         raise HuaweiContractError("resource_envelope_invalid")
     data = outer.get("data")
     if isinstance(data, str):
+        if not data.strip():
+            return outer, None
         try:
             data = json.loads(data)
         except json.JSONDecodeError as error:
@@ -235,6 +241,120 @@ def _contains_model_token(value: Any, planned_model: str) -> bool:
 
 def _resource(resources: dict[str, Any], key: str) -> dict[str, Any]:
     return resources.get(key) or resources.get(RESOURCE_ACTIONS[key]) or {}
+
+
+def _configuration_values(data: Any) -> dict[str, int]:
+    if not isinstance(data, dict):
+        raise HuaweiContractError("configuration_schema_unconfirmed")
+    values: dict[str, int] = {}
+    for config_id in MANAGEMENT_CONFIG_IDS:
+        value = data.get(config_id)
+        if isinstance(value, int) and not isinstance(value, bool) and value in {0, 1}:
+            values[config_id] = value
+    for collection_name in ("CfgItemInt", "CfgItemString"):
+        collection = data.get(collection_name)
+        if isinstance(collection, dict):
+            collection = [{"CfgItemID": key, "CfgItemInfo": value} for key, value in collection.items()]
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            config_id = str(item.get("CfgItemID") or item.get("cfgItemId") or item.get("id") or "")
+            raw_value = item.get("CfgItemInfo", item.get("cfgItemInfo", item.get("value")))
+            if config_id in MANAGEMENT_CONFIG_IDS and isinstance(raw_value, int) and not isinstance(raw_value, bool) and raw_value in {0, 1}:
+                values[config_id] = raw_value
+    if set(values) != set(MANAGEMENT_CONFIG_IDS):
+        raise HuaweiContractError("configuration_schema_unconfirmed")
+    return values
+
+
+def _safe_management_state(values: dict[str, int]) -> dict[str, str]:
+    return {
+        "httpPort80": "disabled" if values["enable_http"] == 1 else "enabled",
+        "telnetPort23": "disabled" if values["enabletelnet"] == 0 else "enabled",
+    }
+
+
+def native_port_probe(ip: str, port: int, timeout_seconds: float = 1.0) -> bool:
+    connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        connection.settimeout(max(0.25, min(float(timeout_seconds), 3.0)))
+        return connection.connect_ex((ip, int(port))) == 0
+    finally:
+        connection.close()
+
+
+def _disable_insecure_management_services(
+    ip: str,
+    planned_model: str,
+    bundle_text: str,
+    csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+    port_probe: Callable[[str, int], bool],
+    settle: Callable[[], Any],
+) -> dict[str, Any]:
+    base = {"id": DISABLE_INSECURE_SERVICES_ACTION, "transport": "https/443", "changed": False, "writeAttempted": False}
+    if planned_model != "te40":
+        return {**base, "status": "skipped_unsupported", "safeError": "management_action_unsupported"}
+    if not all(marker in bundle_text for marker in MANAGEMENT_ACTION_MARKERS):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+
+    def read_values() -> dict[str, int]:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": list(MANAGEMENT_CONFIG_IDS), "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_read_failed")
+        return _configuration_values(data)
+
+    def read_state(values: dict[str, int]) -> dict[str, Any]:
+        state: dict[str, Any] = _safe_management_state(values)
+        state["tcpConnectivity"] = {
+            "port23": "open" if port_probe(ip, 23) else "closed",
+            "port80": "open" if port_probe(ip, 80) else "closed",
+            "port443": "open" if port_probe(ip, 443) else "closed",
+        }
+        return state
+
+    def state_is_compliant(values: dict[str, int], state: dict[str, Any]) -> bool:
+        connectivity = state["tcpConnectivity"]
+        return values == MANAGEMENT_TARGET_VALUES and connectivity == {"port23": "closed", "port80": "closed", "port443": "open"}
+
+    before = None
+    after = None
+    write_attempted = False
+    try:
+        before_values = read_values()
+        before = read_state(before_values)
+        if state_is_compliant(before_values, before):
+            return {**base, "status": "already_compliant", "before": before, "after": before}
+        payload = {
+            "CfgItemInt": [
+                {"CfgItemID": "enabletelnet", "CfgItemInfo": 0},
+                {"CfgItemID": "enable_http", "CfgItemInfo": 1},
+            ],
+            "CfgItemString": [],
+            "acCSRFToken": csrf_token,
+        }
+        outer, _data = action("WEB_SaveCfgParamAPI", payload)
+        write_attempted = True
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_write_failed")
+        settle()
+        after_values = read_values()
+        after = read_state(after_values)
+        if not state_is_compliant(after_values, after):
+            raise HuaweiContractError("configuration_verification_failed")
+        return {**base, "status": "applied", "changed": True, "writeAttempted": True, "before": before, "after": after}
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        code = error.code if isinstance(error, HuaweiContractError) else _transport_code(error)
+        failed = {**base, "status": "failed", "writeAttempted": write_attempted, "safeError": code}
+        if before is not None:
+            failed["before"] = before
+        if after is not None:
+            failed["after"] = after
+        return failed
 
 
 def build_web_blocks(resources: dict[str, Any], ip: str) -> dict[str, Any]:
@@ -288,6 +408,9 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     ip = normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
     captured_at = _utc_iso(settings.get("now"))
     planned_model = _normalized_planned_model(device)
+    requested_management_tasks = [str(item) for item in settings.get("management_tasks", []) if str(item).strip()]
+    port_probe = settings.get("port_probe") or native_port_probe
+    settle = settings.get("management_settle") or (lambda: time.sleep(1.0))
     base: dict[str, Any] = {
         "ip": ip,
         "capturedAt": captured_at,
@@ -414,8 +537,11 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized},
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
         }
+    management_actions = []
+    if DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks:
+        management_actions.append(_disable_insecure_management_services(ip, planned_model, bundle_text, csrf_token, action, port_probe, settle))
     safe_resources = sanitize_result(resources)
-    return {
+    result = {
         **base,
         "ok": True,
         "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized},
@@ -424,6 +550,14 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         "readMode": "targeted",
         "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
     }
+    if management_actions:
+        result["managementActions"] = management_actions
+        failed_action = next((item for item in management_actions if item.get("status") == "failed"), None)
+        if failed_action:
+            result["ok"] = False
+            result["failedStage"] = "management_action"
+            result["safeError"] = failed_action.get("safeError") or "management_action_failed"
+    return result
 
 
 # Compatibility entry point for historical imports; both names execute one implementation.

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .catalog import CATALOG
 from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_workbook
 from .polling import normalize_ipv4
 from .polling_job import JobInputError, PollingJob, TERMINAL_STATUSES, create_polling_job
@@ -297,8 +298,20 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         plan = value.get("plan")
         try:
             assert_no_plan_secrets(plan)
-            if not isinstance(plan, dict) or plan.get("schemaVersion") != 2 or not isinstance(plan.get("devices"), list) or not plan["devices"]:
+            if not isinstance(plan, dict) or plan.get("schemaVersion") != 3 or not isinstance(plan.get("devices"), list) or not plan["devices"]:
                 raise ValueError("plan_invalid")
+            management_tasks = plan.get("managementTasks") or []
+            known_management_tasks = {str(item.get("id")) for item in CATALOG.get("managementActions", [])}
+            if (
+                not isinstance(management_tasks, list)
+                or any(not isinstance(item, str) or item not in known_management_tasks for item in management_tasks)
+                or len(set(management_tasks)) != len(management_tasks)
+            ):
+                raise ValueError("plan_invalid")
+            if "disable_insecure_management_services" in management_tasks:
+                target_source_digest = str(plan.get("targetSourceSha256") or "").casefold()
+                if plan.get("targetSource") != "port_closure_list" or not re.fullmatch(r"[0-9a-f]{64}", target_source_digest):
+                    raise ValueError("plan_invalid")
             valid_ips = []
             for device in plan["devices"]:
                 if not isinstance(device, dict):

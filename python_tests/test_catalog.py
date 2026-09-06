@@ -5,12 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mvp_runtime.catalog import CATALOG, CatalogError, load_catalog, normalize, resolve_manifest
+from mvp_runtime.catalog import CATALOG, CatalogError, load_catalog, normalize, resolve_management_action, resolve_manifest
 
 
 class CatalogTests(unittest.TestCase):
     def test_shared_catalog_has_unique_entries_and_confirmed_extron(self) -> None:
-        self.assertEqual(CATALOG["schemaVersion"], 1)
+        self.assertEqual(CATALOG["schemaVersion"], 2)
         keys = [item["key"] for item in CATALOG["entries"]]
         self.assertEqual(len(keys), len(set(keys)))
         controller = resolve_manifest({"category": "controller", "manufacturer": "Extron", "model": "IPCP Pro 250"})
@@ -44,10 +44,18 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(fallback["protocolStatus"], "protocol_required")
             self.assertIsNone(fallback["transport"])
 
+    def test_management_action_is_exact_te40_only(self) -> None:
+        supported = resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": "TE40"}, "disable_insecure_management_services")
+        self.assertTrue(supported["supported"])
+        self.assertEqual(supported["transport"], "huawei_te_web_cgi_v1")
+        for model in ("TE30", "TE50", "TE60", "TE20"):
+            self.assertFalse(resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": model}, "disable_insecure_management_services")["supported"])
+        self.assertFalse(resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": "TE40"}, "unknown")["supported"])
+
     def test_invalid_catalog_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.json"
-            path.write_text(json.dumps({"schemaVersion": 1, "entries": [{"key": "x"}, {"key": "x"}]}), encoding="utf-8")
+            path.write_text(json.dumps({"schemaVersion": 2, "managementActions": [], "entries": [{"key": "x"}, {"key": "x"}]}), encoding="utf-8")
             with self.assertRaises(CatalogError):
                 load_catalog(path)
 

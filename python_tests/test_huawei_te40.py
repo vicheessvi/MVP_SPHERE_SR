@@ -4,12 +4,12 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import HuaweiTransportError, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, HuaweiTransportError, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.redaction import sanitize_result
 
 
 LOGIN_MARKERS = "WEB_GetLoginInfo Web_RequestSessionID Web_RequestCertificate WEB_ChangeSessionID"
-RESOURCE_MARKERS = "WEB_GetProductEsnAPI WEB_GetSystemMacAddrAPI WEB_GetVersionInfoAPI WEB_GetTermSpecsInfoAPI WEB_GetSysLocalTimeAPI WEB_GetDhcpIPInfoAPI"
+RESOURCE_MARKERS = "WEB_GetProductEsnAPI WEB_GetSystemMacAddrAPI WEB_GetVersionInfoAPI WEB_GetTermSpecsInfoAPI WEB_GetSysLocalTimeAPI WEB_GetDhcpIPInfoAPI WEB_GetCfgParamAPI WEB_SaveCfgParamAPI enabletelnet enable_http"
 
 
 def envelope(data=None, success=1, exception_id=None):
@@ -31,9 +31,10 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
-    def success_request(self, calls, overrides=None, terminal_model="TE40"):
+    def success_request(self, calls, overrides=None, terminal_model="TE40", configuration=None, persist_save=True):
         resources = synthetic_resources(terminal_model)
         overrides = overrides or {}
+        configuration_state = dict(configuration or {"enabletelnet": 1, "enable_http": 0})
 
         def request(options):
             calls.append(options)
@@ -60,6 +61,14 @@ class HuaweiTe40Tests(unittest.TestCase):
                 return envelope({"acCSRFToken": "SYNTHETIC-CSRF"})
             if action == "WEB_ChangeSessionID":
                 return envelope({"acSessionId": ""})
+            if action == "WEB_GetCfgParamAPI":
+                return envelope({"CfgItemInt": [{"CfgItemID": key, "CfgItemInfo": value} for key, value in configuration_state.items()]})
+            if action == "WEB_SaveCfgParamAPI":
+                payload = json.loads(options["body"])
+                if persist_save:
+                    for item in payload.get("CfgItemInt", []):
+                        configuration_state[item["CfgItemID"]] = item["CfgItemInfo"]
+                return envelope({})
             return envelope(resources[action])
 
         return request
@@ -97,6 +106,72 @@ class HuaweiTe40Tests(unittest.TestCase):
             self.assertEqual(result["webBlocks"]["Device Info"]["Model"], model)
             self.assertEqual(result["vendorPolling"]["contract"], "huawei-te-web-cgi-v1")
             self.assertEqual(len([item for item in calls if "Web_RequestCertificate" in item["path"]]), 1)
+
+    def test_opt_in_te40_action_reads_writes_exact_values_and_verifies(self):
+        calls = []
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(calls), "nonce": lambda: "0.25", "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "port_probe": lambda _ip, port: port == 443, "management_settle": lambda: None},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["managementActions"], [{
+            "id": DISABLE_INSECURE_SERVICES_ACTION,
+            "transport": "https/443",
+            "changed": True,
+            "writeAttempted": True,
+            "status": "applied",
+            "before": {"httpPort80": "enabled", "telnetPort23": "enabled", "tcpConnectivity": {"port23": "closed", "port80": "closed", "port443": "open"}},
+            "after": {"httpPort80": "disabled", "telnetPort23": "disabled", "tcpConnectivity": {"port23": "closed", "port80": "closed", "port443": "open"}},
+        }])
+        config_calls = [item for item in calls if "WEB_GetCfgParamAPI" in item["path"]]
+        save_calls = [item for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
+        self.assertEqual(len(config_calls), 2)
+        self.assertEqual(len(save_calls), 1)
+        payload = json.loads(save_calls[0]["body"])
+        self.assertEqual(payload["CfgItemInt"], [
+            {"CfgItemID": "enabletelnet", "CfgItemInfo": 0},
+            {"CfgItemID": "enable_http", "CfgItemInfo": 1},
+        ])
+        self.assertEqual(payload["CfgItemString"], [])
+        self.assertEqual(set(payload), {"CfgItemInt", "CfgItemString", "acCSRFToken"})
+        self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
+        self.assertNotIn("SYNTHETIC-CSRF", json.dumps(result))
+
+    def test_action_is_idempotent_and_not_run_without_opt_in(self):
+        no_action_calls = []
+        no_action = poll_huawei_te_device(
+            {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
+            [{"username": "u", "password": "p"}],
+            {"request": self.success_request(no_action_calls)},
+        )
+        self.assertTrue(no_action["ok"])
+        self.assertFalse(any("WEB_GetCfgParamAPI" in item["path"] or "WEB_SaveCfgParamAPI" in item["path"] for item in no_action_calls))
+
+        compliant_calls = []
+        compliant = poll_huawei_te_device(
+            {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
+            [{"username": "u", "password": "p"}],
+            {"request": self.success_request(compliant_calls, configuration={"enabletelnet": 0, "enable_http": 1}), "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "port_probe": lambda _ip, port: port == 443},
+        )
+        self.assertTrue(compliant["ok"])
+        self.assertEqual(compliant["managementActions"][0]["status"], "already_compliant")
+        self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in compliant_calls))
+
+    def test_failed_verification_is_visible_and_never_reopens_services(self):
+        calls = []
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
+            [{"username": "u", "password": "p"}],
+            {"request": self.success_request(calls, persist_save=False), "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "port_probe": lambda _ip, port: port == 443, "management_settle": lambda: None},
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failedStage"], "management_action")
+        self.assertEqual(result["safeError"], "configuration_verification_failed")
+        self.assertEqual(result["managementActions"][0]["status"], "failed")
+        save_calls = [item for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
+        self.assertEqual(len(save_calls), 1)
+        self.assertEqual(json.loads(save_calls[0]["body"])["CfgItemInt"][0]["CfgItemInfo"], 0)
 
     def test_planned_model_is_checked_before_credentials_and_after_version(self):
         pre_auth_calls = []

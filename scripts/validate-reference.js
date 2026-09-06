@@ -14,12 +14,14 @@ if (!userFacingSource.includes("START_MVP_SPHERE_SR.py")) errors.push("В инт
   if (userFacingSource.includes(legacy)) errors.push(`В пользовательском тексте осталась устаревшая точка запуска: ${legacy}`);
 });
 const deviceCatalog = JSON.parse(fs.readFileSync(path.join(projectRoot, "runtime", "device-catalog.json"), "utf8"));
-if (deviceCatalog.schemaVersion !== 1 || !Array.isArray(deviceCatalog.entries) || !Array.isArray(deviceCatalog.adapters)) errors.push("Некорректен общий каталог устройств");
+if (deviceCatalog.schemaVersion !== 2 || !Array.isArray(deviceCatalog.entries) || !Array.isArray(deviceCatalog.adapters) || !Array.isArray(deviceCatalog.managementActions)) errors.push("Некорректен общий каталог устройств");
 const keys = (deviceCatalog.entries || []).map((entry) => entry.key);
 if (new Set(keys).size !== keys.length) errors.push("В общем каталоге устройств повторяется key");
 if (!(deviceCatalog.adapters || []).includes("extron_web_dynamic_resources_v1")) errors.push("В общем каталоге отсутствует подтверждённый Extron transport");
 if (!(deviceCatalog.adapters || []).includes("huawei_te_web_cgi_v1")) errors.push("В общем каталоге отсутствует общий Huawei TE transport");
 if ((deviceCatalog.adapters || []).includes("huawei_te40_web_cgi_v1")) errors.push("В общем каталоге остался устаревший Huawei TE40-only transport");
+const closePortsActions = (deviceCatalog.managementActions || []).filter((item) => item.id === "disable_insecure_management_services");
+if (closePortsActions.length !== 1 || JSON.stringify(closePortsActions[0].models) !== JSON.stringify(["TE40"]) || closePortsActions[0].transport !== "huawei_te_web_cgi_v1") errors.push("Задача закрытия HTTP/Telnet должна быть подтверждена ровно для Huawei TE40");
 
 if (errors.length) {
   errors.forEach((error) => process.stderr.write(`ОШИБКА: ${error}\n`));

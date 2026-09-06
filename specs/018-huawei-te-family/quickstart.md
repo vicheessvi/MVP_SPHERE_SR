@@ -25,3 +25,7 @@ Expected: TE30, TE40, TE50 and TE60 resolve to one transport; all four synthetic
 7. If the run fails, provide only the redacted JSON and safe stage/code for compatibility analysis.
 
 Do not add the real IP, credentials, raw web responses or generated JSON to Git.
+
+## Validation result
+
+TE30, TE50 and TE60 completed the controlled polling flow successfully; TE40 had already passed the same live validation. The shared algorithm is therefore confirmed for all four tested models and their installed firmware. Runtime model checks remain enabled on every request.

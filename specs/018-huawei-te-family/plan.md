@@ -50,4 +50,4 @@ specs/018-huawei-te-family/
 
 ## Complexity Tracking
 
-No constitution exception. Live compatibility of target TE30/TE50/TE60 firmware remains pending and is recorded rather than inferred.
+No constitution exception. Live compatibility is confirmed by controlled real-device polling of TE30, TE40, TE50 and TE60; runtime identity gates remain mandatory for firmware/schema drift.

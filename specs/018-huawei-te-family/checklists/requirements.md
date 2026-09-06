@@ -33,4 +33,4 @@
 
 ## Notes
 
-- 16/16 PASS. Live TE30/TE50/TE60 evidence remains an acceptance activity, not an ambiguity in the required fail-closed implementation.
+- 16/16 PASS. Controlled live polling of TE30, TE50 and TE60 was subsequently confirmed by the user; TE40 had already passed the same validation.

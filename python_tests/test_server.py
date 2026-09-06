@@ -109,7 +109,7 @@ class ServerTests(unittest.TestCase):
     def test_credential_plan_result_ack_and_terminal_clear_contract(self) -> None:
         cookie, csrf = self.harness.session()
         digest = self._upload_credentials(cookie, csrf)
-        plan = {"schemaVersion": 2, "scheduledAt": "1970-01-01T00:00:00.000Z", "intervalSeconds": 0, "authenticationInputSha256": digest, "devices": [{"ip": "192.0.2.20", "category": "controller", "manufacturer": "Extron", "model": "Synthetic", "pollingSupported": False}]}
+        plan = {"schemaVersion": 3, "scheduledAt": "1970-01-01T00:00:00.000Z", "intervalSeconds": 0, "authenticationInputSha256": digest, "managementTasks": [], "devices": [{"ip": "192.0.2.20", "category": "controller", "manufacturer": "Extron", "model": "Synthetic", "pollingSupported": False}]}
         status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=json.dumps({"planId": "synthetic-plan", "plan": plan, "allowInsecureTls": True}).encode())
         self.assertEqual(status, 202, body)
         job_id = json.loads(body)["jobId"]
@@ -142,7 +142,7 @@ class ServerTests(unittest.TestCase):
     def test_bad_digest_clears_credentials_and_cancel_is_scoped(self) -> None:
         cookie, csrf = self.harness.session()
         self._upload_credentials(cookie, csrf)
-        plan = {"schemaVersion": 2, "intervalSeconds": 0, "authenticationInputSha256": "0" * 64, "devices": [{"ip": "192.0.2.30"}]}
+        plan = {"schemaVersion": 3, "intervalSeconds": 0, "authenticationInputSha256": "0" * 64, "managementTasks": [], "devices": [{"ip": "192.0.2.30"}]}
         status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": plan}).encode())
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"], "credential_sha_mismatch")
@@ -157,7 +157,7 @@ class ServerTests(unittest.TestCase):
         status, _, body = self.harness.request("POST", "/api/polling/credentials", headers=self._mutation_headers(cookie, csrf, **{"X-File-Name": "not-xlsx.txt"}), body=b"invalid")
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"], "credential_file_invalid")
-        plan = {"schemaVersion": 2, "authenticationInputSha256": "0" * 64, "devices": [{"ip": "192.0.2.40"}]}
+        plan = {"schemaVersion": 3, "authenticationInputSha256": "0" * 64, "managementTasks": [], "devices": [{"ip": "192.0.2.40"}]}
         status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": plan}).encode())
         self.assertEqual(json.loads(body)["error"], "credentials_required")
 
@@ -167,6 +167,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["error"], "invalid_json")
         status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": plan}).encode())
         self.assertEqual(json.loads(body)["error"], "credentials_required")
+
+    def test_plan_v3_rejects_old_schema_and_unknown_management_task(self) -> None:
+        cookie, csrf = self.harness.session()
+        digest = self._upload_credentials(cookie, csrf)
+        old_plan = {"schemaVersion": 2, "authenticationInputSha256": digest, "devices": [{"ip": "192.0.2.40"}]}
+        status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": old_plan}).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "plan_invalid")
+
+        digest = self._upload_credentials(cookie, csrf)
+        missing_list_source = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": ["disable_insecure_management_services"], "devices": [{"ip": "192.0.2.40"}]}
+        status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": missing_list_source}).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "plan_invalid")
+
+        digest = self._upload_credentials(cookie, csrf)
+        unknown_task = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": ["unknown"], "devices": [{"ip": "192.0.2.40"}]}
+        status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": unknown_task}).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "plan_invalid")
 
 
 if __name__ == "__main__":

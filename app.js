@@ -234,7 +234,8 @@
       support: "implemented",
       transport: "huawei_te_web_cgi_v1",
       normalizerKey: "huawei-te-json-v1",
-      credentialMode: "memory_xlsx_pool"
+      credentialMode: "memory_xlsx_pool",
+      managementTasks: Object.freeze(modelNormalized === "te40" ? ["disable_insecure_management_services"] : [])
     }))
   ]);
 
@@ -1639,6 +1640,51 @@
     return processSrImportRows(currentState, { ...input, ...parsed, rawSha256: await sha256Bytes(input.arrayBuffer) });
   }
 
+  function parseManagementTargetRows(input) {
+    const rows = Array.isArray(input?.rows) ? input.rows : [];
+    const headers = input?.headers || Object.keys(rows[0] || {});
+    const missingHeaders = SR_REQUIRED_HEADERS.filter((required) => !headers.some((header) => normalizeSrHeader(header) === normalizeSrHeader(required)));
+    if (missingHeaders.length) return { ok: false, devices: [], errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
+    const devices = [];
+    const rowsByIp = new Map();
+    const errors = [];
+    rows.forEach((rawRow, index) => {
+      const rowNumber = index + 2;
+      const row = normalizedSrRow(rawRow);
+      if (!row.ipNormalized) {
+        errors.push(`Строка ${rowNumber}: отсутствует корректный IPv4-адрес`);
+        return;
+      }
+      const existingRow = rowsByIp.get(row.ipNormalized);
+      if (existingRow) {
+        errors.push(`Строки ${existingRow} и ${rowNumber}: повторяется IP-адрес ${row.ipNormalized}`);
+        return;
+      }
+      rowsByIp.set(row.ipNormalized, rowNumber);
+      const device = {
+        ...row,
+        rawRow: undefined,
+        id: `port-closure-target-${index + 1}`,
+        inCurrentSr: true,
+        sourceRowNumber: rowNumber,
+        pollingCapability: resolvePollingCapability(row)
+      };
+      delete device.rawRow;
+      devices.push(device);
+    });
+    if (!rows.length) errors.push("Список устройств пуст");
+    if (errors.length) return { ok: false, devices: [], errors };
+    return { ok: true, devices, acceptedCount: devices.length, errors: [] };
+  }
+
+  async function parseManagementTargetWorkbook(input) {
+    const parsed = rowsFromWorkbook(input?.arrayBuffer);
+    if (!parsed.ok) return { ok: false, devices: [], errors: parsed.errors };
+    const normalized = parseManagementTargetRows(parsed);
+    if (!normalized.ok) return normalized;
+    return { ...normalized, sheetName: parsed.sheetName, sourceSha256: await sha256Bytes(input.arrayBuffer) };
+  }
+
   function ensurePollingRun(next, input, capturedAt) {
     if (input.runId) return next.pollingRuns.find((item) => item.id === input.runId) || null;
     const folderIdentity = input.folderPath || input.folderName || "manual";
@@ -1655,6 +1701,7 @@
   const POLLING_MISSING = "__not_specified__";
   const POLLING_SELECTION_MODE_FILTERS = "filters";
   const POLLING_SELECTION_MODE_SINGLE_IP = "single_ip";
+  const MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES = "disable_insecure_management_services";
 
   function pollingCategoryOrder(category) {
     const item = EQUIPMENT_CATEGORY_CATALOG.find((candidate) => candidate.id === category);
@@ -1725,10 +1772,21 @@
     return Object.freeze({ status: "found", normalizedIp, candidateCount: 1, device: candidates[0] });
   }
 
+  function supportsManagementTask(device, taskId) {
+    const capability = resolvePollingCapability(device);
+    return capability.support === "implemented"
+      && Array.isArray(capability.managementTasks)
+      && capability.managementTasks.includes(taskId);
+  }
+
   function deriveAutomaticPollingPlan(currentState, input) {
     const selection = input || {};
     const mode = selection.mode === POLLING_SELECTION_MODE_SINGLE_IP ? POLLING_SELECTION_MODE_SINGLE_IP : POLLING_SELECTION_MODE_FILTERS;
-    const inventory = currentState.inventoryDevices.filter((device) => device.inCurrentSr !== false && EQUIPMENT_CATEGORY_IDS.includes(device.category));
+    const usesManagementTargetList = selection.disableInsecureManagementServices === true;
+    const inventorySource = usesManagementTargetList && Array.isArray(selection.managementTargetDevices)
+      ? selection.managementTargetDevices
+      : currentState.inventoryDevices;
+    const inventory = inventorySource.filter((device) => device.inCurrentSr !== false && EQUIPMENT_CATEGORY_IDS.includes(device.category));
     const availableDomains = pollingOptions(inventory, "domains");
     const domains = normalizePollingSelection(Object.prototype.hasOwnProperty.call(selection, "domains") ? selection.domains : [POLLING_ALL], availableDomains);
     const domainDevices = domains.length ? inventory.filter((device) => matchesPollingSelection(device, "domains", domains)) : [];
@@ -1741,7 +1799,7 @@
     const availableModels = pollingOptions(manufacturerDevices, "models");
     const models = normalizePollingSelection(selection.models, availableModels);
     const filteredDevices = sortPollingDevices(models.length ? manufacturerDevices.filter((device) => matchesPollingSelection(device, "models", models)) : []);
-    const ipResolution = resolvePollingIpTarget(currentState, selection.ipAddress);
+    const ipResolution = resolvePollingIpTarget({ inventoryDevices: inventory }, selection.ipAddress);
     const selectedDevices = mode === POLLING_SELECTION_MODE_SINGLE_IP
       ? (ipResolution.status === "found" ? [ipResolution.device] : [])
       : filteredDevices;
@@ -1751,8 +1809,11 @@
       const capability = resolvePollingCapability(device);
       (device.ipNormalized && capability.support === "implemented" && capability.transport ? supportedDevices : unsupportedDevices).push(device);
     });
+    const managementEligibleDevices = selectedDevices.filter((device) => supportsManagementTask(device, MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES));
+    const managementSkippedDevices = selectedDevices.filter((device) => !supportsManagementTask(device, MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES));
     return Object.freeze({
       mode,
+      targetSource: usesManagementTargetList ? "port_closure_list" : "sr",
       availableDomains: Object.freeze(availableDomains),
       availableCategories: Object.freeze(availableCategories),
       availableManufacturers: Object.freeze(availableManufacturers),
@@ -1761,20 +1822,26 @@
       ipResolution,
       selectedDevices: Object.freeze(selectedDevices),
       supportedDevices: Object.freeze(supportedDevices),
-      unsupportedDevices: Object.freeze(unsupportedDevices)
+      unsupportedDevices: Object.freeze(unsupportedDevices),
+      managementEligibleDevices: Object.freeze(managementEligibleDevices),
+      managementSkippedDevices: Object.freeze(managementSkippedDevices)
     });
   }
 
   function createPollingPlan(currentState, input) {
     const projection = deriveAutomaticPollingPlan(currentState, input);
     const errors = [];
-    if (!currentState.srImports.some((item) => item.status === "processed" || item.status === "partial")) errors.push("Сначала загрузите выгрузку SR");
+    const usesManagementTargetList = input.disableInsecureManagementServices === true;
+    if (usesManagementTargetList) {
+      if (!Array.isArray(input.managementTargetDevices) || !input.managementTargetDevices.length) errors.push("Загрузите файл «Список устройств для закрытия портов 80 и 23 (http, telnet)»");
+      if (!/^[0-9a-f]{64}$/i.test(String(input.managementTargetSourceSha256 || ""))) errors.push("Не удалось подтвердить список устройств для закрытия портов");
+    } else if (!currentState.srImports.some((item) => item.status === "processed" || item.status === "partial")) errors.push("Сначала загрузите выгрузку SR");
     if (projection.mode === POLLING_SELECTION_MODE_SINGLE_IP) {
       const ipErrors = {
         empty: "Введите IP-адрес устройства",
         invalid: "Введите корректный IPv4-адрес устройства",
-        not_found: "Устройство с таким IP отсутствует в актуальной выгрузке SR",
-        ambiguous: "В актуальной выгрузке SR найдено несколько устройств с таким IP"
+        not_found: usesManagementTargetList ? "Устройство с таким IP отсутствует в списке устройств для закрытия портов" : "Устройство с таким IP отсутствует в актуальной выгрузке SR",
+        ambiguous: usesManagementTargetList ? "В списке устройств для закрытия портов найдено несколько устройств с таким IP" : "В актуальной выгрузке SR найдено несколько устройств с таким IP"
       };
       if (projection.ipResolution.status !== "found") errors.push(ipErrors[projection.ipResolution.status] || "Устройство по IP не выбрано");
     } else {
@@ -1791,14 +1858,21 @@
     if (!input.credentialsReady) errors.push("Загрузите файл «Учётные данные оборудования» в модуле «Загрузка»");
     if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить выбранный файл учётных данных");
     if (!projection.supportedDevices.length) errors.push("Среди выбранных устройств нет оборудования с поддерживаемым автоматическим опросом");
+    const managementTasks = input.disableInsecureManagementServices === true ? [MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES] : [];
+    if (managementTasks.length && !projection.managementEligibleDevices.length) errors.push("Среди выбранных устройств нет Huawei TE40 с подтверждённой поддержкой закрытия HTTP и Telnet");
     if (errors.length) return { ok: false, state: deepClone(currentState), projection, errors };
     let next = deepClone(currentState);
     const plan = {
       id: createId("polling-run"), kind: "plan", identityKey: `plan|${scheduledAt}|${nowIso()}`,
       folderName: null, capturedAt: scheduledAt, capturedAtSource: "planned", importedAt: nowIso(), importedById: input.actorId || "system",
-      intervalSeconds, authenticationInputSha256: String(input.credentialSourceSha256).toLowerCase(), selection: deepClone(projection.selection), deviceIds: projection.selectedDevices.map((device) => device.id),
+      intervalSeconds, authenticationInputSha256: String(input.credentialSourceSha256).toLowerCase(), selection: deepClone(projection.selection),
+      targetSource: projection.targetSource,
+      targetSourceSha256: usesManagementTargetList ? String(input.managementTargetSourceSha256).toLowerCase() : null,
+      deviceIds: usesManagementTargetList ? [] : projection.selectedDevices.map((device) => device.id),
+      targetDevices: usesManagementTargetList ? projection.selectedDevices.map(pollingRuntimeDevice) : [],
+      managementTasks,
       fileCount: 0, successCount: 0, errorCount: 0, status: "ready_for_local_cli",
-      selectionSummary: { total: projection.selectedDevices.length, implemented: projection.supportedDevices.length, notImplemented: projection.unsupportedDevices.length }
+      selectionSummary: { total: projection.selectedDevices.length, implemented: projection.supportedDevices.length, notImplemented: projection.unsupportedDevices.length, managementEligible: projection.managementEligibleDevices.length, managementSkipped: projection.managementSkippedDevices.length }
     };
     next.pollingRuns.push(plan);
     next = appendHistory(next, { actorId: input.actorId || "system", action: "Сформирован план автоматического опроса", entityType: "polling_run", entityId: plan.id, details: `${plan.selectionSummary.total} устройств; поддерживается ${plan.selectionSummary.implemented}` });
@@ -1808,10 +1882,21 @@
   function buildPollingPlanExport(currentState, planId) {
     const plan = currentState.pollingRuns.find((item) => item.id === planId && item.kind === "plan");
     if (!plan) return { ok: false, errors: ["План опроса не найден"] };
-    const devices = (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).map((device) => {
-      const capability = resolvePollingCapability(device);
-      const pollingSupported = Boolean(device.ipNormalized && capability.support === "implemented" && capability.transport);
-      return {
+    const devices = plan.targetSource === "port_closure_list"
+      ? deepClone(plan.targetDevices || [])
+      : (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).map(pollingRuntimeDevice);
+    return {
+      ok: true,
+      payload: { schemaVersion: 3, scheduledAt: plan.capturedAt, intervalSeconds: plan.intervalSeconds || 0, authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), devices },
+      filename: `extron-polling-plan-${String(plan.capturedAt || "").slice(0, 10) || "local"}.json`,
+      errors: []
+    };
+  }
+
+  function pollingRuntimeDevice(device) {
+    const capability = resolvePollingCapability(device);
+    const pollingSupported = Boolean(device.ipNormalized && capability.support === "implemented" && capability.transport);
+    return {
       ip: device.ipNormalized || null,
       category: device.category,
       manufacturer: device.manufacturerRaw || device.manufacturerNormalized,
@@ -1819,12 +1904,6 @@
       pollingSupported,
       adapterKey: capability.key || null,
       allowInsecureTls: false
-    }; });
-    return {
-      ok: true,
-      payload: { schemaVersion: 2, scheduledAt: plan.capturedAt, intervalSeconds: plan.intervalSeconds || 0, authenticationInputSha256: plan.authenticationInputSha256, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), devices },
-      filename: `extron-polling-plan-${String(plan.capturedAt || "").slice(0, 10) || "local"}.json`,
-      errors: []
     };
   }
 
@@ -4416,6 +4495,7 @@
     POLLING_MISSING,
     POLLING_SELECTION_MODE_FILTERS,
     POLLING_SELECTION_MODE_SINGLE_IP,
+    MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES,
     SR_REQUIRED_HEADERS,
     appendHistory,
     addReviewDecision,
@@ -4473,6 +4553,8 @@
     importBackupText,
     importSrRows,
     importSrWorkbook,
+    parseManagementTargetRows,
+    parseManagementTargetWorkbook,
     processSrImportRows,
     createSrImportContext,
     ingestPollingResultText,
@@ -4580,6 +4662,7 @@
   }
   const initialNavigationState = createNavigationState();
   let credentialPoolSession = null;
+  let managementTargetListSession = null;
   let pollingOutputRootHandle = null;
   let automaticPollingMonitor = null;
   const ui = {
@@ -4600,8 +4683,9 @@
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
-    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalSeconds: "0", allowInsecureTls: true },
+    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false },
     credentialSummary: null,
+    managementTargetListSummary: null,
     pollingOutputFolderName: null,
     automaticPolling: null,
     inventoryBusy: false,
@@ -5383,11 +5467,12 @@
   function renderPollingIpTarget(projection) {
     const resolution = projection.ipResolution;
     if (resolution.status !== "found") {
+      const sourceLabel = projection.targetSource === "port_closure_list" ? "списка устройств для закрытия портов" : "актуальной выгрузки SR";
       const messages = {
-        empty: "Введите полный IPv4-адрес устройства из актуальной выгрузки SR.",
+        empty: `Введите полный IPv4-адрес устройства из ${sourceLabel}.`,
         invalid: "IP-адрес указан некорректно.",
-        not_found: "Устройство с таким IP-адресом отсутствует в актуальной выгрузке SR.",
-        ambiguous: `Найдено несколько устройств с этим IP-адресом (${resolution.candidateCount}). Опрос заблокирован до устранения конфликта в SR.`
+        not_found: `Устройство с таким IP-адресом отсутствует в ${sourceLabel}.`,
+        ambiguous: `Найдено несколько устройств с этим IP-адресом (${resolution.candidateCount}). Опрос заблокирован до устранения конфликта в источнике.`
       };
       const severity = ["invalid", "ambiguous"].includes(resolution.status) ? "critical" : resolution.status === "not_found" ? "warning" : "info";
       return `<div class="polling-ip-message ${severity}">${escapeHtml(messages[resolution.status] || "Устройство не выбрано.")}</div>`;
@@ -5401,7 +5486,7 @@
       <div><dt>Производитель / модель</dt><dd>${escapeHtml(device.manufacturerRaw || "—")} / ${escapeHtml(device.modelRaw || "—")}</dd></div>
       <div><dt>IP / MAC</dt><dd>${escapeHtml(device.ipNormalized || "—")} / ${escapeHtml(device.macNormalized || device.macRaw || "—")}</dd></div>
       <div><dt>Домен</dt><dd>${escapeHtml(device.domain || "—")}</dd></div>
-      <div><dt>Локация / адрес</dt><dd>${escapeHtml(location?.name || "—")} / ${escapeHtml(location?.address || "—")}</dd></div>
+      <div><dt>Локация / адрес</dt><dd>${escapeHtml(location?.name || device.roomName || "—")} / ${escapeHtml(location?.address || device.roomAddress || "—")}</dd></div>
       <div><dt>Инвентарный / серийный</dt><dd>${escapeHtml(device.inventoryNumber || "—")} / ${escapeHtml(device.serialNumber || "—")}</dd></div>
     </dl><p class="muted">${supported ? `Будет использован механизм ${escapeHtml(capability.key || "подтверждённого опроса")}.` : "Подтверждённый автоматический опрос для этого устройства недоступен; сетевой запрос выполняться не будет."}</p></section>`;
   }
@@ -5412,7 +5497,7 @@
     const automatic = ui.automaticPolling;
     const automaticPercent = automatic?.total ? Math.min(100, Math.round((automatic.processed / automatic.total) * 100)) : 0;
     const srPercent = ui.srProgress?.total ? Math.min(100, Math.round((ui.srProgress.processed / ui.srProgress.total) * 100)) : 0;
-    const projection = deriveAutomaticPollingPlan(state, ui.pollingPlanSelection);
+    const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     return `
       <header class="page-header">
@@ -5446,6 +5531,8 @@
       </div>
       <section class="card section-gap"><h2>4. План автоматического опроса</h2>
         <form class="automatic-plan-form" data-polling-plan-form>
+          <div class="field"><label for="management-target-list-file">Список устройств для закрытия портов 80 и 23 (http, telnet)</label><input id="management-target-list-file" name="managementTargetListFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>
+          ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div>` : `<p class="muted">Файл должен иметь структуру выгрузки SR. Он используется только для задачи закрытия портов и не добавляется в основную SR или аналитику.</p>`}
           <fieldset class="polling-mode-selector"><legend>Способ выбора устройств</legend><div>
             <label class="polling-mode-choice"><input type="radio" name="pollingMode" value="${POLLING_SELECTION_MODE_FILTERS}"${projection.mode === POLLING_SELECTION_MODE_FILTERS ? " checked" : ""}> По фильтрам</label>
             <label class="polling-mode-choice"><input type="radio" name="pollingMode" value="${POLLING_SELECTION_MODE_SINGLE_IP}"${projection.mode === POLLING_SELECTION_MODE_SINGLE_IP ? " checked" : ""}> По IP-адресу</label>
@@ -5456,9 +5543,9 @@
             ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
             ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
           </div>` : `<div class="polling-ip-selector"><div class="field"><label for="polling-target-ip">IP-адрес</label><input id="polling-target-ip" name="ipAddress" data-polling-ip-input inputmode="decimal" autocomplete="off" placeholder="Например, 192.0.2.10" value="${escapeHtml(ui.pollingPlanSelection.ipAddress || "")}"></div><div data-polling-ip-result aria-live="polite">${renderPollingIpTarget(projection)}</div></div>`}
-          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><label>Интервал</label><div class="field-with-unit"><input name="intervalSeconds" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalSeconds || "0")}" required><span>секунд</span></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><button class="button primary" type="submit"${automaticPollingMonitor ? " disabled" : ""}>Сформировать и запустить опрос</button></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><label>Интервал</label><div class="field-with-unit"><input name="intervalSeconds" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalSeconds || "0")}" required><span>секунд</span></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Закрыть порты 80, 23 (http, telnet)</label><p class="muted">${ui.pollingPlanSelection.disableInsecureManagementServices ? "Фильтры и поиск по IP используют только отдельный загруженный список." : "Фильтры и поиск по IP используют актуальную выгрузку SR."} Проверяемая задача доступна только для Huawei TE40: целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Успех фиксируется только после закрытия TCP/23 и TCP/80 при сохранении HTTPS/443.</p><button class="button primary" type="submit"${automaticPollingMonitor ? " disabled" : ""}>Сформировать и запустить опрос</button></div>
         </form>
-        <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div></dl>
+        <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div><div><dt>Закрытие портов доступно</dt><dd data-polling-count="management-eligible">${projection.managementEligibleDevices.length}</dd></div><div><dt>Закрытие портов будет пропущено</dt><dd data-polling-count="management-skipped">${projection.managementSkippedDevices.length}</dd></div></dl>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
         ${automatic ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(automaticPollingStatusLabel(automatic.status))}</span><strong>${automatic.processed || 0} из ${automatic.total || 0} устройств</strong></div><strong>${automaticPercent}%</strong></div><progress max="100" value="${automaticPercent}">${automaticPercent}%</progress><dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${automatic.successful || 0}</dd></div><div><dt>Ошибки</dt><dd>${automatic.failed || 0}</dd></div><div><dt>Не поддерживается</dt><dd>${automatic.unsupported || 0}</dd></div><div><dt>Папка запуска</dt><dd class="mono">${escapeHtml(automatic.runFolderName || "будет создана при старте")}</dd></div></dl>${automatic.allowInsecureTls ? `<p class="muted">Для этого запуска разрешён самоподписанный HTTPS-сертификат. Обычный HTTP не используется.</p>` : ""}${!["completed", "cancelled", "failed"].includes(automatic.status) ? `<button class="button danger" type="button" data-cancel-automatic-polling>Отменить опрос</button>` : ""}</section>` : ""}
       </section>
@@ -6095,10 +6182,12 @@
       ui.pollingPlanSelection.scheduledAt = String(formData.get("scheduledAt") || "");
       ui.pollingPlanSelection.intervalSeconds = String(formData.get("intervalSeconds") || "");
       ui.pollingPlanSelection.allowInsecureTls = formData.get("allowInsecureTls") === "on";
+      ui.pollingPlanSelection.disableInsecureManagementServices = formData.get("disableInsecureManagementServices") === "on";
       if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
       if (!pollingOutputRootHandle) { setMessage("Сначала выберите общую папку для сохранения результатов.", "error"); render(); return; }
-      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, credentialsReady: Boolean(credentialPoolSession?.file), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
+      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [], managementTargetSourceSha256: managementTargetListSession?.sourceSha256 || "", credentialsReady: Boolean(credentialPoolSession?.file), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
+      if (ui.pollingPlanSelection.disableInsecureManagementServices && !global.confirm(`Будут отключены HTTP (порт 80) и Telnet (порт 23) на подтверждённых Huawei TE40. Поддерживается целей: ${result.plan.selectionSummary.managementEligible}; будет пропущено: ${result.plan.selectionSummary.managementSkipped}. Продолжить?`)) return;
       ui.pollingPlanResult = { ...result.plan.selectionSummary, planId: result.plan.id };
       if (!commitState(result.state, `План сформирован: ${result.plan.selectionSummary.implemented} устройств готовы для автоматического опроса.`)) return;
       try {
@@ -6362,7 +6451,7 @@
       if (result.ok && result.outcome !== "duplicate") {
         state = result.state;
         pollingImportContextCache = null;
-        ui.pollingPlanSelection = { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalSeconds: ui.pollingPlanSelection.intervalSeconds || "0", allowInsecureTls: ui.pollingPlanSelection.allowInsecureTls === true };
+        ui.pollingPlanSelection = { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalSeconds: ui.pollingPlanSelection.intervalSeconds || "0", allowInsecureTls: ui.pollingPlanSelection.allowInsecureTls === true, disableInsecureManagementServices: false };
         ui.pollingPlanResult = null;
       }
       ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
@@ -6486,8 +6575,36 @@
     render();
   }
 
-  function handleChange(event) {
+  async function handleChange(event) {
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
+    if (pollingPlanForm && event.target.name === "managementTargetListFile") {
+      const file = event.target.files?.[0];
+      if (!file || !/\.xlsx$/i.test(file.name)) {
+        setMessage("Выберите список устройств в формате XLSX.", "error");
+        event.target.value = "";
+        render();
+        return;
+      }
+      let fileBuffer = null;
+      try {
+        fileBuffer = await readFileArrayBuffer(file);
+        const parsed = await parseManagementTargetWorkbook({ arrayBuffer: fileBuffer });
+        if (!parsed.ok) throw Object.assign(new Error("management_target_list_invalid"), { safeErrors: parsed.errors });
+        managementTargetListSession = { devices: parsed.devices, sourceSha256: parsed.sourceSha256 };
+        ui.managementTargetListSummary = { filename: file.name, acceptedCount: parsed.acceptedCount };
+        ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL] };
+        ui.pollingPlanResult = null;
+        setMessage(`Список устройств для закрытия портов загружен. Принято устройств: ${parsed.acceptedCount}.`, "success");
+      } catch (error) {
+        const details = Array.isArray(error.safeErrors) ? error.safeErrors.join("; ") : "Проверьте структуру XLSX и уникальность IP-адресов.";
+        setMessage(`Список устройств не принят. ${details} Прежний список сохранён.`, "error");
+      } finally {
+        if (fileBuffer) new Uint8Array(fileBuffer).fill(0);
+        event.target.value = "";
+      }
+      render();
+      return;
+    }
     if (pollingPlanForm && event.target.name === "pollingMode") {
       ui.pollingPlanSelection.mode = event.target.value === POLLING_SELECTION_MODE_SINGLE_IP ? POLLING_SELECTION_MODE_SINGLE_IP : POLLING_SELECTION_MODE_FILTERS;
       ui.pollingPlanResult = null;
@@ -6503,7 +6620,7 @@
       else if (event.target.checked) nextSelection = [...new Set(previous.filter((item) => item !== POLLING_ALL).concat(value))];
       else nextSelection = previous.filter((item) => item !== value);
       ui.pollingPlanSelection[dimension] = nextSelection;
-      const projection = deriveAutomaticPollingPlan(state, ui.pollingPlanSelection);
+      const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
       ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
       ui.pollingPlanResult = null;
       render();
@@ -6516,6 +6633,13 @@
     }
     if (pollingPlanForm && event.target.name === "allowInsecureTls") {
       ui.pollingPlanSelection.allowInsecureTls = event.target.checked === true;
+      return;
+    }
+    if (pollingPlanForm && event.target.name === "disableInsecureManagementServices") {
+      ui.pollingPlanSelection.disableInsecureManagementServices = event.target.checked === true;
+      ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL] };
+      ui.pollingPlanResult = null;
+      render();
       return;
     }
     if (!event.target.matches("[data-import-backup]") || !event.target.files?.[0]) return;
@@ -6558,11 +6682,11 @@
     if (!pollingPlanForm || !event.target.matches("[data-polling-ip-input]")) return;
     ui.pollingPlanSelection.ipAddress = String(event.target.value || "");
     ui.pollingPlanResult = null;
-    const projection = deriveAutomaticPollingPlan(state, ui.pollingPlanSelection);
+    const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     const resultContainer = pollingPlanForm.querySelector("[data-polling-ip-result]");
     if (resultContainer) resultContainer.innerHTML = renderPollingIpTarget(projection);
-    const counts = { selected: projection.selectedDevices.length, supported: projection.supportedDevices.length, unsupported: projection.unsupportedDevices.length };
+    const counts = { selected: projection.selectedDevices.length, supported: projection.supportedDevices.length, unsupported: projection.unsupportedDevices.length, "management-eligible": projection.managementEligibleDevices.length, "management-skipped": projection.managementSkippedDevices.length };
     Object.entries(counts).forEach(([name, value]) => {
       const target = document.querySelector(`[data-polling-count="${name}"]`);
       if (target) target.textContent = String(value);
