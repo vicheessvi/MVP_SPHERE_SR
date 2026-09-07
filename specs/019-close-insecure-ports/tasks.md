@@ -15,7 +15,7 @@
 
 - [x] T006 Добавить checkbox, счётчики, confirmation и Справочник
 - [x] T007 Добавить plan v3 и runtime routing с explicit skipped outcome
-- [x] T008 Добавить bounded TE40 read/write/re-read/TCP verification
+- [x] T008 Добавить bounded TE40 read/write/re-read verification по значениям меню кодека
 
 ## Phase 4: Controlled validation
 

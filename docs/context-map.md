@@ -4,7 +4,7 @@
 
 - Спецификация, plan v3, management-action contract и задачи: `specs/019-close-insecure-ports/`.
 - Opt-in checkbox и capability projection: `app.js`, `product-catalog.js`, `runtime/device-catalog.json`.
-- Guarded TE40 read/write/re-read/TCP verification: `mvp_runtime/adapters/huawei_te40.py`, `mvp_runtime/polling.py`, `mvp_runtime/server.py`.
+- Guarded TE40 read/write/re-read verification по значениям меню кодека: `mvp_runtime/adapters/huawei_te40.py`, `mvp_runtime/polling.py`, `mvp_runtime/server.py`.
 - Архитектурное решение и критерий успеха по значениям меню кодека: `docs/decisions/ADR-0019-huawei-te40-close-ports.md`.
 
 ## Feature 018
