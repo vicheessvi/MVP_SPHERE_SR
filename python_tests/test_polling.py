@@ -99,7 +99,7 @@ class PollingTests(unittest.TestCase):
         self.assertFalse(results[3]["networkAttempted"])
         self.assertEqual(results[3]["vendorPolling"]["status"], "protocol_required")
 
-    def test_management_task_reaches_only_exact_te40_and_other_models_are_explicitly_skipped(self) -> None:
+    def test_management_task_reaches_exact_te_family_models(self) -> None:
         observed = []
 
         def adapter(device, _credentials, options):
@@ -115,8 +115,8 @@ class PollingTests(unittest.TestCase):
                 "targetSource": "port_closure_list",
                 "targetSourceSha256": "a" * 64,
                 "devices": [
-                    {**HUAWEI_MODELS[1], "ip": "192.0.2.40"},
-                    {**HUAWEI_MODELS[2], "ip": "192.0.2.50"},
+                    {**device, "ip": f"192.0.2.{30 + index * 10}"}
+                    for index, device in enumerate(HUAWEI_MODELS)
                 ],
             },
             {
@@ -125,10 +125,13 @@ class PollingTests(unittest.TestCase):
                 "adapters": {"huawei_te_web_cgi_v1": adapter},
             },
         )
-        self.assertEqual(observed, [("TE40", ["disable_insecure_management_services"]), ("TE50", [])])
-        self.assertEqual(results[0]["managementActions"][0]["status"], "applied")
-        self.assertEqual(results[1]["managementActions"][0]["status"], "skipped_unsupported")
-        self.assertTrue(results[1]["ok"])
+        self.assertEqual(observed, [
+            ("TE30", ["disable_insecure_management_services"]),
+            ("TE40", ["disable_insecure_management_services"]),
+            ("TE50", ["disable_insecure_management_services"]),
+            ("TE60", ["disable_insecure_management_services"]),
+        ])
+        self.assertTrue(all(item["managementActions"][0]["status"] == "applied" for item in results))
 
         with self.assertRaises(PollingError):
             run_plan({"managementTasks": ["unknown"], "devices": [{**HUAWEI_MODELS[1], "ip": "192.0.2.40"}]})

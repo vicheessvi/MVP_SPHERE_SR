@@ -284,7 +284,7 @@ def _disable_insecure_management_services(
     settle: Callable[[], Any],
 ) -> dict[str, Any]:
     base = {"id": DISABLE_INSECURE_SERVICES_ACTION, "transport": "https/443", "changed": False, "writeAttempted": False}
-    if planned_model != "te40":
+    if planned_model not in SUPPORTED_MODELS:
         return {**base, "status": "skipped_unsupported", "safeError": "management_action_unsupported"}
     if not all(marker in bundle_text for marker in MANAGEMENT_ACTION_MARKERS):
         return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}

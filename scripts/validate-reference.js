@@ -21,7 +21,7 @@ if (!(deviceCatalog.adapters || []).includes("extron_web_dynamic_resources_v1"))
 if (!(deviceCatalog.adapters || []).includes("huawei_te_web_cgi_v1")) errors.push("В общем каталоге отсутствует общий Huawei TE transport");
 if ((deviceCatalog.adapters || []).includes("huawei_te40_web_cgi_v1")) errors.push("В общем каталоге остался устаревший Huawei TE40-only transport");
 const closePortsActions = (deviceCatalog.managementActions || []).filter((item) => item.id === "disable_insecure_management_services");
-if (closePortsActions.length !== 1 || JSON.stringify(closePortsActions[0].models) !== JSON.stringify(["TE40"]) || closePortsActions[0].transport !== "huawei_te_web_cgi_v1") errors.push("Задача закрытия HTTP/Telnet должна быть подтверждена ровно для Huawei TE40");
+if (closePortsActions.length !== 1 || JSON.stringify(closePortsActions[0].models) !== JSON.stringify(["TE30", "TE40", "TE50", "TE60"]) || closePortsActions[0].transport !== "huawei_te_web_cgi_v1") errors.push("Задача закрытия HTTP/Telnet должна быть разрешена ровно для Huawei TE30/TE40/TE50/TE60");
 
 if (errors.length) {
   errors.forEach((error) => process.stderr.write(`ОШИБКА: ${error}\n`));

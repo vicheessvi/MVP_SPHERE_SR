@@ -107,36 +107,37 @@ class HuaweiTe40Tests(unittest.TestCase):
             self.assertEqual(result["vendorPolling"]["contract"], "huawei-te-web-cgi-v1")
             self.assertEqual(len([item for item in calls if "Web_RequestCertificate" in item["path"]]), 1)
 
-    def test_opt_in_te40_action_reads_writes_exact_values_and_verifies_menu_state(self):
-        calls = []
-        result = poll_huawei_te_device(
-            {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
-            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
-            {"request": self.success_request(calls), "nonce": lambda: "0.25", "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "management_settle": lambda: None},
-        )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["managementActions"], [{
-            "id": DISABLE_INSECURE_SERVICES_ACTION,
-            "transport": "https/443",
-            "changed": True,
-            "writeAttempted": True,
-            "status": "applied",
-            "before": {"httpPort80": "enabled", "telnetPort23": "enabled"},
-            "after": {"httpPort80": "disabled", "telnetPort23": "disabled"},
-        }])
-        config_calls = [item for item in calls if "WEB_GetCfgParamAPI" in item["path"]]
-        save_calls = [item for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
-        self.assertEqual(len(config_calls), 2)
-        self.assertEqual(len(save_calls), 1)
-        payload = json.loads(save_calls[0]["body"])
-        self.assertEqual(payload["CfgItemInt"], [
-            {"CfgItemID": "enabletelnet", "CfgItemInfo": 0},
-            {"CfgItemID": "enable_http", "CfgItemInfo": 1},
-        ])
-        self.assertEqual(payload["CfgItemString"], [])
-        self.assertEqual(set(payload), {"CfgItemInt", "CfgItemString", "acCSRFToken"})
-        self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
-        self.assertNotIn("SYNTHETIC-CSRF", json.dumps(result))
+    def test_opt_in_te_family_action_reads_writes_exact_values_and_verifies_menu_state(self):
+        for index, model in enumerate(("TE30", "TE40", "TE50", "TE60")):
+            calls = []
+            result = poll_huawei_te_device(
+                {"ip": f"192.0.2.{30 + index * 10}", "model": model, "allowInsecureTls": True},
+                [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+                {"request": self.success_request(calls, terminal_model=model), "nonce": lambda: "0.25", "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION], "management_settle": lambda: None},
+            )
+            self.assertTrue(result["ok"], model)
+            self.assertEqual(result["managementActions"], [{
+                "id": DISABLE_INSECURE_SERVICES_ACTION,
+                "transport": "https/443",
+                "changed": True,
+                "writeAttempted": True,
+                "status": "applied",
+                "before": {"httpPort80": "enabled", "telnetPort23": "enabled"},
+                "after": {"httpPort80": "disabled", "telnetPort23": "disabled"},
+            }])
+            config_calls = [item for item in calls if "WEB_GetCfgParamAPI" in item["path"]]
+            save_calls = [item for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
+            self.assertEqual(len(config_calls), 2, model)
+            self.assertEqual(len(save_calls), 1, model)
+            payload = json.loads(save_calls[0]["body"])
+            self.assertEqual(payload["CfgItemInt"], [
+                {"CfgItemID": "enabletelnet", "CfgItemInfo": 0},
+                {"CfgItemID": "enable_http", "CfgItemInfo": 1},
+            ])
+            self.assertEqual(payload["CfgItemString"], [])
+            self.assertEqual(set(payload), {"CfgItemInt", "CfgItemString", "acCSRFToken"})
+            self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
+            self.assertNotIn("SYNTHETIC-CSRF", json.dumps(result))
 
     def test_action_is_idempotent_and_not_run_without_opt_in(self):
         no_action_calls = []
@@ -172,6 +173,35 @@ class HuaweiTe40Tests(unittest.TestCase):
         save_calls = [item for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
         self.assertEqual(len(save_calls), 1)
         self.assertEqual(json.loads(save_calls[0]["body"])["CfgItemInt"][0]["CfgItemInfo"], 0)
+
+    def test_management_contract_and_configuration_schema_drift_never_write(self):
+        for model in ("TE30", "TE50", "TE60"):
+            missing_marker_calls = []
+            missing_marker = poll_huawei_te_device(
+                {"ip": "192.0.2.80", "model": model, "allowInsecureTls": True},
+                [{"username": "u", "password": "p"}],
+                {
+                    "request": self.success_request(missing_marker_calls, {"/system/web_all.js": {"status_code": 200, "headers": [], "body": "WEB_GetProductEsnAPI WEB_GetSystemMacAddrAPI WEB_GetVersionInfoAPI WEB_GetTermSpecsInfoAPI WEB_GetSysLocalTimeAPI WEB_GetDhcpIPInfoAPI"}}, terminal_model=model),
+                    "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION],
+                },
+            )
+            self.assertFalse(missing_marker["ok"], model)
+            self.assertEqual(missing_marker["safeError"], "management_contract_unconfirmed")
+            self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in missing_marker_calls), model)
+
+            schema_calls = []
+            schema = poll_huawei_te_device(
+                {"ip": "192.0.2.81", "model": model, "allowInsecureTls": True},
+                [{"username": "u", "password": "p"}],
+                {
+                    "request": self.success_request(schema_calls, {"/action.cgi?ActionID=WEB_GetCfgParamAPI?rmd=0.5": envelope({"CfgItemInt": [{"CfgItemID": "enable_http", "CfgItemInfo": 0}]})}, terminal_model=model),
+                    "nonce": lambda: "0.5",
+                    "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION],
+                },
+            )
+            self.assertFalse(schema["ok"], model)
+            self.assertEqual(schema["safeError"], "configuration_schema_unconfirmed")
+            self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in schema_calls), model)
 
     def test_planned_model_is_checked_before_credentials_and_after_version(self):
         pre_auth_calls = []

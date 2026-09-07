@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 019
+## Текущая feature 020
+
+- Спецификация, общий guarded write-contract и задачи: `specs/020-huawei-te-family-port-closure/`.
+- Exact-model capability TE30/TE40/TE50/TE60: `runtime/device-catalog.json`, `runtime/model-catalog.js`, `app.js`.
+- Общая read/write/re-read реализация с firmware/schema gates: `mvp_runtime/adapters/huawei_te40.py`, `mvp_runtime/polling.py`.
+- Архитектурное решение и provisional live-validation boundary: `docs/decisions/ADR-0020-huawei-te-family-port-closure.md`.
+
+## Feature 019
 
 - Спецификация, plan v3, management-action contract и задачи: `specs/019-close-insecure-ports/`.
 - Opt-in checkbox и capability projection: `app.js`, `product-catalog.js`, `runtime/device-catalog.json`.
@@ -69,7 +76,7 @@
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
 - Подтверждены локальный динамический HTTPS web contract Extron controller/panel и общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60. Все четыре Huawei-модели проверены контролируемыми опросами реальных устройств. Остальные vendor/model adapters — `protocol_required`.
-- Opt-in write-задача отключения HTTP/Telnet реализована только для exact TE40 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. По решению пользователя достаточно подтверждённо изменить значения HTTP/Telnet в меню кодека; TCP listener не влияет на статус отчёта.
+- Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE30/TE40/TE50/TE60 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Реальная write-проверка выполнена на TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. По решению пользователя достаточно подтверждённо изменить значения HTTP/Telnet в меню кодека; TCP listener не влияет на статус отчёта.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 
 ## История
