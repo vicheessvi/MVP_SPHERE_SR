@@ -78,7 +78,7 @@
         { id: "term-history", title: "История опросов", summary: "Сохранённые результаты предыдущих опросов устройства.", keywords: ["polling history", "история"] },
         { id: "term-latest", title: "Последние данные", summary: "Самый новый доступный результат опроса конкретного устройства.", keywords: ["latest snapshot", "последнее состояние"] },
         { id: "term-change", title: "Изменение", summary: "Различие между данными устройства, полученными в двух последовательных опросах.", keywords: ["change", "изменения", "сравнение"] },
-        { id: "term-location", title: "Локация", summary: "Помещение или место установки оборудования; основное название берётся из поля SR «Название комнаты».", keywords: ["комната", "помещение"] },
+        { id: "term-location", title: "Локация", summary: "Помещение или место установки оборудования; основное название берётся из поля SR «Наименование локации».", keywords: ["комната", "помещение"] },
         { id: "term-vip-location", title: "VIP-локация", summary: "Локация, отмеченная в SR как VIP.", keywords: ["vip"] },
         { id: "term-vip-device", title: "VIP-оборудование", summary: "Оборудование, отмеченное в SR как VIP.", keywords: ["vip"] },
         { id: "term-manufacturer", title: "Производитель", summary: "Компания-производитель оборудования.", keywords: ["vendor"] },
@@ -177,7 +177,7 @@
       polling_ip_conflict: `IP-адрес в имени файла ${filename} не совпадает с подтверждённым IP внутри JSON. Результат не привязан к оборудованию.`,
       classification_conflict: "Конфликт типа оборудования: категория результата опроса не совпадает с актуальной SR. Результат не привязан к оборудованию.",
       invalid_ip: "В выгрузке SR указан некорректный IP-адрес. Проверьте исходную строку.",
-      missing_identity: "Устройство сохранено в перечне, но в строке SR нет inventory/serial/MAC/IP. Для повторного импорта используется локальная составная идентичность по помещению и описанию.",
+      missing_identity: "Устройство сохранено в перечне, но в строке SR нет SmartRoom ID оборудования, ID устройства, инвентарного/серийного номера, MAC или IP. Для повторного импорта используется локальная составная идентичность по локации и описанию.",
       ambiguous_identity: "Строка SR может относиться к нескольким устройствам. Требуется проверка идентификаторов.",
       identity_collision: "Совпавший идентификатор уже используется другой строкой текущей SR. Обе строки сохранены отдельными устройствами и требуют проверки исходных идентификаторов.",
       duplicate_sr_row: "Строка является точным повтором уже обработанной строки SR с теми же идентификаторами и техническим описанием.",
@@ -239,11 +239,71 @@
     }))
   ]);
 
-  const SR_REQUIRED_HEADERS = Object.freeze([
-    "Название комнаты", "Адрес комнаты", "VIP комната", "Тип оборудования",
-    "Наименование", "Модель", "Тип модели", "Производитель", "IP", "MAC",
-    "SIP URI", "Инвентарный номер", "Серийный номер", "VIP оборудование"
+  const SR_CANONICAL_HEADERS = Object.freeze([
+    "SmartRoom ID локации", "Наименование локации", "Общий статус локации", "Описание локации",
+    "Комментарий при переводе в учёт локации", "Адрес локации", "Сервисный статус", "Признак VIP",
+    "Избранная локация", "Открытые заявки", "Закрытые заявки", "Кол-во оборудования",
+    "Табельный номер", "Контактное лицо", "Подрядчик", "Описание подрядчика",
+    "Срок гарантийных обязательств", "SmartRoom ID оборудования", "Класс оборудования",
+    "Наименование оборудования", "Общий статус оборудования", "Статус UDP", "Статус ICMP",
+    "Статус TCP", "Статус авторизации", "SmartRoomID контроллера", "Описание",
+    "Комментарий при переводе в учёт оборудования", "ID устройства", "Тип", "Производитель",
+    "Модель", "IP адрес", "MAC адрес", "Домен", "SIP URI", "Инвентарный номер",
+    "Серийный номер", "Статус питания", "Тип интерфейса", "Протокол IP", "802.1x"
   ]);
+
+  const SR_FIELD_ALIASES = Object.freeze({
+    locationId: Object.freeze(["SmartRoom ID локации", "ID комнаты"]),
+    locationName: Object.freeze(["Наименование локации", "Название комнаты"]),
+    locationOverallStatus: Object.freeze(["Общий статус локации", "Состояние комнаты"]),
+    locationDescription: Object.freeze(["Описание локации"]),
+    locationAccountingComment: Object.freeze(["Комментарий при переводе в учёт локации"]),
+    locationAddress: Object.freeze(["Адрес локации", "Адрес комнаты"]),
+    serviceStatus: Object.freeze(["Сервисный статус"]),
+    locationVip: Object.freeze(["Признак VIP", "VIP комната"]),
+    favoriteLocation: Object.freeze(["Избранная локация", "Избранное"]),
+    openTickets: Object.freeze(["Открытые заявки"]),
+    closedTickets: Object.freeze(["Закрытые заявки"]),
+    equipmentCount: Object.freeze(["Кол-во оборудования"]),
+    employeeNumber: Object.freeze(["Табельный номер"]),
+    contactPerson: Object.freeze(["Контактное лицо"]),
+    contractor: Object.freeze(["Подрядчик"]),
+    contractorDescription: Object.freeze(["Описание подрядчика"]),
+    warrantyTerm: Object.freeze(["Срок гарантийных обязательств"]),
+    equipmentId: Object.freeze(["SmartRoom ID оборудования", "SmartRoomID"]),
+    equipmentClass: Object.freeze(["Класс оборудования", "Тип оборудования"]),
+    equipmentName: Object.freeze(["Наименование оборудования", "Наименование"]),
+    equipmentOverallStatus: Object.freeze(["Общий статус оборудования", "Общий статус"]),
+    udpStatus: Object.freeze(["Статус UDP"]),
+    icmpStatus: Object.freeze(["Статус ICMP"]),
+    tcpStatus: Object.freeze(["Статус TCP"]),
+    authorizationStatus: Object.freeze(["Статус авторизации", "Статус аутентификации"]),
+    controllerSmartRoomId: Object.freeze(["SmartRoomID контроллера"]),
+    equipmentDescription: Object.freeze(["Описание"]),
+    equipmentAccountingComment: Object.freeze(["Комментарий при переводе в учёт оборудования"]),
+    deviceId: Object.freeze(["ID устройства"]),
+    modelType: Object.freeze(["Тип", "Тип модели"]),
+    manufacturer: Object.freeze(["Производитель"]),
+    model: Object.freeze(["Модель"]),
+    ip: Object.freeze(["IP адрес", "IP"]),
+    mac: Object.freeze(["MAC адрес", "MAC"]),
+    domain: Object.freeze(["Домен"]),
+    sipUri: Object.freeze(["SIP URI"]),
+    inventoryNumber: Object.freeze(["Инвентарный номер"]),
+    serialNumber: Object.freeze(["Серийный номер"]),
+    powerStatus: Object.freeze(["Статус питания"]),
+    interfaceType: Object.freeze(["Тип интерфейса"]),
+    ipProtocol: Object.freeze(["Протокол IP"]),
+    dot1x: Object.freeze(["802.1x"]),
+    legacyDeviceVip: Object.freeze(["VIP оборудование"])
+  });
+
+  const SR_REQUIRED_FIELDS = Object.freeze([
+    "locationName", "locationAddress", "locationVip", "equipmentClass", "equipmentName",
+    "model", "modelType", "manufacturer", "ip", "mac", "sipUri", "inventoryNumber", "serialNumber"
+  ]);
+
+  const SR_REQUIRED_HEADERS = Object.freeze(SR_REQUIRED_FIELDS.map((field) => SR_FIELD_ALIASES[field][0]));
 
   // ---------------------------------------------------------------------------
   // Pure helpers
@@ -886,8 +946,20 @@
   function getSrValue(row, expectedHeader) {
     if (!isPlainObject(row)) return null;
     const expected = normalizeSrHeader(expectedHeader);
-    const key = Object.keys(row).find((candidate) => normalizeSrHeader(candidate) === expected);
-    return key === undefined ? null : row[key];
+    const aliasGroup = Object.values(SR_FIELD_ALIASES).find((aliases) => aliases.some((alias) => normalizeSrHeader(alias) === expected));
+    const candidates = aliasGroup || [expectedHeader];
+    for (const candidate of candidates) {
+      const key = Object.keys(row).find((header) => normalizeSrHeader(header) === normalizeSrHeader(candidate));
+      if (key !== undefined) return row[key];
+    }
+    return null;
+  }
+
+  function missingSrRequiredHeaders(headers) {
+    const normalized = new Set((headers || []).map(normalizeSrHeader));
+    return SR_REQUIRED_FIELDS
+      .filter((field) => !SR_FIELD_ALIASES[field].some((alias) => normalized.has(normalizeSrHeader(alias))))
+      .map((field) => SR_FIELD_ALIASES[field][0]);
   }
 
   function normalizeSrCategoryValue(value) {
@@ -903,10 +975,10 @@
     const controllerDescriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => item.id === "controller");
     if (controllerDescriptor && matchesSrCategoryRule(row, controllerDescriptor)) return controllerDescriptor.id;
     const modelDescriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => item.id !== "controller"
-      && normalizeSrHeader(item.srField) === normalizeSrHeader("Тип модели")
+      && normalizeSrHeader(item.srField) === normalizeSrHeader("Тип")
       && matchesSrCategoryRule(row, item));
     if (modelDescriptor) return modelDescriptor.id;
-    const descriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => normalizeSrHeader(item.srField) !== normalizeSrHeader("Тип модели")
+    const descriptor = EQUIPMENT_CATEGORY_CATALOG.find((item) => normalizeSrHeader(item.srField) !== normalizeSrHeader("Тип")
       && matchesSrCategoryRule(row, item));
     return descriptor?.id || "other";
   }
@@ -1098,7 +1170,7 @@
       srCategories: [...new Set(match.currentCandidates.map((device) => device.category))]
     };
     if (match.matchStatus === "ip_conflict") return { kind: "polling_ip_conflict", message: "IP имени файла не совпадает с подтверждённым IP внутри JSON", details };
-    if (match.matchStatus === "category_conflict") return { kind: "classification_conflict", message: "Тип оборудования JSON не совпадает с типом текущего устройства SR", details };
+    if (match.matchStatus === "category_conflict") return { kind: "classification_conflict", message: "Класс оборудования JSON не совпадает с классом текущего устройства SR", details };
     if (match.matchStatus === "ambiguous") return { kind: "ambiguous_ip", message: `IP ${filenameIp || "не определён"} соответствует нескольким текущим устройствам SR`, details };
     return { kind: "unmatched_ip", message: filenameIp ? `Текущий IP ${filenameIp} не найден в актуальной SR` : "IP отсутствует", details };
   }
@@ -1285,7 +1357,7 @@
         const headers = matrix[headerIndex].map((header) => normalizeDisplay(header) || "");
         const duplicates = headers.filter((header, index) => header && headers.findIndex((candidate) => normalizeSrHeader(candidate) === normalizeSrHeader(header)) !== index);
         if (duplicates.length) return { ok: false, errors: [`Повторяющиеся заголовки: ${duplicates.join(", ")}`] };
-        const missingHeaders = SR_REQUIRED_HEADERS.filter((required) => !headers.some((header) => normalizeSrHeader(header) === normalizeSrHeader(required)));
+        const missingHeaders = missingSrRequiredHeaders(headers);
         if (missingHeaders.length) return { ok: false, errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
         const rows = matrix.slice(headerIndex + 1)
           .filter((row) => Array.isArray(row) && row.some((cell) => normalizeDisplay(cell)))
@@ -1299,59 +1371,146 @@
   }
 
   function normalizedSrRow(row) {
-    const get = (header) => getSrValue(row, header);
-    const manufacturerRaw = normalizeDisplay(get("Производитель"));
+    const get = (field) => getSrValue(row, SR_FIELD_ALIASES[field][0]);
+    const manufacturerRaw = normalizeDisplay(get("manufacturer"));
     return {
-      roomName: normalizeDisplay(get("Название комнаты")),
-      roomAddress: normalizeDisplay(get("Адрес комнаты")),
-      roomVip: normalizeBoolean(get("VIP комната")),
-      equipmentTypeRaw: normalizeDisplay(get("Тип оборудования")),
-      equipmentTypeNormalized: normalizeSrCategoryValue(get("Тип оборудования")),
-      nameRaw: normalizeDisplay(get("Наименование")),
-      modelRaw: normalizeDisplay(get("Модель")),
-      modelNormalized: normalizeText(get("Модель")),
-      modelTypeRaw: normalizeDisplay(get("Тип модели")),
-      modelTypeNormalized: normalizeSrCategoryValue(get("Тип модели")),
+      smartRoomLocationId: normalizeDisplay(get("locationId")),
+      roomName: normalizeDisplay(get("locationName")),
+      locationOverallStatus: normalizeDisplay(get("locationOverallStatus")),
+      locationDescription: normalizeDisplay(get("locationDescription")),
+      locationAccountingComment: normalizeDisplay(get("locationAccountingComment")),
+      roomAddress: normalizeDisplay(get("locationAddress")),
+      serviceStatus: normalizeDisplay(get("serviceStatus")),
+      roomVip: normalizeBoolean(get("locationVip")),
+      favoriteLocation: normalizeBoolean(get("favoriteLocation")),
+      openTickets: normalizeDisplay(get("openTickets")),
+      closedTickets: normalizeDisplay(get("closedTickets")),
+      equipmentCount: normalizeDisplay(get("equipmentCount")),
+      employeeNumber: normalizeDisplay(get("employeeNumber")),
+      contactPerson: normalizeDisplay(get("contactPerson")),
+      contractor: normalizeDisplay(get("contractor")),
+      contractorDescription: normalizeDisplay(get("contractorDescription")),
+      warrantyTerm: normalizeDisplay(get("warrantyTerm")),
+      smartRoomEquipmentId: normalizeDisplay(get("equipmentId")),
+      equipmentTypeRaw: normalizeDisplay(get("equipmentClass")),
+      equipmentTypeNormalized: normalizeSrCategoryValue(get("equipmentClass")),
+      nameRaw: normalizeDisplay(get("equipmentName")),
+      equipmentOverallStatus: normalizeDisplay(get("equipmentOverallStatus")),
+      udpStatus: normalizeDisplay(get("udpStatus")),
+      icmpStatus: normalizeDisplay(get("icmpStatus")),
+      tcpStatus: normalizeDisplay(get("tcpStatus")),
+      authorizationStatus: normalizeDisplay(get("authorizationStatus")),
+      controllerSmartRoomId: normalizeDisplay(get("controllerSmartRoomId")),
+      equipmentDescription: normalizeDisplay(get("equipmentDescription")),
+      equipmentAccountingComment: normalizeDisplay(get("equipmentAccountingComment")),
+      externalDeviceId: normalizeDisplay(get("deviceId")),
+      modelRaw: normalizeDisplay(get("model")),
+      modelNormalized: normalizeText(get("model")),
+      modelTypeRaw: normalizeDisplay(get("modelType")),
+      modelTypeNormalized: normalizeSrCategoryValue(get("modelType")),
       manufacturerRaw,
       manufacturerNormalized: normalizeManufacturer(manufacturerRaw),
-      ipRaw: normalizeDisplay(get("IP")),
-      ipNormalized: normalizeIpv4(get("IP")),
-      macRaw: normalizeDisplay(get("MAC")),
-      macNormalized: normalizeMacLoose(get("MAC")),
-      sipUri: normalizeDisplay(get("SIP URI")),
-      inventoryNumber: normalizeDisplay(get("Инвентарный номер")),
-      serialNumber: normalizeDisplay(get("Серийный номер")),
-      deviceVip: normalizeBoolean(get("VIP оборудование")),
-      domain: normalizeDisplay(get("Домен")),
+      ipRaw: normalizeDisplay(get("ip")),
+      ipNormalized: normalizeIpv4(get("ip")),
+      macRaw: normalizeDisplay(get("mac")),
+      macNormalized: normalizeMacLoose(get("mac")),
+      domain: normalizeDisplay(get("domain")),
+      sipUri: normalizeDisplay(get("sipUri")),
+      inventoryNumber: normalizeDisplay(get("inventoryNumber")),
+      serialNumber: normalizeDisplay(get("serialNumber")),
+      powerStatus: normalizeDisplay(get("powerStatus")),
+      interfaceType: normalizeDisplay(get("interfaceType")),
+      ipProtocol: normalizeDisplay(get("ipProtocol")),
+      dot1x: normalizeDisplay(get("dot1x")),
+      deviceVip: normalizeBoolean(get("legacyDeviceVip")),
       category: classifySrDevice(row),
       rawRow: deepClone(row)
     };
   }
 
+  function srLocationFallbackKey(row) {
+    return `${normalizeText(row.roomName) || ""}|${normalizeText(row.roomAddress) || ""}`;
+  }
+
+  function srLocationIdentityKey(row) {
+    const stableId = normalizeText(row.smartRoomLocationId);
+    return stableId ? `smartroom-location|${stableId}` : srLocationFallbackKey(row);
+  }
+
+  function srLocationProjection(row) {
+    return {
+      identityKey: srLocationIdentityKey(row),
+      smartRoomLocationId: row.smartRoomLocationId,
+      name: row.roomName,
+      address: row.roomAddress,
+      vip: row.roomVip,
+      overallStatus: row.locationOverallStatus,
+      description: row.locationDescription,
+      accountingComment: row.locationAccountingComment,
+      serviceStatus: row.serviceStatus,
+      favorite: row.favoriteLocation,
+      openTickets: row.openTickets,
+      closedTickets: row.closedTickets,
+      equipmentCount: row.equipmentCount,
+      employeeNumber: row.employeeNumber,
+      contactPerson: row.contactPerson,
+      contractor: row.contractor,
+      contractorDescription: row.contractorDescription,
+      warrantyTerm: row.warrantyTerm,
+      domain: row.domain
+    };
+  }
+
+  function findSrLocation(locations, row) {
+    const stableId = normalizeText(row.smartRoomLocationId);
+    if (stableId) {
+      const exact = locations.find((location) => normalizeText(location.smartRoomLocationId) === stableId);
+      if (exact) return exact;
+    }
+    const identityKey = srLocationIdentityKey(row);
+    const exactIdentity = locations.find((location) => location.identityKey === identityKey);
+    if (exactIdentity) return exactIdentity;
+    if (stableId) {
+      const fallbackKey = srLocationFallbackKey(row);
+      return locations.find((location) => !location.smartRoomLocationId && location.identityKey === fallbackKey) || null;
+    }
+    return null;
+  }
+
   function srFallbackIdentityBase(row) {
-    return [row.roomName, row.roomAddress, row.category, row.equipmentTypeNormalized, row.modelTypeNormalized, row.manufacturerNormalized, row.modelNormalized, row.nameRaw]
+    return [row.smartRoomLocationId, row.roomName, row.roomAddress, row.category, row.equipmentTypeNormalized, row.modelTypeNormalized, row.manufacturerNormalized, row.modelNormalized, row.nameRaw]
       .map((value) => normalizeText(value) || "")
       .join("|");
   }
 
   function srRecordFingerprint(record) {
     return JSON.stringify([
-      record.roomName, record.roomAddress, record.category, record.equipmentTypeNormalized,
-      record.nameRaw, record.modelNormalized, record.modelTypeNormalized, record.manufacturerNormalized,
+      record.smartRoomLocationId, record.roomName, record.locationOverallStatus, record.locationDescription,
+      record.locationAccountingComment, record.roomAddress, record.serviceStatus, record.roomVip,
+      record.favoriteLocation, record.openTickets, record.closedTickets, record.equipmentCount,
+      record.employeeNumber, record.contactPerson, record.contractor, record.contractorDescription,
+      record.warrantyTerm, record.smartRoomEquipmentId, record.category, record.equipmentTypeNormalized,
+      record.nameRaw, record.equipmentOverallStatus, record.udpStatus, record.icmpStatus, record.tcpStatus,
+      record.authorizationStatus, record.controllerSmartRoomId, record.equipmentDescription,
+      record.equipmentAccountingComment, record.externalDeviceId, record.modelNormalized,
+      record.modelTypeNormalized, record.manufacturerNormalized,
       record.ipNormalized, record.macNormalized, record.sipUri, record.inventoryNumber,
-      record.serialNumber, Boolean(record.deviceVip), record.domain
+      record.serialNumber, record.powerStatus, record.interfaceType, record.ipProtocol, record.dot1x,
+      Boolean(record.deviceVip), record.domain
     ].map((value) => normalizeText(value) || ""));
   }
 
   function srIdentityMatchKind(device, row) {
+    if (row.smartRoomEquipmentId && normalizeText(device?.smartRoomEquipmentId) === normalizeText(row.smartRoomEquipmentId)) return "smartroom_equipment";
+    if (row.externalDeviceId && normalizeText(device?.externalDeviceId) === normalizeText(row.externalDeviceId)) return "device_id";
     if (row.inventoryNumber && normalizeText(device?.inventoryNumber) === normalizeText(row.inventoryNumber)) return "inventory";
     if (row.serialNumber && row.manufacturerNormalized
       && normalizeText(device?.serialNumber) === normalizeText(row.serialNumber)
       && device?.manufacturerNormalized === row.manufacturerNormalized) return "serial_manufacturer";
     if (row.macNormalized && device?.macNormalized === row.macNormalized) return "mac";
-    if (!row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized
+    if (!row.smartRoomEquipmentId && !row.externalDeviceId && !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized
       && (device?.ipNormalized === row.ipNormalized || (device?.ipHistory || []).includes(row.ipNormalized))) return "ip";
-    if (!row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized
+    if (!row.smartRoomEquipmentId && !row.externalDeviceId && !row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized
       && row.sourceFallbackKey && device?.sourceFallbackKey === row.sourceFallbackKey) return "fallback";
     return "unknown";
   }
@@ -1381,11 +1540,13 @@
 
   function findInventoryCandidates(devices, row) {
     const levels = [
+      row.smartRoomEquipmentId && ((device) => normalizeText(device.smartRoomEquipmentId) === normalizeText(row.smartRoomEquipmentId)),
+      row.externalDeviceId && ((device) => normalizeText(device.externalDeviceId) === normalizeText(row.externalDeviceId)),
       row.inventoryNumber && ((device) => normalizeText(device.inventoryNumber) === normalizeText(row.inventoryNumber)),
       row.serialNumber && row.manufacturerNormalized && ((device) => normalizeText(device.serialNumber) === normalizeText(row.serialNumber) && device.manufacturerNormalized === row.manufacturerNormalized),
       row.macNormalized && ((device) => device.macNormalized === row.macNormalized),
-      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized && ((device) => device.ipNormalized === row.ipNormalized || (device.ipHistory || []).includes(row.ipNormalized)),
-      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized && row.sourceFallbackKey && ((device) => device.sourceFallbackKey === row.sourceFallbackKey)
+      !row.smartRoomEquipmentId && !row.externalDeviceId && !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized && ((device) => device.ipNormalized === row.ipNormalized || (device.ipHistory || []).includes(row.ipNormalized)),
+      !row.smartRoomEquipmentId && !row.externalDeviceId && !row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized && row.sourceFallbackKey && ((device) => device.sourceFallbackKey === row.sourceFallbackKey)
     ].filter(Boolean);
     for (const matcher of levels) {
       const candidates = devices.filter(matcher);
@@ -1397,7 +1558,7 @@
   function importSrRows(currentState, input) {
     const rows = Array.isArray(input.rows) ? input.rows : [];
     const headers = input.headers || Object.keys(rows[0] || {});
-    const missingHeaders = SR_REQUIRED_HEADERS.filter((required) => !headers.some((header) => normalizeSrHeader(header) === normalizeSrHeader(required)));
+    const missingHeaders = missingSrRequiredHeaders(headers);
     if (missingHeaders.length) return { ok: false, outcome: "failed", state: deepClone(currentState), errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
     if (input.rawSha256 && currentState.srImports.some((item) => item.rawSha256 === input.rawSha256)) {
       return { ok: true, outcome: "duplicate", state: deepClone(currentState), errors: [] };
@@ -1411,20 +1572,19 @@
     rows.forEach((rawRow, index) => {
       const rowNumber = index + 2;
       const row = normalizedSrRow(rawRow);
-      const hasIdentity = row.inventoryNumber || row.serialNumber || row.macNormalized || row.ipNormalized;
+      const hasIdentity = row.smartRoomEquipmentId || row.externalDeviceId || row.inventoryNumber || row.serialNumber || row.macNormalized || row.ipNormalized;
       if (!hasIdentity) {
         const fallbackBase = srFallbackIdentityBase(row);
         const occurrence = (fallbackOccurrences.get(fallbackBase) || 0) + 1;
         fallbackOccurrences.set(fallbackBase, occurrence);
         row.sourceFallbackKey = `${fallbackBase}|${occurrence}`;
       }
-      const locationKey = `${normalizeText(row.roomName) || ""}|${normalizeText(row.roomAddress) || ""}`;
-      let location = next.locations.find((item) => item.identityKey === locationKey);
+      let location = findSrLocation(next.locations, row);
       if (!location) {
-        location = { id: createId("location"), identityKey: locationKey, name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain, inCurrentSr: true, firstSeenAt: importedAt, lastSeenAt: importedAt };
+        location = { id: createId("location"), ...srLocationProjection(row), inCurrentSr: true, firstSeenAt: importedAt, lastSeenAt: importedAt };
         next.locations.push(location);
       } else {
-        Object.assign(location, { name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain || location.domain || null, inCurrentSr: true, lastSeenAt: importedAt });
+        Object.assign(location, srLocationProjection(row), { domain: row.domain || location.domain || null, inCurrentSr: true, lastSeenAt: importedAt });
       }
       const candidates = findInventoryCandidates(next.inventoryDevices, row);
       const resolution = resolveSrImportCandidate(candidates, row, srImport.id);
@@ -1439,7 +1599,7 @@
       }
       if (oldIp && oldIp !== row.ipNormalized && !device.ipHistory.includes(oldIp)) device.ipHistory.push(oldIp);
       Object.assign(device, row, { locationId: location.id, inCurrentSr: true, lastSeenAt: importedAt, lastSrImportId: srImport.id, sourceRowNumber: rowNumber, pollingCapability: resolvePollingCapability(row) });
-      if (!hasIdentity) next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Устройство сохранено без inventory/serial/MAC/IP; используется локальная составная идентичность", details: { sourceFallbackKey: row.sourceFallbackKey } }));
+      if (!hasIdentity) next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Устройство сохранено без SmartRoom ID оборудования, ID устройства, inventory/serial/MAC/IP; используется локальная составная идентичность", details: { sourceFallbackKey: row.sourceFallbackKey } }));
       if (row.ipRaw && !row.ipNormalized) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_ip", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: `Некорректный IP: ${row.ipRaw}` }));
       if (row.category === "other") next.inventoryIssues.push(createInventoryIssue({ kind: "unknown_category", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Строка не относится к ВКС, контроллеру или панели" }));
       srImport.acceptedCount += 1;
@@ -1466,6 +1626,8 @@
 
   function srDeviceIndexKeys(device) {
     return {
+      smartRoomEquipment: normalizeText(device?.smartRoomEquipmentId),
+      externalDevice: normalizeText(device?.externalDeviceId),
       inventory: normalizeText(device?.inventoryNumber),
       serialManufacturer: device?.serialNumber && device?.manufacturerNormalized ? `${normalizeText(device.serialNumber)}|${device.manufacturerNormalized}` : null,
       mac: device?.macNormalized || null,
@@ -1478,10 +1640,13 @@
   function createSrImportContext(candidateState) {
     const context = {
       locationsByIdentity: new Map(candidateState.locations.map((location) => [location.identityKey, location])),
-      byInventory: new Map(), bySerialManufacturer: new Map(), byMac: new Map(), byIp: new Map(), byFallback: new Map(), byFingerprint: new Map()
+      locationsBySmartRoomId: new Map(candidateState.locations.filter((location) => location.smartRoomLocationId).map((location) => [normalizeText(location.smartRoomLocationId), location])),
+      bySmartRoomEquipment: new Map(), byExternalDevice: new Map(), byInventory: new Map(), bySerialManufacturer: new Map(), byMac: new Map(), byIp: new Map(), byFallback: new Map(), byFingerprint: new Map()
     };
     for (const device of candidateState.inventoryDevices) {
       const keys = srDeviceIndexKeys(device);
+      addSrIndexValue(context.bySmartRoomEquipment, keys.smartRoomEquipment, device);
+      addSrIndexValue(context.byExternalDevice, keys.externalDevice, device);
       addSrIndexValue(context.byInventory, keys.inventory, device);
       addSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
       addSrIndexValue(context.byMac, keys.mac, device);
@@ -1494,6 +1659,8 @@
 
   function removeSrDeviceFromContext(context, device) {
     const keys = srDeviceIndexKeys(device);
+    removeSrIndexValue(context.bySmartRoomEquipment, keys.smartRoomEquipment, device);
+    removeSrIndexValue(context.byExternalDevice, keys.externalDevice, device);
     removeSrIndexValue(context.byInventory, keys.inventory, device);
     removeSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
     removeSrIndexValue(context.byMac, keys.mac, device);
@@ -1504,6 +1671,8 @@
 
   function addSrDeviceToContext(context, device) {
     const keys = srDeviceIndexKeys(device);
+    addSrIndexValue(context.bySmartRoomEquipment, keys.smartRoomEquipment, device);
+    addSrIndexValue(context.byExternalDevice, keys.externalDevice, device);
     addSrIndexValue(context.byInventory, keys.inventory, device);
     addSrIndexValue(context.bySerialManufacturer, keys.serialManufacturer, device);
     addSrIndexValue(context.byMac, keys.mac, device);
@@ -1514,11 +1683,13 @@
 
   function findIndexedSrCandidates(context, row) {
     const levels = [
+      row.smartRoomEquipmentId ? context.bySmartRoomEquipment.get(normalizeText(row.smartRoomEquipmentId)) : null,
+      row.externalDeviceId ? context.byExternalDevice.get(normalizeText(row.externalDeviceId)) : null,
       row.inventoryNumber ? context.byInventory.get(normalizeText(row.inventoryNumber)) : null,
       row.serialNumber && row.manufacturerNormalized ? context.bySerialManufacturer.get(`${normalizeText(row.serialNumber)}|${row.manufacturerNormalized}`) : null,
       row.macNormalized ? context.byMac.get(row.macNormalized) : null,
-      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized ? context.byIp.get(row.ipNormalized) : null,
-      !row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized && row.sourceFallbackKey ? context.byFallback.get(row.sourceFallbackKey) : null
+      !row.smartRoomEquipmentId && !row.externalDeviceId && !row.inventoryNumber && !row.serialNumber && !row.macNormalized && row.ipNormalized ? context.byIp.get(row.ipNormalized) : null,
+      !row.smartRoomEquipmentId && !row.externalDeviceId && !row.inventoryNumber && !row.serialNumber && !row.macNormalized && !row.ipNormalized && row.sourceFallbackKey ? context.byFallback.get(row.sourceFallbackKey) : null
     ];
     return levels.find((candidates) => candidates?.length) || [];
   }
@@ -1526,7 +1697,7 @@
   async function processSrImportRows(currentState, input) {
     const rows = Array.isArray(input.rows) ? input.rows : [];
     const headers = input.headers || Object.keys(rows[0] || {});
-    const missingHeaders = SR_REQUIRED_HEADERS.filter((required) => !headers.some((header) => normalizeSrHeader(header) === normalizeSrHeader(required)));
+    const missingHeaders = missingSrRequiredHeaders(headers);
     if (missingHeaders.length) return { ok: false, outcome: "failed", state: deepClone(currentState), errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
     if (input.rawSha256 && currentState.srImports.some((item) => item.rawSha256 === input.rawSha256)) return { ok: true, outcome: "duplicate", state: currentState, errors: [] };
 
@@ -1563,22 +1734,28 @@
         try {
           const row = normalizedSrRow(rawRow);
           metrics.normalizedRows += 1;
-          const hasIdentity = row.inventoryNumber || row.serialNumber || row.macNormalized || row.ipNormalized;
+          const hasIdentity = row.smartRoomEquipmentId || row.externalDeviceId || row.inventoryNumber || row.serialNumber || row.macNormalized || row.ipNormalized;
           if (!hasIdentity) {
             const fallbackBase = srFallbackIdentityBase(row);
             const occurrence = (fallbackOccurrences.get(fallbackBase) || 0) + 1;
             fallbackOccurrences.set(fallbackBase, occurrence);
             row.sourceFallbackKey = `${fallbackBase}|${occurrence}`;
           }
-          const locationKey = `${normalizeText(row.roomName) || ""}|${normalizeText(row.roomAddress) || ""}`;
+          const locationKey = srLocationIdentityKey(row);
+          const stableLocationId = normalizeText(row.smartRoomLocationId);
           metrics.locationLookups += 1;
-          let location = context.locationsByIdentity.get(locationKey);
+          let location = stableLocationId ? context.locationsBySmartRoomId.get(stableLocationId) : context.locationsByIdentity.get(locationKey);
+          if (!location && stableLocationId) location = context.locationsByIdentity.get(srLocationFallbackKey(row));
           if (!location) {
-            location = { id: createId("location"), identityKey: locationKey, name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain, inCurrentSr: true, firstSeenAt: importedAt, lastSeenAt: importedAt };
+            location = { id: createId("location"), ...srLocationProjection(row), inCurrentSr: true, firstSeenAt: importedAt, lastSeenAt: importedAt };
             next.locations.push(location);
             context.locationsByIdentity.set(locationKey, location);
+            if (stableLocationId) context.locationsBySmartRoomId.set(stableLocationId, location);
           } else {
-            Object.assign(location, { name: row.roomName, address: row.roomAddress, vip: row.roomVip, domain: row.domain || location.domain || null, inCurrentSr: true, lastSeenAt: importedAt });
+            context.locationsByIdentity.delete(location.identityKey);
+            Object.assign(location, srLocationProjection(row), { domain: row.domain || location.domain || null, inCurrentSr: true, lastSeenAt: importedAt });
+            context.locationsByIdentity.set(location.identityKey, location);
+            if (stableLocationId) context.locationsBySmartRoomId.set(stableLocationId, location);
           }
           metrics.identityLookups += 1;
           const candidates = findIndexedSrCandidates(context, row);
@@ -1597,7 +1774,7 @@
           if (oldIp && oldIp !== row.ipNormalized && !device.ipHistory.includes(oldIp)) device.ipHistory.push(oldIp);
           Object.assign(device, row, { locationId: location.id, inCurrentSr: true, lastSeenAt: importedAt, lastSrImportId: srImport.id, sourceRowNumber: rowNumber, pollingCapability: resolvePollingCapability(row) });
           if (!resolution.sameFingerprint) addSrDeviceToContext(context, device);
-          if (!hasIdentity) next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Устройство сохранено без inventory/serial/MAC/IP; используется локальная составная идентичность", details: { sourceFallbackKey: row.sourceFallbackKey } }));
+          if (!hasIdentity) next.inventoryIssues.push(createInventoryIssue({ kind: "missing_identity", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Устройство сохранено без SmartRoom ID оборудования, ID устройства, inventory/serial/MAC/IP; используется локальная составная идентичность", details: { sourceFallbackKey: row.sourceFallbackKey } }));
           if (row.ipRaw && !row.ipNormalized) next.inventoryIssues.push(createInventoryIssue({ kind: "invalid_ip", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: `Некорректный IP: ${row.ipRaw}` }));
           if (row.category === "other") next.inventoryIssues.push(createInventoryIssue({ kind: "unknown_category", sourceType: "sr_row", sourceId: srImport.id, rowNumber, deviceId: device.id, message: "Строка не относится ни к одной утверждённой категории оборудования" }));
           srImport.acceptedCount += 1;
@@ -1643,7 +1820,7 @@
   function parseManagementTargetRows(input) {
     const rows = Array.isArray(input?.rows) ? input.rows : [];
     const headers = input?.headers || Object.keys(rows[0] || {});
-    const missingHeaders = SR_REQUIRED_HEADERS.filter((required) => !headers.some((header) => normalizeSrHeader(header) === normalizeSrHeader(required)));
+    const missingHeaders = missingSrRequiredHeaders(headers);
     if (missingHeaders.length) return { ok: false, devices: [], errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
     const devices = [];
     const rowsByIp = new Map();
@@ -1846,7 +2023,7 @@
       if (projection.ipResolution.status !== "found") errors.push(ipErrors[projection.ipResolution.status] || "Устройство по IP не выбрано");
     } else {
       if (!projection.selection.domains.length) errors.push("Выберите Домен");
-      if (!projection.selection.categories.length) errors.push("Выберите Тип оборудования");
+      if (!projection.selection.categories.length) errors.push("Выберите Класс оборудования");
       if (!projection.selection.manufacturers.length) errors.push("Выберите Производителя");
       if (!projection.selection.models.length) errors.push("Выберите Модель");
       if (!projection.selectedDevices.length) errors.push("По выбранным фильтрам устройства не найдены");
@@ -2429,7 +2606,7 @@
       const normalized = normalizedSrRow(rawRow);
       for (const descriptor of EQUIPMENT_CATEGORY_CATALOG) {
         if (matchesSrCategoryRule(rawRow, descriptor)) report.ruleRows[descriptor.id] += 1;
-        const normalizedValue = normalizeSrHeader(descriptor.srField) === normalizeSrHeader("Тип оборудования")
+        const normalizedValue = normalizeSrHeader(descriptor.srField) === normalizeSrHeader("Класс оборудования")
           ? normalized.equipmentTypeNormalized : normalized.modelTypeNormalized;
         if (normalizedValue === normalizeSrCategoryValue(descriptor.srValue)) report.normalizedRows[descriptor.id] += 1;
       }
@@ -4496,6 +4673,8 @@
     POLLING_SELECTION_MODE_FILTERS,
     POLLING_SELECTION_MODE_SINGLE_IP,
     MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES,
+    SR_CANONICAL_HEADERS,
+    SR_FIELD_ALIASES,
     SR_REQUIRED_HEADERS,
     appendHistory,
     addReviewDecision,
@@ -5482,7 +5661,7 @@
     const capability = resolvePollingCapability(device);
     const supported = Boolean(device.ipNormalized && capability.support === "implemented" && capability.transport);
     return `<section class="polling-target-card"><div class="polling-target-heading"><div><span class="eyebrow">Карточка выбранного устройства</span><h3>${escapeHtml(device.nameRaw || device.modelRaw || "Устройство")}</h3></div><span class="badge ${supported ? "success" : "warning"}">${escapeHtml(formatCapabilityStatus(capability.support))}</span></div><dl class="definition-list polling-target-details">
-      <div><dt>Тип оборудования</dt><dd>${escapeHtml(formatCategoryLabel(device.category))}</dd></div>
+      <div><dt>Класс оборудования</dt><dd>${escapeHtml(formatCategoryLabel(device.category))}</dd></div>
       <div><dt>Производитель / модель</dt><dd>${escapeHtml(device.manufacturerRaw || "—")} / ${escapeHtml(device.modelRaw || "—")}</dd></div>
       <div><dt>IP / MAC</dt><dd>${escapeHtml(device.ipNormalized || "—")} / ${escapeHtml(device.macNormalized || device.macRaw || "—")}</dd></div>
       <div><dt>Домен</dt><dd>${escapeHtml(device.domain || "—")}</dd></div>
@@ -5539,7 +5718,7 @@
           </div></fieldset>
           ${projection.mode === POLLING_SELECTION_MODE_FILTERS ? `<div class="polling-cascade">
             ${renderPollingChoiceGroup("domains", "Домен", projection.availableDomains, projection.selection.domains)}
-            ${renderPollingChoiceGroup("categories", "Тип оборудования", projection.availableCategories, projection.selection.categories)}
+            ${renderPollingChoiceGroup("categories", "Класс оборудования", projection.availableCategories, projection.selection.categories)}
             ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
             ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
           </div>` : `<div class="polling-ip-selector"><div class="field"><label for="polling-target-ip">IP-адрес</label><input id="polling-target-ip" name="ipAddress" data-polling-ip-input inputmode="decimal" autocomplete="off" placeholder="Например, 192.0.2.10" value="${escapeHtml(ui.pollingPlanSelection.ipAddress || "")}"></div><div data-polling-ip-result aria-live="polite">${renderPollingIpTarget(projection)}</div></div>`}

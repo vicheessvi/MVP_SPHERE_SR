@@ -1065,7 +1065,11 @@
   });
 
   function srHeaders() {
-    return [...api.SR_REQUIRED_HEADERS];
+    return [
+      "Название комнаты", "Адрес комнаты", "VIP комната", "Тип оборудования", "Наименование",
+      "Модель", "Тип модели", "Производитель", "IP", "MAC", "SIP URI",
+      "Инвентарный номер", "Серийный номер", "VIP оборудование"
+    ];
   }
 
   function srRow(overrides) {
@@ -1075,6 +1079,28 @@
       "Тип модели": "Video Conference", "Производитель": "Cisco", "IP": " 10.10.20.30 ",
       "MAC": "00-11-22-33-44-55", "SIP URI": "room@example.test", "Инвентарный номер": "INV-1",
       "Серийный номер": "SER-1", "VIP оборудование": "Нет", ...(overrides || {})
+    };
+  }
+
+  function currentSrRow(overrides) {
+    return {
+      "SmartRoom ID локации": "LOC-101", "Наименование локации": "Переговорная 101",
+      "Общий статус локации": "В учёте", "Описание локации": "Основная переговорная",
+      "Комментарий при переводе в учёт локации": "Принято", "Адрес локации": "Москва",
+      "Сервисный статус": "Обслуживается", "Признак VIP": "Да", "Избранная локация": "Нет",
+      "Открытые заявки": "1", "Закрытые заявки": "2", "Кол-во оборудования": "3",
+      "Табельный номер": "000001", "Контактное лицо": "Тестовый пользователь", "Подрядчик": "Тестовый подрядчик",
+      "Описание подрядчика": "Локальный", "Срок гарантийных обязательств": "2027-01-01",
+      "SmartRoom ID оборудования": "EQ-101", "Класс оборудования": "endpoint",
+      "Наименование оборудования": "ВКС", "Общий статус оборудования": "В работе",
+      "Статус UDP": "Доступен", "Статус ICMP": "Доступен", "Статус TCP": "Доступен",
+      "Статус авторизации": "Успешно", "SmartRoomID контроллера": "CTRL-101", "Описание": "Терминал",
+      "Комментарий при переводе в учёт оборудования": "Принято", "ID устройства": "DEVICE-101",
+      "Тип": "Video Conference", "Производитель": "Cisco", "Модель": "Room Kit",
+      "IP адрес": "192.0.2.30", "MAC адрес": "02-00-00-00-00-30", "Домен": "Domain-A",
+      "SIP URI": "room@example.test", "Инвентарный номер": "INV-101", "Серийный номер": "SER-101",
+      "Статус питания": "Включено", "Тип интерфейса": "Ethernet", "Протокол IP": "IPv4", "802.1x": "Выключен",
+      ...(overrides || {})
     };
   }
 
@@ -1199,6 +1225,85 @@
     assertEqual(result.state.inventoryDevices.map((item) => item.category).sort().join(","), "controller,panel,vcs");
     assertEqual(result.state.inventoryDevices[0].domain, null);
     assertEqual(result.state.inventoryDevices[0].rawRow.IP, " 10.10.20.30 ");
+  });
+
+  test("Новая выгрузка SR принимает 42 канонических столбца и нормализует новые поля", async () => {
+    assertEqual(api.SR_CANONICAL_HEADERS.length, 42);
+    assertEqual(new Set(api.SR_CANONICAL_HEADERS).size, 42);
+    const row = currentSrRow();
+    const imported = await api.processSrImportRows(api.createDemoState(), {
+      filename: "current-schema.xlsx", headers: api.SR_CANONICAL_HEADERS, rawSha256: "current-schema", rows: [row], yieldControl: async () => {}
+    });
+    assert(imported.ok, imported.errors?.join("; "));
+    const device = imported.state.inventoryDevices[0];
+    const location = imported.state.locations[0];
+    assertEqual(device.smartRoomEquipmentId, "EQ-101");
+    assertEqual(device.externalDeviceId, "DEVICE-101");
+    assertEqual(device.equipmentTypeRaw, "endpoint");
+    assertEqual(device.nameRaw, "ВКС");
+    assertEqual(device.authorizationStatus, "Успешно");
+    assertEqual(device.ipNormalized, "192.0.2.30");
+    assertEqual(device.macNormalized, "02:00:00:00:00:30");
+    assertEqual(device.powerStatus, "Включено");
+    assertEqual(device.ipProtocol, "IPv4");
+    assertEqual(device.dot1x, "Выключен");
+    assertEqual(device.rawRow["Комментарий при переводе в учёт оборудования"], "Принято");
+    assertEqual(location.smartRoomLocationId, "LOC-101");
+    assertEqual(location.name, "Переговорная 101");
+    assertEqual(location.overallStatus, "В учёте");
+    assertEqual(location.contractor, "Тестовый подрядчик");
+    assertEqual(location.warrantyTerm, "2027-01-01");
+    assertEqual(location.vip, true);
+
+    const sheet = global.XLSX.utils.aoa_to_sheet([api.SR_CANONICAL_HEADERS, api.SR_CANONICAL_HEADERS.map((header) => row[header])]);
+    const workbook = global.XLSX.utils.book_new();
+    global.XLSX.utils.book_append_sheet(workbook, sheet, "SR");
+    const bytes = global.XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+    const workbookResult = await api.importSrWorkbook(api.createDemoState(), { filename: "current-schema.xlsx", arrayBuffer: bytes, actorId: "user-administrator" });
+    assert(workbookResult.ok, workbookResult.errors?.join("; "));
+    assertEqual(workbookResult.state.inventoryDevices[0].smartRoomEquipmentId, "EQ-101");
+
+    const managementTargets = api.parseManagementTargetRows({
+      headers: api.SR_CANONICAL_HEADERS,
+      rows: [currentSrRow({ "Производитель": "Huawei", "Модель": "TE40", "Тип": "Video Conference" })]
+    });
+    assert(managementTargets.ok, managementTargets.errors?.join("; "));
+    assertEqual(managementTargets.devices[0].ipNormalized, "192.0.2.30");
+  });
+
+  test("Канонический заголовок SR имеет приоритет над прежним псевдонимом", () => {
+    const row = currentSrRow({
+      "Наименование локации": "Каноническая локация", "Название комнаты": "Прежнее название",
+      "Класс оборудования": "endpoint", "Тип оборудования": "controller",
+      "IP адрес": "192.0.2.41", IP: "192.0.2.99",
+      "MAC адрес": "02-00-00-00-00-41", MAC: "02-00-00-00-00-99"
+    });
+    const normalized = api.normalizedSrRow(row);
+    assertEqual(normalized.roomName, "Каноническая локация");
+    assertEqual(normalized.equipmentTypeRaw, "endpoint");
+    assertEqual(normalized.category, "vcs");
+    assertEqual(normalized.ipNormalized, "192.0.2.41");
+    assertEqual(normalized.macNormalized, "02:00:00:00:00:41");
+  });
+
+  test("SmartRoom ID сохраняют идентичность локации и оборудования при изменении названия и адресов", async () => {
+    const first = await api.processSrImportRows(api.createDemoState(), {
+      filename: "stable-id-1.xlsx", headers: api.SR_CANONICAL_HEADERS, rawSha256: "stable-id-1", rows: [currentSrRow()], yieldControl: async () => {}
+    });
+    const deviceId = first.state.inventoryDevices[0].id;
+    const locationId = first.state.locations[0].id;
+    const second = await api.processSrImportRows(first.state, {
+      filename: "stable-id-2.xlsx", headers: api.SR_CANONICAL_HEADERS, rawSha256: "stable-id-2",
+      rows: [currentSrRow({ "Наименование локации": "Новое название", "Адрес локации": "Новый адрес", "Наименование оборудования": "Новое имя", "IP адрес": "192.0.2.31", "MAC адрес": "02-00-00-00-00-31", "Инвентарный номер": "INV-NEW", "Серийный номер": "SER-NEW" })],
+      yieldControl: async () => {}
+    });
+    assertEqual(second.state.locations.length, 1);
+    assertEqual(second.state.inventoryDevices.length, 1);
+    assertEqual(second.state.locations[0].id, locationId);
+    assertEqual(second.state.locations[0].name, "Новое название");
+    assertEqual(second.state.inventoryDevices[0].id, deviceId);
+    assertEqual(second.state.inventoryDevices[0].ipNormalized, "192.0.2.31");
+    assert(second.state.inventoryDevices[0].ipHistory.includes("192.0.2.30"));
   });
 
   test("Повторная SR сохраняет Device identity, IP history и флаг актуальности", () => {
@@ -1966,7 +2071,7 @@
     if (typeof require !== "function") return;
     const fs = require("fs");
     const source = fs.readFileSync(require("path").join(__dirname, "app.js"), "utf8");
-    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Тип оборудования", "Дата и время начала опроса", "Интервал", "Закрыть порты 80, 23 (http, telnet)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "Закрыть порты 80, 23 (http, telnet)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
     assert(source.includes("START_MVP_SPHERE_SR.py"));
     assert(!source.includes("start.ps1"));
     assert(!source.includes("START_MVP_SPHERE_SR.cmd"));

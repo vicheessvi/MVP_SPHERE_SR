@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 020
+## Текущая feature 021
+
+- Спецификация, полный 42-колоночный контракт и задачи: `specs/021-sr-export-schema/`.
+- Канонические заголовки, совместимые псевдонимы, нормализация и identity: `app.js`.
+- Пользовательская терминология и справка: `product-catalog.js`, `README.md`.
+- Архитектурное решение: `docs/decisions/ADR-0021-sr-export-schema.md`.
+
+## Feature 020
 
 - Спецификация, общий guarded write-contract и задачи: `specs/020-huawei-te-family-port-closure/`.
 - Exact-model capability TE30/TE40/TE50/TE60: `runtime/device-catalog.json`, `runtime/model-catalog.js`, `app.js`.

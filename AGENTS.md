@@ -12,7 +12,7 @@
 - Хранение: только память вкладки/runtime; выбранные готовые JSON пишутся только в указанную пользователем папку; `localStorage`/`IndexedDB` не используются.
 - Роль: только «Администратор МЦТП».
 - Constitution: версия 3.2.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/020-huawei-te-family-port-closure/`.
+- Текущая feature: `specs/021-sr-export-schema/`.
 
 ## Правила работы агента
 
