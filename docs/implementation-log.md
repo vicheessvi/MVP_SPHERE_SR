@@ -908,3 +908,9 @@ TE20 добавлен в существующую capability `disable_insecure_m
 Решение описано в ADR-0023 и Full SpecKit feature `023-huawei-te20-port-closure`. Реальные credentials, IP, MAC, serial и raw responses в репозиторий не добавлялись. Commit и push выполняются только по отдельному указанию пользователя.
 
 Production routing plan v3 повторно проверен на реальном TE20 после реализации: exact manifest выбрал отдельный TE20 adapter, оба значения уже были безопасными, поэтому результат `already_compliant` получен без save. Полная проверка: 49 Python-тестов, 157 JavaScript-тестов, compileall, JS syntax, reference validation и `git diff --check` прошли. Added-lines secret/artifact/private-IP/MAC scan не обнаружил чувствительных значений или runtime-файлов.
+
+## 2026-09-08 — Корректировка отключения HTTP на Huawei TE20
+
+Эксплуатационная проверка выявила модельное различие: прежний TE20 payload `enabletelnet=0`, `enable_http=1` отключал Telnet, но оставлял HTTP включённым в меню кодека. Для exact TE20 безопасная цель HTTP изменена на `enable_http=0`; TE30/TE40/TE50/TE60 продолжают использовать подтверждённое для их firmware значение `enable_http=1`.
+
+Адаптер теперь выбирает целевые значения и трактует post-read по exact-модели, формирует payload из этого закрытого model map и не объявляет успех до повторного чтения обоих модельных значений. Остальные параметры, список целей, opt-in, identity/TLS/schema gates и защита учётных данных не изменены.

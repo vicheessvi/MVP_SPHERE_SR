@@ -24,7 +24,7 @@
 | Parameter | Safe target | Meaning |
 | --- | ---: | --- |
 | `enabletelnet` | `0` | Telnet disabled |
-| `enable_http` | `1` | HTTP disabled in the codec menu |
+| `enable_http` | `0` | HTTP disabled in the TE20 codec menu |
 
 No other configuration identifier or value is permitted.
 

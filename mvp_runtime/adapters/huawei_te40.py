@@ -70,7 +70,13 @@ TE20_TLS_PROFILE = "huawei_te20_tls11_exact"
 DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
 MANAGEMENT_ACTION_MARKERS = ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "enabletelnet", "enable_http")
 MANAGEMENT_CONFIG_IDS = ("enabletelnet", "enable_http")
-MANAGEMENT_TARGET_VALUES = {"enabletelnet": 0, "enable_http": 1}
+MANAGEMENT_TARGET_VALUES_BY_MODEL = {
+    "te20": {"enabletelnet": 0, "enable_http": 0},
+    "te30": {"enabletelnet": 0, "enable_http": 1},
+    "te40": {"enabletelnet": 0, "enable_http": 1},
+    "te50": {"enabletelnet": 0, "enable_http": 1},
+    "te60": {"enabletelnet": 0, "enable_http": 1},
+}
 
 
 class HuaweiTransportError(RuntimeError):
@@ -302,10 +308,11 @@ def _configuration_values(data: Any) -> dict[str, int]:
     return values
 
 
-def _safe_management_state(values: dict[str, int]) -> dict[str, str]:
+def _safe_management_state(planned_model: str, values: dict[str, int]) -> dict[str, str]:
+    targets = MANAGEMENT_TARGET_VALUES_BY_MODEL[planned_model]
     return {
-        "httpPort80": "disabled" if values["enable_http"] == 1 else "enabled",
-        "telnetPort23": "disabled" if values["enabletelnet"] == 0 else "enabled",
+        "httpPort80": "disabled" if values["enable_http"] == targets["enable_http"] else "enabled",
+        "telnetPort23": "disabled" if values["enabletelnet"] == targets["enabletelnet"] else "enabled",
     }
 
 
@@ -329,20 +336,21 @@ def _disable_insecure_management_services(
         return _configuration_values(data)
 
     def state_is_compliant(values: dict[str, int]) -> bool:
-        return values == MANAGEMENT_TARGET_VALUES
+        return values == MANAGEMENT_TARGET_VALUES_BY_MODEL[planned_model]
 
     before = None
     after = None
     write_attempted = False
     try:
         before_values = read_values()
-        before = _safe_management_state(before_values)
+        before = _safe_management_state(planned_model, before_values)
         if state_is_compliant(before_values):
             return {**base, "status": "already_compliant", "before": before, "after": before}
+        target_values = MANAGEMENT_TARGET_VALUES_BY_MODEL[planned_model]
         payload = {
             "CfgItemInt": [
-                {"CfgItemID": "enabletelnet", "CfgItemInfo": 0},
-                {"CfgItemID": "enable_http", "CfgItemInfo": 1},
+                {"CfgItemID": "enabletelnet", "CfgItemInfo": target_values["enabletelnet"]},
+                {"CfgItemID": "enable_http", "CfgItemInfo": target_values["enable_http"]},
             ],
             "CfgItemString": [],
             "acCSRFToken": csrf_token,
@@ -353,7 +361,7 @@ def _disable_insecure_management_services(
             raise HuaweiContractError("configuration_write_failed")
         settle()
         after_values = read_values()
-        after = _safe_management_state(after_values)
+        after = _safe_management_state(planned_model, after_values)
         if not state_is_compliant(after_values):
             raise HuaweiContractError("configuration_verification_failed")
         return {**base, "status": "applied", "changed": True, "writeAttempted": True, "before": before, "after": after}

@@ -34,7 +34,8 @@ class HuaweiTe40Tests(unittest.TestCase):
     def success_request(self, calls, overrides=None, terminal_model="TE40", configuration=None, persist_save=True, preauth_legacy=False):
         resources = synthetic_resources(terminal_model)
         overrides = overrides or {}
-        configuration_state = dict(configuration or {"enabletelnet": 1, "enable_http": 0})
+        default_http_value = 1 if "te20" in terminal_model.casefold() else 0
+        configuration_state = dict(configuration or {"enabletelnet": 1, "enable_http": default_http_value})
 
         def request(options):
             calls.append(options)
@@ -125,6 +126,11 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertEqual(result["managementActions"][0]["after"], {"httpPort80": "disabled", "telnetPort23": "disabled"})
         self.assertEqual(len([item for item in calls if "WEB_GetCfgParamAPI" in item["path"]]), 2)
         self.assertEqual(len([item for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]), 1)
+        save_call = next(item for item in calls if "WEB_SaveCfgParamAPI" in item["path"])
+        self.assertEqual(json.loads(save_call["body"])["CfgItemInt"], [
+            {"CfgItemID": "enabletelnet", "CfgItemInfo": 0},
+            {"CfgItemID": "enable_http", "CfgItemInfo": 0},
+        ])
         context = _https_context(False, TE20_TLS_PROFILE)
         self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_1)
         self.assertEqual(context.maximum_version, ssl.TLSVersion.TLSv1_1)
@@ -212,7 +218,7 @@ class HuaweiTe40Tests(unittest.TestCase):
             {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
             [{"username": "u", "password": "p"}],
             {
-                "request": self.success_request(te20_calls, terminal_model="Huawei TE20", configuration={"enabletelnet": 0, "enable_http": 1}, preauth_legacy=True),
+                "request": self.success_request(te20_calls, terminal_model="Huawei TE20", configuration={"enabletelnet": 0, "enable_http": 0}, preauth_legacy=True),
                 "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION],
             },
         )

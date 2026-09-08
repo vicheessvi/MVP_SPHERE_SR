@@ -16,7 +16,7 @@
 2. If both values already equal their safe targets, return `already_compliant` without a save.
 3. Otherwise call `WEB_SaveCfgParamAPI` exactly once with:
    - `enabletelnet=0`;
-   - `enable_http=1`;
+   - `enable_http=0`;
    - the current in-memory CSRF token required by the session.
 4. Re-read both values through the same configuration action.
 5. Return success only when the post-read exactly confirms both safe targets.

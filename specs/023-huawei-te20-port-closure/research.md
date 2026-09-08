@@ -2,13 +2,13 @@
 
 ## Decision: reuse the existing management action
 
-The controlled TE20 session exposed all four required bundle markers, returned both management parameters in the expected binary schema, accepted the same minimal safe payload, and returned both safe values on the post-read. The existing read/write/re-read implementation is therefore reused instead of creating a second TE20-specific write function.
+The controlled TE20 session exposed all four required bundle markers, returned both management parameters in the expected binary schema, and accepted a minimal payload. A later observation of the real codec menu showed that the TE30–TE60 HTTP value had been interpreted incorrectly for TE20. The existing read/write/re-read implementation is retained, but target values and state interpretation are now selected by exact model.
 
 Alternatives considered:
 
-- A new TE20 write adapter would duplicate identical action names, payload and result logic while increasing drift risk.
+- A new TE20 write adapter would duplicate identical action names and result logic while increasing drift risk; only the model-specific target map differs.
 - Leaving TE20 read-only would contradict the confirmed device evidence and requested workflow.
-- Enabling an insecure service before the test was rejected. The device was already safe, so the write evidence was produced by idempotently re-sending only safe values.
+- Enabling an insecure service before the test remains rejected. Correctness is established by writing only the model-specific disable values and re-reading the menu state.
 
 ## Decision: retain the TE20 transport boundary
 
@@ -20,7 +20,7 @@ Alternative considered: moving TE20 into the family transport was rejected becau
 
 ## Decision: preserve all existing safety gates
 
-The action executes only after immutable exact-IP routing, explicit task opt-in, exact planned TE20, confirmed legacy pre-auth schema, exact post-auth TE20, serial-or-valid-MAC identity, current bundle markers and exact configuration schema. The only allowed target values remain `enabletelnet=0` and `enable_http=1`; success requires post-read equality.
+The action executes only after immutable exact-IP routing, explicit task opt-in, exact planned TE20, confirmed legacy pre-auth schema, exact post-auth TE20, serial-or-valid-MAC identity, current bundle markers and exact configuration schema. Follow-up observation of the real TE20 menu showed that the inherited TE30–TE60 HTTP target left HTTP enabled. The TE20-only safe targets are therefore `enabletelnet=0` and `enable_http=0`; success requires post-read equality. TE30/TE40/TE50/TE60 retain their separate confirmed `enable_http=1` target.
 
 Rationale: model-name compatibility alone is insufficient authority for a configuration change.
 
