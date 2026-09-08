@@ -308,7 +308,7 @@
     assertEqual(panel.transport, "extron_web_dynamic_resources_v1");
   });
 
-  test("Huawei TE30, TE40, TE50 и TE60 используют один VCS transport, остальные модели закрыты", () => {
+  test("Huawei TE20 использует отдельный transport, а TE30, TE40, TE50 и TE60 общий", () => {
     const supported = ["TE30", "TE40", "TE50", "TE60"].map((modelRaw) => api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw }));
     const te20 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE20" });
     const tx50 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TX50" });
@@ -319,8 +319,10 @@
     ["te30", "te40", "te50", "te60"].forEach((modelNormalized) => {
       assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === modelNormalized).length, 2);
     });
-    assertEqual(te20.support, "not_implemented");
-    assertEqual(te20.transport, null);
+    assertEqual(te20.support, "implemented");
+    assertEqual(te20.transport, "huawei_te20_web_cgi_v1");
+    assert(!te20.managementTasks || te20.managementTasks.length === 0);
+    assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === "te20").length, 2);
     assertEqual(tx50.support, "not_implemented");
     assertEqual(tx50.transport, null);
     const fileMode = api.resolveLaunchMode({ protocol: "file:", fileMarker: true });
@@ -328,7 +330,7 @@
     assertEqual(fileMode.credentialsAvailable, false);
   });
 
-  test("Runtime catalog выбирает общий Huawei TE-family manifest раньше закрытого fallback", () => {
+  test("Runtime catalog выбирает TE20 и общий Huawei TE-family раньше закрытого fallback", () => {
     if (!runtimeModelCatalog) return;
     const supported = ["TE30", "TE40", "TE50", "TE60"].map((model) => runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model }));
     const te20 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "TE20" });
@@ -338,8 +340,9 @@
       assertEqual(item.key, "vcs/huawei/te-family");
       assertEqual(item.transport, "huawei_te_web_cgi_v1");
     });
-    assertEqual(te20.key, "vcs/huawei");
-    assertEqual(te20.protocolStatus, "protocol_required");
+    assertEqual(te20.key, "vcs/huawei/te20-legacy");
+    assertEqual(te20.protocolStatus, "supported");
+    assertEqual(te20.transport, "huawei_te20_web_cgi_v1");
     assertEqual(tx50.key, "vcs/huawei");
     assertEqual(tx50.transport, null);
     assertEqual(unknown.key, "vcs/huawei");

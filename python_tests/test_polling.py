@@ -8,6 +8,7 @@ from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError
 
 SUPPORTED = {"category": "controller", "manufacturer": "Extron", "model": "IPCP Pro 250", "pollingSupported": True}
 HUAWEI_MODELS = tuple({"category": "vcs", "manufacturer": "Huawei", "model": model, "pollingSupported": True} for model in ("TE30", "TE40", "TE50", "TE60"))
+HUAWEI_TE20 = {"category": "vcs", "manufacturer": "Huawei", "model": "TE20", "pollingSupported": True}
 
 
 class PollingTests(unittest.TestCase):
@@ -80,7 +81,7 @@ class PollingTests(unittest.TestCase):
             "devices": [
                 {**HUAWEI_MODELS[1], "ip": "192.0.2.40"},
                 {**SUPPORTED, "ip": "192.0.2.41"},
-                {"category": "vcs", "manufacturer": "Huawei", "model": "TE20", "ip": "192.0.2.42"},
+                {**HUAWEI_TE20, "ip": "192.0.2.42"},
                 {"category": "vcs", "manufacturer": "Huawei", "model": "TX50", "ip": "192.0.2.43"},
             ]
         }
@@ -89,13 +90,13 @@ class PollingTests(unittest.TestCase):
             "get_credentials": lambda *_args: [{"username": "u", "password": "p"}],
             "adapters": {
                 "huawei_te_web_cgi_v1": adapter("huawei"),
+                "huawei_te20_web_cgi_v1": adapter("huawei-te20"),
                 "extron_web_dynamic_resources_v1": adapter("extron"),
             },
         })
-        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41")])
+        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41"), ("huawei-te20", "192.0.2.42")])
         self.assertEqual([item["ip"] for item in results], ["192.0.2.40", "192.0.2.41", "192.0.2.42", "192.0.2.43"])
-        self.assertFalse(results[2]["networkAttempted"])
-        self.assertEqual(results[2]["vendorPolling"]["status"], "protocol_required")
+        self.assertTrue(results[2]["ok"])
         self.assertFalse(results[3]["networkAttempted"])
         self.assertEqual(results[3]["vendorPolling"]["status"], "protocol_required")
 

@@ -1,4 +1,4 @@
-"""Bounded shared Huawei TE30/TE40/TE50/TE60 legacy web CGI adapter."""
+"""Bounded Huawei TE20 and TE30/TE40/TE50/TE60 legacy web CGI adapters."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import re
 import socket
 import ssl
 import time
+import warnings
 from http.cookies import SimpleCookie
 from typing import Any, Callable
 
@@ -61,7 +62,11 @@ RESOURCE_FIELDS: dict[str, dict[str, tuple[type, ...]]] = {
 MAC_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 MAX_COOKIE_COUNT = 16
 MAX_COOKIE_LENGTH = 4096
-SUPPORTED_MODELS = frozenset({"te30", "te40", "te50", "te60"})
+TE20_MODEL = "te20"
+TE_FAMILY_MODELS = frozenset({"te30", "te40", "te50", "te60"})
+SUPPORTED_MODELS = frozenset({TE20_MODEL, *TE_FAMILY_MODELS})
+MANAGEMENT_SUPPORTED_MODELS = TE_FAMILY_MODELS
+TE20_TLS_PROFILE = "huawei_te20_tls11_exact"
 DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
 MANAGEMENT_ACTION_MARKERS = ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "enabletelnet", "enable_http")
 MANAGEMENT_CONFIG_IDS = ("enabletelnet", "enable_http")
@@ -111,6 +116,35 @@ def _transport_code(error: BaseException) -> str:
     return "adapter_failed"
 
 
+def _https_context(reject_unauthorized: bool, tls_profile: str | None = None) -> ssl.SSLContext:
+    if tls_profile not in {None, TE20_TLS_PROFILE}:
+        raise HuaweiTransportError("tls_profile_invalid")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    if tls_profile == TE20_TLS_PROFILE:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                context.minimum_version = ssl.TLSVersion.TLSv1_1
+                context.maximum_version = ssl.TLSVersion.TLSv1_1
+            context.set_ciphers("ALL:@SECLEVEL=0")
+        except (AttributeError, ValueError, ssl.SSLError) as error:
+            raise HuaweiTransportError("tls_handshake_failed") from error
+    if reject_unauthorized:
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.load_default_certs()
+    else:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0)
+        if tls_profile is None:
+            try:
+                context.set_ciphers("DEFAULT:@SECLEVEL=0")
+            except ssl.SSLError as error:
+                raise HuaweiTransportError("tls_handshake_failed") from error
+    return context
+
+
 def native_https_request(options: dict[str, Any]) -> dict[str, Any]:
     ip = str(options["ip"])
     method = str(options.get("method") or "GET").upper()
@@ -120,19 +154,7 @@ def native_https_request(options: dict[str, Any]) -> dict[str, Any]:
     timeout = max(0.25, min(float(options.get("timeout_ms") or 8000) / 1000, 30.0))
     maximum = max(1, min(int(options.get("max_bytes") or 1024 * 1024), 8 * 1024 * 1024))
     reject_unauthorized = options.get("reject_unauthorized") is not False
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    if reject_unauthorized:
-        context.check_hostname = True
-        context.verify_mode = ssl.CERT_REQUIRED
-        context.load_default_certs()
-    else:
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        context.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0)
-        try:
-            context.set_ciphers("DEFAULT:@SECLEVEL=0")
-        except ssl.SSLError as error:
-            raise HuaweiTransportError("tls_handshake_failed") from error
+    context = _https_context(reject_unauthorized, str(options.get("tls_profile") or "") or None)
     body = options.get("body")
     if isinstance(body, str):
         body = body.encode("utf-8")
@@ -239,6 +261,17 @@ def _contains_model_token(value: Any, planned_model: str) -> bool:
     return bool(re.search(rf"(?:^|[^a-z0-9]){re.escape(planned_model)}(?:[^a-z0-9]|$)", str(value or ""), re.IGNORECASE))
 
 
+def _preauth_contract_matches(data: dict[str, Any], planned_model: str) -> bool:
+    if planned_model == TE20_MODEL:
+        return (
+            "szTermType" not in data
+            and type(data.get("ucTerType")) is int and data.get("ucTerType") == 0
+            and type(data.get("ucCustomType")) is int and data.get("ucCustomType") == 0
+            and isinstance(data.get("acCSRFToken"), str)
+        )
+    return _contains_model_token(data.get("szTermType"), planned_model)
+
+
 def _resource(resources: dict[str, Any], key: str) -> dict[str, Any]:
     return resources.get(key) or resources.get(RESOURCE_ACTIONS[key]) or {}
 
@@ -284,7 +317,7 @@ def _disable_insecure_management_services(
     settle: Callable[[], Any],
 ) -> dict[str, Any]:
     base = {"id": DISABLE_INSECURE_SERVICES_ACTION, "transport": "https/443", "changed": False, "writeAttempted": False}
-    if planned_model not in SUPPORTED_MODELS:
+    if planned_model not in MANAGEMENT_SUPPORTED_MODELS:
         return {**base, "status": "skipped_unsupported", "safeError": "management_action_unsupported"}
     if not all(marker in bundle_text for marker in MANAGEMENT_ACTION_MARKERS):
         return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
@@ -387,6 +420,8 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     ip = normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
     captured_at = _utc_iso(settings.get("now"))
     planned_model = _normalized_planned_model(device)
+    contract_name = "huawei-te20-web-cgi-v1" if planned_model == TE20_MODEL else "huawei-te-web-cgi-v1"
+    tls_profile = TE20_TLS_PROFILE if planned_model == TE20_MODEL else None
     requested_management_tasks = [str(item) for item in settings.get("management_tasks", []) if str(item).strip()]
     settle = settings.get("management_settle") or (lambda: time.sleep(1.0))
     base: dict[str, Any] = {
@@ -396,7 +431,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         "failedStage": None,
         "loginAttempts": [],
         "credentialAttempts": 0,
-        "vendorPolling": {"status": "supported", "contract": "huawei-te-web-cgi-v1", "model": planned_model.upper()},
+        "vendorPolling": {"status": "supported", "contract": contract_name, "model": planned_model.upper()},
     }
     if not ip or planned_model not in SUPPORTED_MODELS:
         return {**base, "failedStage": "validation", "safeError": "invalid_or_unsupported_target"}
@@ -416,6 +451,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         response = request({
             "ip": ip, "method": method, "path": path, "headers": merged, "body": body,
             "reject_unauthorized": reject_unauthorized, "timeout_ms": timeout_ms, "max_bytes": maximum,
+            "tls_profile": tls_profile,
         })
         _update_cookies(cookies, response.get("headers"))
         return response
@@ -440,8 +476,9 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             return {**base, "failedStage": "login", "safeError": "resource_envelope_invalid"}
         if data.get("AlreadyLogin") == 1:
             return {**base, "failedStage": "authorization", "safeError": "interactive_session_active"}
-        if not _contains_model_token(data.get("szTermType"), planned_model):
-            return {**base, "failedStage": "validation", "safeError": "target_model_mismatch"}
+        if not _preauth_contract_matches(data, planned_model):
+            safe_error = "preauth_contract_unconfirmed" if planned_model == TE20_MODEL else "target_model_mismatch"
+            return {**base, "failedStage": "validation", "safeError": safe_error}
         outer, _data = action("Web_RequestSessionID")
         if outer.get("success") != 1:
             return {**base, "failedStage": "login", "safeError": "session_request_failed"}
@@ -512,7 +549,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             **base,
             "failedStage": "resources",
             "safeError": "resource_schema_unconfirmed",
-            "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized},
+            "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized, "tlsProfile": tls_profile or "system_default"},
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
         }
     management_actions = []
@@ -522,7 +559,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     result = {
         **base,
         "ok": True,
-        "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized},
+        "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized, "tlsProfile": tls_profile or "system_default"},
         "webBlocks": build_web_blocks(resources, ip),
         "rawResources": safe_resources,
         "readMode": "targeted",
@@ -540,3 +577,4 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
 
 # Compatibility entry point for historical imports; both names execute one implementation.
 poll_huawei_te40_device = poll_huawei_te_device
+poll_huawei_te20_device = poll_huawei_te_device

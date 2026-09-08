@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 021
+## Текущая feature 022
+
+- Спецификация, TE20 transport contract и задачи: `specs/022-huawei-te20-polling/`.
+- Exact TLS 1.1, legacy pre-auth gate, post-auth model/identity и read-only resources: `mvp_runtime/adapters/huawei_te40.py`.
+- Catalog/routing: `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `app.js`.
+- Архитектурное решение: `docs/decisions/ADR-0022-huawei-te20-polling.md`.
+
+## Feature 021
 
 - Спецификация, полный 42-колоночный контракт и задачи: `specs/021-sr-export-schema/`.
 - Канонические заголовки, совместимые псевдонимы, нормализация и identity: `app.js`.
@@ -82,7 +89,7 @@
 - `START_MVP_SPHERE_SR.py` — полный режим; прямой `index.html` — ручной режим.
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
-- Подтверждены локальный динамический HTTPS web contract Extron controller/panel и общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60. Все четыре Huawei-модели проверены контролируемыми опросами реальных устройств. Остальные vendor/model adapters — `protocol_required`.
+- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1/read-only web-CGI contract Huawei TE20 и общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60. Все пять Huawei-моделей проверены контролируемыми опросами реальных устройств. Остальные vendor/model adapters — `protocol_required`.
 - Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE30/TE40/TE50/TE60 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Реальная write-проверка выполнена на TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. По решению пользователя достаточно подтверждённо изменить значения HTTP/Telnet в меню кодека; TCP listener не влияет на статус отчёта.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 

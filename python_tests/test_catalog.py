@@ -20,8 +20,9 @@ class CatalogTests(unittest.TestCase):
 
     def test_alias_and_unknown_fail_closed(self) -> None:
         aliased = resolve_manifest({"category": "vcs", "manufacturer": "Huawey", "model": "TE20"})
-        self.assertEqual(aliased["key"], "vcs/huawei")
-        self.assertEqual(aliased["protocolStatus"], "protocol_required")
+        self.assertEqual(aliased["key"], "vcs/huawei/te20-legacy")
+        self.assertEqual(aliased["protocolStatus"], "supported")
+        self.assertEqual(aliased["transport"], "huawei_te20_web_cgi_v1")
         unknown = resolve_manifest({"category": "controller", "manufacturer": "Unknown Vendor", "model": "x"})
         self.assertEqual(unknown["protocolStatus"], "unsupported")
         self.assertIsNone(unknown["transport"])
@@ -38,7 +39,11 @@ class CatalogTests(unittest.TestCase):
         aliased = resolve_manifest({"category": "vcs", "manufacturer": "Huawey", "model": "TE40"})
         self.assertEqual(aliased["key"], "vcs/huawei/te-family")
 
-        for model in ("TE20", "TX50", "Unknown Huawei"):
+        te20 = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "TE20"})
+        self.assertEqual(te20["key"], "vcs/huawei/te20-legacy")
+        self.assertEqual(te20["transport"], "huawei_te20_web_cgi_v1")
+
+        for model in ("TX50", "Unknown Huawei"):
             fallback = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": model})
             self.assertEqual(fallback["key"], "vcs/huawei")
             self.assertEqual(fallback["protocolStatus"], "protocol_required")

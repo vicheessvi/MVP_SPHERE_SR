@@ -226,6 +226,16 @@
       normalizerKey: "extron-json-v1",
       credentialMode: "memory_xlsx_pool"
     }),
+    Object.freeze({
+      key: "vcs/huawei/te20-legacy",
+      category: "vcs",
+      manufacturerNormalized: "huawei",
+      modelNormalized: "te20",
+      support: "implemented",
+      transport: "huawei_te20_web_cgi_v1",
+      normalizerKey: "huawei-te-json-v1",
+      credentialMode: "memory_xlsx_pool"
+    }),
     ...["te30", "te40", "te50", "te60"].map((modelNormalized) => Object.freeze({
       key: "vcs/huawei/te-family",
       category: "vcs",

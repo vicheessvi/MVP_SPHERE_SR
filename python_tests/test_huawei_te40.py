@@ -4,7 +4,7 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, HuaweiTransportError, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, TE20_TLS_PROFILE, HuaweiTransportError, _https_context, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.redaction import sanitize_result
 
 
@@ -31,7 +31,7 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
-    def success_request(self, calls, overrides=None, terminal_model="TE40", configuration=None, persist_save=True):
+    def success_request(self, calls, overrides=None, terminal_model="TE40", configuration=None, persist_save=True, preauth_legacy=False):
         resources = synthetic_resources(terminal_model)
         overrides = overrides or {}
         configuration_state = dict(configuration or {"enabletelnet": 1, "enable_http": 0})
@@ -54,6 +54,8 @@ class HuaweiTe40Tests(unittest.TestCase):
                 return {"status_code": 200, "headers": [], "body": RESOURCE_MARKERS}
             action = path.split("ActionID=", 1)[1].split("?rmd=", 1)[0]
             if action == "WEB_GetLoginInfo":
+                if preauth_legacy:
+                    return envelope({"AlreadyLogin": 0, "acCSRFToken": "", "ucTerType": 0, "ucCustomType": 0})
                 return envelope({"AlreadyLogin": 0, "szTermType": terminal_model})
             if action == "Web_RequestSessionID":
                 return envelope({"acSessionId": ""})
@@ -106,6 +108,50 @@ class HuaweiTe40Tests(unittest.TestCase):
             self.assertEqual(result["webBlocks"]["Device Info"]["Model"], model)
             self.assertEqual(result["vendorPolling"]["contract"], "huawei-te-web-cgi-v1")
             self.assertEqual(len([item for item in calls if "Web_RequestCertificate" in item["path"]]), 1)
+            self.assertTrue(all(item["tls_profile"] is None for item in calls))
+
+    def test_te20_uses_exact_tls11_legacy_preauth_and_same_read_only_resources(self):
+        calls = []
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True), "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION]},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["vendorPolling"]["contract"], "huawei-te20-web-cgi-v1")
+        self.assertEqual(result["webBlocks"]["Device Info"]["Model"], "Huawei TE20")
+        self.assertTrue(all(item["tls_profile"] == TE20_TLS_PROFILE for item in calls))
+        self.assertEqual(result["managementActions"][0]["status"], "skipped_unsupported")
+        self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in calls))
+        context = _https_context(False, TE20_TLS_PROFILE)
+        self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_1)
+        self.assertEqual(context.maximum_version, ssl.TLSVersion.TLSv1_1)
+
+    def test_te20_preauth_or_postauth_schema_drift_fails_closed(self):
+        preauth_calls = []
+        preauth = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(preauth_calls, overrides={"/action.cgi?ActionID=WEB_GetLoginInfo?rmd=0.5": envelope({"AlreadyLogin": 0, "ucTerType": 1, "ucCustomType": 0, "acCSRFToken": ""})}, terminal_model="Huawei TE20", preauth_legacy=True), "nonce": lambda: "0.5"},
+        )
+        self.assertEqual(preauth["safeError"], "preauth_contract_unconfirmed")
+        self.assertFalse(any("Web_RequestCertificate" in item["path"] for item in preauth_calls))
+
+        postauth_calls = []
+        normal = self.success_request(postauth_calls, terminal_model="Huawei TE20", preauth_legacy=True)
+
+        def mismatched_version(options):
+            if "ActionID=WEB_GetVersionInfoAPI" in options["path"]:
+                postauth_calls.append(options)
+                return envelope(synthetic_resources("TE40")["WEB_GetVersionInfoAPI"])
+            return normal(options)
+
+        postauth = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": mismatched_version},
+        )
+        self.assertEqual(postauth["safeError"], "resource_schema_unconfirmed")
 
     def test_opt_in_te_family_action_reads_writes_exact_values_and_verifies_menu_state(self):
         for index, model in enumerate(("TE30", "TE40", "TE50", "TE60")):
