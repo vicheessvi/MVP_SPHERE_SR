@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 022
+## Текущая feature 023
+
+- Спецификация, TE20 write-contract и задачи: `specs/023-huawei-te20-port-closure/`.
+- Guarded read/minimal-write/re-read: `mvp_runtime/adapters/huawei_te40.py`.
+- Exact action eligibility и per-model transport: `runtime/device-catalog.json`, `mvp_runtime/catalog.py`, `runtime/model-catalog.js`, `app.js`.
+- Архитектурное решение: `docs/decisions/ADR-0023-huawei-te20-port-closure.md`.
+
+## Feature 022
 
 - Спецификация, TE20 transport contract и задачи: `specs/022-huawei-te20-polling/`.
 - Exact TLS 1.1, legacy pre-auth gate, post-auth model/identity и read-only resources: `mvp_runtime/adapters/huawei_te40.py`.
@@ -89,8 +96,8 @@
 - `START_MVP_SPHERE_SR.py` — полный режим; прямой `index.html` — ручной режим.
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
-- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1/read-only web-CGI contract Huawei TE20 и общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60. Все пять Huawei-моделей проверены контролируемыми опросами реальных устройств. Остальные vendor/model adapters — `protocol_required`.
-- Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE30/TE40/TE50/TE60 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Реальная write-проверка выполнена на TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. По решению пользователя достаточно подтверждённо изменить значения HTTP/Telnet в меню кодека; TCP listener не влияет на статус отчёта.
+- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1 web-CGI contract Huawei TE20 и общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60. Все пять Huawei-моделей проверены контролируемыми опросами реальных устройств. Остальные vendor/model adapters — `protocol_required`.
+- Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE20/TE30/TE40/TE50/TE60 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Реальная write-проверка выполнена на TE20 и TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. Достаточно подтверждённо изменить значения HTTP/Telnet в меню кодека; TCP listener не влияет на статус отчёта.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 
 ## История

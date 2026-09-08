@@ -42,7 +42,10 @@ function resolveManagementAction(device, actionId) {
     && item.category === category
     && [item.manufacturer, ...item.aliases].map(normalize).includes(manufacturer)
     && item.models.some((itemModel) => normalize(itemModel) === model));
-  return action ? { ...action, supported: true } : { id: String(actionId || ""), category, manufacturer, model, protocolStatus: "unsupported", transport: null, supported: false };
+  const manifest = action ? resolveManifest(device) : null;
+  return action && manifest && manifest.protocolStatus === "supported" && manifest.knownModel && manifest.transport
+    ? { ...action, transport: manifest.transport, supported: true }
+    : { id: String(actionId || ""), category, manufacturer, model, protocolStatus: "unsupported", transport: null, supported: false };
 }
 
 module.exports = { CATALOG, MANAGEMENT_ACTIONS, normalize, resolveManifest, resolveManagementAction };

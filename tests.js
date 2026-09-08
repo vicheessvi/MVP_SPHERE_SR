@@ -321,7 +321,7 @@
     });
     assertEqual(te20.support, "implemented");
     assertEqual(te20.transport, "huawei_te20_web_cgi_v1");
-    assert(!te20.managementTasks || te20.managementTasks.length === 0);
+    assertEqual(te20.managementTasks.join(","), "disable_insecure_management_services");
     assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === "te20").length, 2);
     assertEqual(tx50.support, "not_implemented");
     assertEqual(tx50.transport, null);
@@ -343,6 +343,9 @@
     assertEqual(te20.key, "vcs/huawei/te20-legacy");
     assertEqual(te20.protocolStatus, "supported");
     assertEqual(te20.transport, "huawei_te20_web_cgi_v1");
+    const te20Action = runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "TE20" }, "disable_insecure_management_services");
+    assert(te20Action.supported);
+    assertEqual(te20Action.transport, "huawei_te20_web_cgi_v1");
     assertEqual(tx50.key, "vcs/huawei");
     assertEqual(tx50.transport, null);
     assertEqual(unknown.key, "vcs/huawei");
@@ -1893,7 +1896,7 @@
     assert(blocked.errors.some((item) => item.includes("поддерживаемым автоматическим опросом")));
   });
 
-  test("Задача закрытия HTTP/Telnet выключена по умолчанию и разрешена для точных TE30/TE40/TE50/TE60", () => {
+  test("Задача закрытия HTTP/Telnet выключена по умолчанию и разрешена для точных TE20/TE30/TE40/TE50/TE60", () => {
     const imported = api.importSrRows(api.createDemoState(), {
       filename: "management-plan.xlsx", headers: srHeaders(), rows: [
         srRow({ "Инвентарный номер": "TE40-1", "Серийный номер": "TE40-SN-1", MAC: "02-00-00-00-14-01", IP: "192.0.2.40", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "TE40" }),
@@ -1907,9 +1910,9 @@
     assert(targetList.ok, targetList.errors?.join("; "));
     const projection = api.deriveAutomaticPollingPlan(imported.state, { disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL] });
     assertEqual(projection.targetSource, "port_closure_list");
-    assertEqual(projection.managementEligibleDevices.length, 4);
-    assertEqual(projection.managementEligibleDevices.map((item) => item.modelNormalized).join(","), "te30,te40,te50,te60");
-    assertEqual(projection.managementSkippedDevices.length, 1);
+    assertEqual(projection.managementEligibleDevices.length, 5);
+    assertEqual(projection.managementEligibleDevices.map((item) => item.modelNormalized).join(","), "te20,te30,te40,te50,te60");
+    assertEqual(projection.managementSkippedDevices.length, 0);
 
     const base = { categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], scheduledAt: "2026-09-06T10:00:00", intervalSeconds: 0, credentialsReady: true, credentialSourceSha256: "d".repeat(64) };
     const ordinary = api.createPollingPlan(imported.state, base);
@@ -1918,8 +1921,8 @@
     const hardened = api.createPollingPlan(api.createDemoState(), { ...base, disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, managementTargetSourceSha256: "e".repeat(64) });
     assert(hardened.ok, hardened.errors?.join("; "));
     assertEqual(hardened.plan.managementTasks.join(","), api.MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES);
-    assertEqual(hardened.plan.selectionSummary.managementEligible, 4);
-    assertEqual(hardened.plan.selectionSummary.managementSkipped, 1);
+    assertEqual(hardened.plan.selectionSummary.managementEligible, 5);
+    assertEqual(hardened.plan.selectionSummary.managementSkipped, 0);
     assertEqual(hardened.plan.targetSource, "port_closure_list");
     assertEqual(hardened.plan.deviceIds.length, 0);
     assertEqual(hardened.plan.targetDevices.length, 5);
@@ -1934,8 +1937,8 @@
     assert(te50Only.ok, te50Only.errors?.join("; "));
     assertEqual(te50Only.plan.selectionSummary.managementEligible, 1);
     const te20Only = api.createPollingPlan(api.createDemoState(), { ...base, models: ["te20"], disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, managementTargetSourceSha256: "e".repeat(64) });
-    assert(!te20Only.ok);
-    assert(te20Only.errors.some((item) => item.includes("нет Huawei TE30, TE40, TE50 или TE60")));
+    assert(te20Only.ok, te20Only.errors?.join("; "));
+    assertEqual(te20Only.plan.selectionSummary.managementEligible, 1);
   });
 
   test("Отдельный список закрытия портов валидируется атомарно и не изменяет SR", () => {

@@ -8,7 +8,7 @@
       "category": "vcs",
       "manufacturer": "huawei",
       "aliases": ["huawey"],
-      "models": ["TE30", "TE40", "TE50", "TE60"],
+      "models": ["TE20", "TE30", "TE40", "TE50", "TE60"],
       "protocolStatus": "supported",
       "transport": "huawei_te_web_cgi_v1"
     }

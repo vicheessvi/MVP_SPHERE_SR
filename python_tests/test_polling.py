@@ -100,7 +100,7 @@ class PollingTests(unittest.TestCase):
         self.assertFalse(results[3]["networkAttempted"])
         self.assertEqual(results[3]["vendorPolling"]["status"], "protocol_required")
 
-    def test_management_task_reaches_exact_te_family_models(self) -> None:
+    def test_management_task_reaches_exact_te_models_through_their_own_transports(self) -> None:
         observed = []
 
         def adapter(device, _credentials, options):
@@ -116,17 +116,21 @@ class PollingTests(unittest.TestCase):
                 "targetSource": "port_closure_list",
                 "targetSourceSha256": "a" * 64,
                 "devices": [
-                    {**device, "ip": f"192.0.2.{30 + index * 10}"}
-                    for index, device in enumerate(HUAWEI_MODELS)
+                    {**HUAWEI_TE20, "ip": "192.0.2.20"},
+                    *[
+                        {**device, "ip": f"192.0.2.{30 + index * 10}"}
+                        for index, device in enumerate(HUAWEI_MODELS)
+                    ],
                 ],
             },
             {
                 "ping": lambda *_args: {"ok": True, "durationMs": 1},
                 "get_credentials": lambda *_args: [{"username": "u", "password": "p"}],
-                "adapters": {"huawei_te_web_cgi_v1": adapter},
+                "adapters": {"huawei_te20_web_cgi_v1": adapter, "huawei_te_web_cgi_v1": adapter},
             },
         )
         self.assertEqual(observed, [
+            ("TE20", ["disable_insecure_management_services"]),
             ("TE30", ["disable_insecure_management_services"]),
             ("TE40", ["disable_insecure_management_services"]),
             ("TE50", ["disable_insecure_management_services"]),

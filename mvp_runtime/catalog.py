@@ -143,5 +143,9 @@ def resolve_management_action(device: dict[str, Any] | None, action_id: Any, cat
             and manufacturer in manufacturers
             and any(normalize(item) == model for item in action["models"])
         ):
-            return {**action, "aliases": list(action["aliases"]), "models": list(action["models"]), "supported": True}
+            manifest = resolve_manifest(source, catalog)
+            transport = manifest.get("transport") if manifest.get("protocolStatus") == "supported" and manifest.get("knownModel") else None
+            if not transport:
+                break
+            return {**action, "aliases": list(action["aliases"]), "models": list(action["models"]), "transport": transport, "supported": True}
     return {"id": requested, "label": "", "category": category, "manufacturer": manufacturer, "models": [], "protocolStatus": "unsupported", "transport": None, "supported": False}

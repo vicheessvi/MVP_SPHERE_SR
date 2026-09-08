@@ -49,12 +49,13 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(fallback["protocolStatus"], "protocol_required")
             self.assertIsNone(fallback["transport"])
 
-    def test_management_action_is_exact_te_family_only(self) -> None:
-        for model in ("TE30", "TE40", "TE50", "TE60"):
+    def test_management_action_is_exact_te_models_only(self) -> None:
+        for model in ("TE20", "TE30", "TE40", "TE50", "TE60"):
             supported = resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": model}, "disable_insecure_management_services")
             self.assertTrue(supported["supported"])
-            self.assertEqual(supported["transport"], "huawei_te_web_cgi_v1")
-        for model in ("TE20", "TX50", "Unknown Huawei"):
+            expected_transport = "huawei_te20_web_cgi_v1" if model == "TE20" else "huawei_te_web_cgi_v1"
+            self.assertEqual(supported["transport"], expected_transport)
+        for model in ("TX50", "Unknown Huawei"):
             self.assertFalse(resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": model}, "disable_insecure_management_services")["supported"])
         self.assertFalse(resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": "TE40"}, "unknown")["supported"])
 

@@ -22,9 +22,9 @@ if (!(deviceCatalog.adapters || []).includes("huawei_te_web_cgi_v1")) errors.pus
 if (!(deviceCatalog.adapters || []).includes("huawei_te20_web_cgi_v1")) errors.push("В общем каталоге отсутствует отдельный Huawei TE20 transport");
 if ((deviceCatalog.adapters || []).includes("huawei_te40_web_cgi_v1")) errors.push("В общем каталоге остался устаревший Huawei TE40-only transport");
 const closePortsActions = (deviceCatalog.managementActions || []).filter((item) => item.id === "disable_insecure_management_services");
-if (closePortsActions.length !== 1 || JSON.stringify(closePortsActions[0].models) !== JSON.stringify(["TE30", "TE40", "TE50", "TE60"]) || closePortsActions[0].transport !== "huawei_te_web_cgi_v1") errors.push("Задача закрытия HTTP/Telnet должна быть разрешена ровно для Huawei TE30/TE40/TE50/TE60");
+if (closePortsActions.length !== 1 || JSON.stringify(closePortsActions[0].models) !== JSON.stringify(["TE20", "TE30", "TE40", "TE50", "TE60"]) || closePortsActions[0].transport !== "huawei_te_web_cgi_v1") errors.push("Задача закрытия HTTP/Telnet должна быть разрешена ровно для Huawei TE20/TE30/TE40/TE50/TE60");
 const te20 = (deviceCatalog.entries || []).find((entry) => entry.key === "vcs/huawei/te20-legacy");
-if (!te20 || JSON.stringify(te20.models) !== JSON.stringify(["TE20"]) || te20.protocolStatus !== "supported" || te20.transport !== "huawei_te20_web_cgi_v1") errors.push("Huawei TE20 должен иметь отдельный подтверждённый read-only transport");
+if (!te20 || JSON.stringify(te20.models) !== JSON.stringify(["TE20"]) || te20.protocolStatus !== "supported" || te20.transport !== "huawei_te20_web_cgi_v1") errors.push("Huawei TE20 должен иметь отдельный подтверждённый transport");
 
 if (errors.length) {
   errors.forEach((error) => process.stderr.write(`ОШИБКА: ${error}\n`));

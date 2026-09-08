@@ -110,7 +110,7 @@ class HuaweiTe40Tests(unittest.TestCase):
             self.assertEqual(len([item for item in calls if "Web_RequestCertificate" in item["path"]]), 1)
             self.assertTrue(all(item["tls_profile"] is None for item in calls))
 
-    def test_te20_uses_exact_tls11_legacy_preauth_and_same_read_only_resources(self):
+    def test_te20_uses_exact_tls11_legacy_preauth_and_guarded_management_action(self):
         calls = []
         result = poll_huawei_te_device(
             {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
@@ -121,8 +121,10 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertEqual(result["vendorPolling"]["contract"], "huawei-te20-web-cgi-v1")
         self.assertEqual(result["webBlocks"]["Device Info"]["Model"], "Huawei TE20")
         self.assertTrue(all(item["tls_profile"] == TE20_TLS_PROFILE for item in calls))
-        self.assertEqual(result["managementActions"][0]["status"], "skipped_unsupported")
-        self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in calls))
+        self.assertEqual(result["managementActions"][0]["status"], "applied")
+        self.assertEqual(result["managementActions"][0]["after"], {"httpPort80": "disabled", "telnetPort23": "disabled"})
+        self.assertEqual(len([item for item in calls if "WEB_GetCfgParamAPI" in item["path"]]), 2)
+        self.assertEqual(len([item for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]), 1)
         context = _https_context(False, TE20_TLS_PROFILE)
         self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_1)
         self.assertEqual(context.maximum_version, ssl.TLSVersion.TLSv1_1)
@@ -205,6 +207,19 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertEqual(compliant["managementActions"][0]["status"], "already_compliant")
         self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in compliant_calls))
 
+        te20_calls = []
+        te20_compliant = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "u", "password": "p"}],
+            {
+                "request": self.success_request(te20_calls, terminal_model="Huawei TE20", configuration={"enabletelnet": 0, "enable_http": 1}, preauth_legacy=True),
+                "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION],
+            },
+        )
+        self.assertTrue(te20_compliant["ok"])
+        self.assertEqual(te20_compliant["managementActions"][0]["status"], "already_compliant")
+        self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in te20_calls))
+
     def test_failed_verification_is_visible_and_never_reopens_services(self):
         calls = []
         result = poll_huawei_te_device(
@@ -221,13 +236,15 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertEqual(json.loads(save_calls[0]["body"])["CfgItemInt"][0]["CfgItemInfo"], 0)
 
     def test_management_contract_and_configuration_schema_drift_never_write(self):
-        for model in ("TE30", "TE50", "TE60"):
+        for model in ("TE20", "TE30", "TE50", "TE60"):
+            terminal_model = "Huawei TE20" if model == "TE20" else model
+            preauth_legacy = model == "TE20"
             missing_marker_calls = []
             missing_marker = poll_huawei_te_device(
                 {"ip": "192.0.2.80", "model": model, "allowInsecureTls": True},
                 [{"username": "u", "password": "p"}],
                 {
-                    "request": self.success_request(missing_marker_calls, {"/system/web_all.js": {"status_code": 200, "headers": [], "body": "WEB_GetProductEsnAPI WEB_GetSystemMacAddrAPI WEB_GetVersionInfoAPI WEB_GetTermSpecsInfoAPI WEB_GetSysLocalTimeAPI WEB_GetDhcpIPInfoAPI"}}, terminal_model=model),
+                    "request": self.success_request(missing_marker_calls, {"/system/web_all.js": {"status_code": 200, "headers": [], "body": "WEB_GetProductEsnAPI WEB_GetSystemMacAddrAPI WEB_GetVersionInfoAPI WEB_GetTermSpecsInfoAPI WEB_GetSysLocalTimeAPI WEB_GetDhcpIPInfoAPI"}}, terminal_model=terminal_model, preauth_legacy=preauth_legacy),
                     "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION],
                 },
             )
@@ -240,7 +257,7 @@ class HuaweiTe40Tests(unittest.TestCase):
                 {"ip": "192.0.2.81", "model": model, "allowInsecureTls": True},
                 [{"username": "u", "password": "p"}],
                 {
-                    "request": self.success_request(schema_calls, {"/action.cgi?ActionID=WEB_GetCfgParamAPI?rmd=0.5": envelope({"CfgItemInt": [{"CfgItemID": "enable_http", "CfgItemInfo": 0}]})}, terminal_model=model),
+                    "request": self.success_request(schema_calls, {"/action.cgi?ActionID=WEB_GetCfgParamAPI?rmd=0.5": envelope({"CfgItemInt": [{"CfgItemID": "enable_http", "CfgItemInfo": 0}]})}, terminal_model=terminal_model, preauth_legacy=preauth_legacy),
                     "nonce": lambda: "0.5",
                     "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION],
                 },
