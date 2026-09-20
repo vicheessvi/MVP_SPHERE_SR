@@ -64,3 +64,7 @@ Every request is GET with `X-Access-Token`; each envelope and field set is bound
 **Decision**: Store only synthetic responses in tests. Cover model-before-credentials, row-order authorization, cookie/token handling, GET-only resource allowlist, best-effort logout, auth rejection, bundle/schema drift, TLS/timeout/oversize mapping and secret redaction. Remove the temporary live probe before final scan.
 
 **Rationale**: It satisfies the local-only and evidence-review rules while keeping all real IP, identity values, credentials and response bodies out of Git.
+
+## Operational confirmation
+
+On 2026-09-20 the user confirmed that the integrated Huawei CloudLink Bar 310 polling algorithm completed successfully in the target environment. This promotes the exact `huawei_bar310_rest_v1` contract from controlled development acceptance to user-confirmed operation without broadening the supported-model or firmware-drift boundaries.

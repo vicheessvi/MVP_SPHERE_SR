@@ -94,10 +94,24 @@ def _default_huawei_bar310(device: dict[str, Any], credential: Any, options: dic
     return poll_huawei_bar310_device(device, credential, options)
 
 
+def _default_huawei_box310(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
+    from .adapters.huawei_box310 import poll_huawei_box310_device
+
+    return poll_huawei_box310_device(device, credential, options)
+
+
+def _default_huawei_box610(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
+    from .adapters.huawei_box610 import poll_huawei_box610_device
+
+    return poll_huawei_box610_device(device, credential, options)
+
+
 register_adapter("extron_web_dynamic_resources_v1", _default_extron)
 register_adapter("huawei_te_web_cgi_v1", _default_huawei_te)
 register_adapter("huawei_te20_web_cgi_v1", _default_huawei_te20)
 register_adapter("huawei_bar310_rest_v1", _default_huawei_bar310)
+register_adapter("huawei_box310_rest_v1", _default_huawei_box310)
+register_adapter("huawei_box610_rest_v1", _default_huawei_box610)
 
 
 def plan_device_supported(device: dict[str, Any]) -> bool:

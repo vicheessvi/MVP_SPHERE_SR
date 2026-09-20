@@ -1,4 +1,4 @@
-"""Bounded read-only Huawei Bar 310 HTTPS web adapter."""
+"""Bounded read-only Huawei 310-family HTTPS core and Bar 310 contract."""
 
 from __future__ import annotations
 
@@ -18,6 +18,13 @@ from mvp_runtime.redaction import sanitize_result
 CONTRACT_MODEL = "Bar 310"
 SUPPORTED_PLAN_MODELS = frozenset({"bar 310", "cloudlink bar 310", "cloudlinc bar 310"})
 CONTRACT_ID = "huawei-bar310-rest-v1"
+BAR310_CONTRACT = {
+    "contract_id": CONTRACT_ID,
+    "contract_model": CONTRACT_MODEL,
+    "plan_models": SUPPORTED_PLAN_MODELS,
+    "evidence_status": "confirmed_user_validation",
+    "evidence_label": "Huawei Bar 310 pre-auth model and v1 resource markers found",
+}
 MAIN_BUNDLE_PATTERN = re.compile(r"^/static/js/main\.[A-Za-z0-9._~-]{1,120}\.chunk\.js$")
 MAX_COOKIE_COUNT = 16
 MAX_COOKIE_LENGTH = 4096
@@ -343,13 +350,23 @@ def build_web_blocks(resources: dict[str, dict[str, Any]], ip: str) -> dict[str,
     }
 
 
-def poll_huawei_bar310_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None) -> dict[str, Any]:
+def poll_huawei_310_family_device(
+    device: dict[str, Any],
+    credentials: Any,
+    contract: dict[str, Any],
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from mvp_runtime.polling import normalize_ipv4
 
     settings = options or {}
     request = settings.get("request") or native_https_request
     ip = normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
     captured_at = _utc_iso(settings.get("now"))
+    contract_id = str(contract.get("contract_id") or "")
+    contract_model = str(contract.get("contract_model") or "")
+    plan_models = frozenset(str(item) for item in contract.get("plan_models") or ())
+    evidence_status = str(contract.get("evidence_status") or "provisional_user_validation")
+    evidence_label = str(contract.get("evidence_label") or "Huawei 310-family guarded web contract found")
     base: dict[str, Any] = {
         "ip": ip,
         "capturedAt": captured_at,
@@ -357,9 +374,14 @@ def poll_huawei_bar310_device(device: dict[str, Any], credentials: Any, options:
         "failedStage": None,
         "loginAttempts": [],
         "credentialAttempts": 0,
-        "vendorPolling": {"status": "supported", "contract": CONTRACT_ID, "model": CONTRACT_MODEL},
+        "vendorPolling": {
+            "status": "supported",
+            "contract": contract_id,
+            "model": contract_model,
+            "evidenceStatus": evidence_status,
+        },
     }
-    if not ip or _planned_model(device) not in SUPPORTED_PLAN_MODELS:
+    if not contract_id or not contract_model or not plan_models or not ip or _planned_model(device) not in plan_models:
         return {**base, "failedStage": "validation", "safeError": "invalid_or_unsupported_target"}
     pool = credentials if isinstance(credentials, list) else [credentials]
     pool = [item for item in pool if isinstance(item, dict) and item.get("username") and item.get("password")]
@@ -447,7 +469,7 @@ def poll_huawei_bar310_device(device: dict[str, Any], credentials: Any, options:
         outer, preauth_data = json_request("GET", "/v1/login/device")
         if outer.get("success") != 1 or not isinstance(preauth_data, dict):
             return {**base, "failedStage": "validation", "safeError": "resource_envelope_invalid"}
-        if preauth_data.get("licenseEquipName") != CONTRACT_MODEL:
+        if preauth_data.get("licenseEquipName") != contract_model:
             return {**base, "failedStage": "validation", "safeError": "target_model_mismatch"}
         outer, _session_data = json_request("POST", "/v1/login/session", None)
         if outer.get("success") != 1 or not cookies:
@@ -507,14 +529,14 @@ def poll_huawei_bar310_device(device: dict[str, Any], credentials: Any, options:
 
     version = resources.get("version") or {}
     specification = resources.get("specification") or {}
-    exact_model = version.get("terminalType") == CONTRACT_MODEL
+    exact_model = version.get("terminalType") == contract_model
     stable_identity = any(str(version.get(key) or "").strip() for key in ("SN", "ESN"))
     if not stable_identity:
         stable_identity = any(_valid_mac(specification.get(key)) for key in ("wanMac", "lanMac", "apMac", "staMac"))
     diagnostics = {"attemptedResourceKeys": list(BAR310_RESOURCE_PATHS), "resourceErrors": resource_errors}
     interface = {
         "ok": True,
-        "evidence": "Huawei Bar 310 pre-auth model and v1 resource markers found",
+        "evidence": evidence_label,
         "insecureTls": not reject_unauthorized,
         "tlsProfile": "system_default",
     }
@@ -535,3 +557,7 @@ def poll_huawei_bar310_device(device: dict[str, Any], credentials: Any, options:
         "readMode": "targeted",
         "diagnostics": diagnostics,
     })
+
+
+def poll_huawei_bar310_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None) -> dict[str, Any]:
+    return poll_huawei_310_family_device(device, credentials, BAR310_CONTRACT, options)

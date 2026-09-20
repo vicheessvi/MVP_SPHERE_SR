@@ -10,6 +10,8 @@ SUPPORTED = {"category": "controller", "manufacturer": "Extron", "model": "IPCP 
 HUAWEI_MODELS = tuple({"category": "vcs", "manufacturer": "Huawei", "model": model, "pollingSupported": True} for model in ("TE30", "TE40", "TE50", "TE60"))
 HUAWEI_TE20 = {"category": "vcs", "manufacturer": "Huawei", "model": "TE20", "pollingSupported": True}
 HUAWEI_BAR310 = {"category": "vcs", "manufacturer": "Huawei", "model": "Bar 310", "pollingSupported": True}
+HUAWEI_BOX310 = {"category": "vcs", "manufacturer": "Huawei", "model": "Box 310", "pollingSupported": True}
+HUAWEI_BOX610 = {"category": "vcs", "manufacturer": "Huawei", "model": "Box 610", "pollingSupported": True}
 
 
 class PollingTests(unittest.TestCase):
@@ -84,6 +86,8 @@ class PollingTests(unittest.TestCase):
                 {**SUPPORTED, "ip": "192.0.2.41"},
                 {**HUAWEI_TE20, "ip": "192.0.2.42"},
                 {**HUAWEI_BAR310, "ip": "192.0.2.44"},
+                {**HUAWEI_BOX310, "ip": "192.0.2.45"},
+                {**HUAWEI_BOX610, "ip": "192.0.2.46"},
                 {"category": "vcs", "manufacturer": "Huawei", "model": "TX50", "ip": "192.0.2.43"},
             ]
         }
@@ -94,14 +98,16 @@ class PollingTests(unittest.TestCase):
                 "huawei_te_web_cgi_v1": adapter("huawei"),
                 "huawei_te20_web_cgi_v1": adapter("huawei-te20"),
                 "huawei_bar310_rest_v1": adapter("huawei-bar310"),
+                "huawei_box310_rest_v1": adapter("huawei-box310"),
+                "huawei_box610_rest_v1": adapter("huawei-box610"),
                 "extron_web_dynamic_resources_v1": adapter("extron"),
             },
         })
-        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41"), ("huawei-te20", "192.0.2.42"), ("huawei-bar310", "192.0.2.44")])
-        self.assertEqual([item["ip"] for item in results], ["192.0.2.40", "192.0.2.41", "192.0.2.42", "192.0.2.44", "192.0.2.43"])
-        self.assertTrue(results[3]["ok"])
-        self.assertFalse(results[4]["networkAttempted"])
-        self.assertEqual(results[4]["vendorPolling"]["status"], "protocol_required")
+        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41"), ("huawei-te20", "192.0.2.42"), ("huawei-bar310", "192.0.2.44"), ("huawei-box310", "192.0.2.45"), ("huawei-box610", "192.0.2.46")])
+        self.assertEqual([item["ip"] for item in results], ["192.0.2.40", "192.0.2.41", "192.0.2.42", "192.0.2.44", "192.0.2.45", "192.0.2.46", "192.0.2.43"])
+        self.assertTrue(results[3]["ok"] and results[4]["ok"] and results[5]["ok"])
+        self.assertFalse(results[6]["networkAttempted"])
+        self.assertEqual(results[6]["vendorPolling"]["status"], "protocol_required")
 
     def test_management_task_reaches_exact_te_models_through_their_own_transports(self) -> None:
         observed = []

@@ -257,6 +257,26 @@
       transport: "huawei_bar310_rest_v1",
       normalizerKey: "huawei-bar310-json-v1",
       credentialMode: "memory_xlsx_pool"
+    })),
+    ...["box 310", "cloudlink box 310", "cloudlinc box 310"].map((modelNormalized) => Object.freeze({
+      key: "vcs/huawei/box310",
+      category: "vcs",
+      manufacturerNormalized: "huawei",
+      modelNormalized,
+      support: "implemented",
+      transport: "huawei_box310_rest_v1",
+      normalizerKey: "huawei-box310-json-v1",
+      credentialMode: "memory_xlsx_pool"
+    })),
+    ...["box 610", "cloudlink box 610", "cloudlinc box 610"].map((modelNormalized) => Object.freeze({
+      key: "vcs/huawei/box610",
+      category: "vcs",
+      manufacturerNormalized: "huawei",
+      modelNormalized,
+      support: "implemented",
+      transport: "huawei_box610_rest_v1",
+      normalizerKey: "huawei-box610-json-v1",
+      credentialMode: "memory_xlsx_pool"
     }))
   ]);
 

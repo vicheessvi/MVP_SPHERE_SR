@@ -65,6 +65,28 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(fallback["key"], "vcs/huawei")
         self.assertEqual(fallback["protocolStatus"], "protocol_required")
 
+    def test_huawei_box_models_have_separate_exact_read_only_manifests(self) -> None:
+        families = (
+            (("Box 310", "CloudLink Box 310", "CloudLinc Box 310"), "vcs/huawei/box310", "huawei_box310_rest_v1"),
+            (("Box 610", "CloudLink Box 610", "CloudLinc Box 610"), "vcs/huawei/box610", "huawei_box610_rest_v1"),
+        )
+        for models, key, transport in families:
+            for model in models:
+                manifest = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": model})
+                self.assertEqual(manifest["key"], key)
+                self.assertEqual(manifest["transport"], transport)
+                self.assertEqual(manifest["protocolStatus"], "supported")
+                self.assertTrue(manifest["knownModel"])
+                self.assertFalse(resolve_management_action(
+                    {"category": "vcs", "manufacturer": "Huawei", "model": model},
+                    "disable_insecure_management_services",
+                )["supported"])
+
+        for variant in ("Box 310-C", "Box 610-S"):
+            fallback = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": variant})
+            self.assertEqual(fallback["key"], "vcs/huawei")
+            self.assertEqual(fallback["protocolStatus"], "protocol_required")
+
     def test_management_action_is_exact_te_models_only(self) -> None:
         for model in ("TE20", "TE30", "TE40", "TE50", "TE60"):
             supported = resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": model}, "disable_insecure_management_services")
