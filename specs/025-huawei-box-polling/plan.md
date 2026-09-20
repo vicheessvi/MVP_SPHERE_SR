@@ -6,7 +6,7 @@
 
 ## Summary
 
-Выделить подтверждённую транспортную реализацию Huawei 310-family в параметризуемое ядро, сохранив отдельный публичный контракт Bar 310 и добавив два guarded/provisional wrapper-контракта Box 310 и Box 610. Каждый wrapper задаёт собственные plan aliases, exact pre/post model, contract ID и evidence status. Каталог маршрутизирует модели отдельно; любые несовпадения блокируются до credentials либо до успешного результата.
+Выделить подтверждённую транспортную реализацию Huawei 310-family в параметризуемое ядро, сохранив отдельный публичный контракт Bar 310 и добавив два изначально guarded/provisional wrapper-контракта Box 310 и Box 610. После независимых успешных пользовательских проверок оба Box wrapper-контракта получили подтверждённый evidence status. Каждый wrapper задаёт собственные plan aliases, exact pre/post model, contract ID и evidence status. Каталог маршрутизирует модели отдельно; любые несовпадения блокируются до credentials либо до успешного результата.
 
 ## Technical Context
 
@@ -37,7 +37,7 @@
 - V: contract ID, evidence status и safe error объясняют вывод — PASS.
 - VI: credentials/cookie/token memory-only, standard-library HTTPS, no external transfer — PASS.
 
-Post-design re-check: отдельные wrapper-контракты не ослабляют ни один gate; provisional статус явно сохраняется — PASS.
+Post-validation re-check: отдельные wrapper-контракты не ослабляют ни один gate; подтверждение Box 310 и Box 610 зафиксировано независимо — PASS.
 
 ## Project Structure
 

@@ -32,7 +32,7 @@
 
 ## Phase 5: User Story 3 - UI, reference and Bar regression (Priority: P2)
 
-**Independent Test**: plans expose three distinct contracts, Bar remains confirmed, both Box results remain provisional and read-only.
+**Independent Test**: plans expose three distinct confirmed read-only contracts and never assign Bar/Box a management action.
 
 - [X] T013 [US3] Add frontend capability entries in `app.js`
 - [X] T014 [US3] Update centralized help and analytic rules in `product-catalog.js`
@@ -42,7 +42,7 @@
 
 - [X] T016 Run all commands in `specs/025-huawei-box-polling/quickstart.md`
 - [X] T017 Scan tracked/untracked changes for credentials, private IPs and runtime artifacts
-- [X] T018 Mark the feature complete while preserving Box 310/610 provisional status in `specs/025-huawei-box-polling/spec.md`
+- [X] T018 Mark the feature complete, then record independent user validation of Box 310 and Box 610 in `specs/025-huawei-box-polling/spec.md`
 
 ## Dependencies & Execution Order
 

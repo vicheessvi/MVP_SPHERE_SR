@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-20
 
-**Status**: Complete — implementation ready; Box 310/610 evidence remains provisional until user validation
+**Status**: Complete — Box 310 and Box 610 independently confirmed by user validation
 
 **Input**: User description: "Сделать отдельные контракты на Bar 310, Box 310 и Box 610, чтобы затем проверить Box-модели на рабочем компьютере."
 
@@ -20,7 +20,7 @@
 
 **Acceptance Scenarios**:
 
-1. **Given** план содержит Huawei Box 310 и устройство до входа объявляет exact Box 310 с полным набором признаков web-контракта, **When** одна пара credentials принимается и обязательные read-only ресурсы имеют ожидаемую схему, **Then** формируется результат с контрактом Box 310 и пометкой предварительной эксплуатационной проверки.
+1. **Given** план содержит Huawei Box 310 и устройство до входа объявляет exact Box 310 с полным набором признаков web-контракта, **When** одна пара credentials принимается и обязательные read-only ресурсы имеют ожидаемую схему, **Then** формируется результат с отдельным подтверждённым контрактом Box 310.
 2. **Given** IP фактически принадлежит Bar 310, Box 610 или неизвестному устройству, **When** запускается контракт Box 310, **Then** он останавливается до отправки credentials.
 
 ---
@@ -72,7 +72,7 @@
 - **FR-005**: Каждый Box-контракт MUST повторно проверять точную модель и устойчивую identity после входа.
 - **FR-006**: Box-контракты MUST выполнять только подтверждаемые GET-only операции чтения; write-задачи, перезагрузка и закрытие портов исключены.
 - **FR-007**: Box-контракты MUST перебирать credentials сверху вниз, хранить cookie/token только в памяти задания и очищать их во всех terminal paths.
-- **FR-008**: Результат Box MUST быть совместим с существующими блоками `Device Info`, `Firmware`, `Device Status`, `LAN Settings`, `Capabilities` и явно содержать provisional evidence status до пользовательской проверки.
+- **FR-008**: Результат Box MUST быть совместим с существующими блоками `Device Info`, `Firmware`, `Device Status`, `LAN Settings`, `Capabilities` и после отдельной пользовательской проверки каждой модели содержать `confirmed_user_validation`.
 - **FR-009**: Каталог и интерфейс MUST выбирать Box 310 и Box 610 раньше общего Huawei fallback и не смешивать transports моделей.
 - **FR-010**: Несовпадение bundle/model/schema MUST завершаться безопасным кодом без credentials, токена, cookie, raw headers или raw body в результате.
 - **FR-011**: Реальные IP, credentials, MAC, serial и runtime JSON MUST NOT попадать в repository, тесты или документацию.
@@ -92,11 +92,11 @@
 - **SC-002**: Box 310 и Box 610 получают разные contract IDs и разные manifest keys во всех Python/JavaScript resolvers.
 - **SC-003**: 100% результатов и ошибок не содержат synthetic secrets, cookie или access token.
 - **SC-004**: Существующая полная матрица Bar 310 и проекта проходит без регрессии.
-- **SC-005**: Пользователь может запустить каждый Box-контракт на рабочем компьютере и получить либо совместимый provisional JSON, либо безопасный объяснимый отказ.
+- **SC-005**: Пользователь успешно запустил оба Box-контракта на рабочем компьютере; последующие несовместимые firmware/schema по-прежнему должны давать безопасный объяснимый отказ.
 
 ## Assumptions
 
 - Официальное руководство Huawei подтверждает общую API-семью Box 310, Box 610 и Bar 310, но не доказывает, что установленная firmware Box использует тот же внутренний `/v1` web-flow.
-- Первый выпуск Box-контрактов является guarded/provisional и не считается эксплуатационно подтверждённым до пользовательского запуска.
+- Первый выпуск Box-контрактов был guarded/provisional; пользовательские запуски отдельно подтвердили Box 310 и Box 610.
 - Поддерживаются только exact `Box 310` и `Box 610`; варианты `-S`, `-C`, `-K` остаются вне scope.
 - Прямой `index.html` не выполняет сетевой опрос; проверка запускается через Python runtime.

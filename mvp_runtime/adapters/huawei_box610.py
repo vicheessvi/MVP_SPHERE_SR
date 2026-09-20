@@ -14,7 +14,7 @@ BOX610_CONTRACT = {
     "contract_id": CONTRACT_ID,
     "contract_model": CONTRACT_MODEL,
     "plan_models": SUPPORTED_PLAN_MODELS,
-    "evidence_status": "provisional_user_validation",
+    "evidence_status": "confirmed_user_validation",
     "evidence_label": "Huawei Box 610 exact pre-auth model and compatible v1 resource markers found",
 }
 

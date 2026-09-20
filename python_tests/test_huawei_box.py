@@ -63,7 +63,7 @@ def family_request(calls, model: str):
 
 
 class HuaweiBoxContractTests(unittest.TestCase):
-    def test_box_contracts_are_separate_and_provisional(self):
+    def test_box_contracts_are_separate_and_confirmed(self):
         cases = (
             (poll_huawei_box310_device, "CloudLink Box 310", "Box 310", "huawei-box310-rest-v1"),
             (poll_huawei_box610_device, "CloudLink Box 610", "Box 610", "huawei-box610-rest-v1"),
@@ -78,7 +78,7 @@ class HuaweiBoxContractTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["vendorPolling"]["contract"], contract)
             self.assertEqual(result["vendorPolling"]["model"], device_model)
-            self.assertEqual(result["vendorPolling"]["evidenceStatus"], "provisional_user_validation")
+            self.assertEqual(result["vendorPolling"]["evidenceStatus"], "confirmed_user_validation")
             self.assertEqual(result["webBlocks"]["Device Info"]["Model"], device_model)
             encoded = json.dumps(result)
             self.assertNotIn("SYNTHETIC-PASSWORD", encoded)

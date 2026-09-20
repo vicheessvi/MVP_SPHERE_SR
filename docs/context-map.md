@@ -2,7 +2,7 @@
 
 ## Текущая feature 025
 
-- Спецификация, отдельные provisional-контракты Box 310/610 и задачи: `specs/025-huawei-box-polling/`.
+- Спецификация, отдельные подтверждённые контракты Box 310/610 и задачи: `specs/025-huawei-box-polling/`.
 - Общий guarded core и подтверждённый Bar 310 contract: `mvp_runtime/adapters/huawei_bar310.py`.
 - Отдельные Box wrappers: `mvp_runtime/adapters/huawei_box310.py`, `mvp_runtime/adapters/huawei_box610.py`.
 - Catalog/routing: `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `app.js`.
@@ -111,7 +111,7 @@
 - `START_MVP_SPHERE_SR.py` — полный режим; прямой `index.html` — ручной режим.
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
-- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1 web-CGI contract Huawei TE20, общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60 и отдельный read-only HTTPS contract Huawei Bar 310. Box 310 и Box 610 имеют два самостоятельных guarded provisional-контракта для пользовательской проверки; варианты Box с суффиксами и остальные vendor/model adapters — `protocol_required`.
+- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1 web-CGI contract Huawei TE20, общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60 и три отдельных read-only HTTPS contract Huawei Bar 310, Box 310 и Box 610. Все три `/v1`-модели подтверждены пользовательскими эксплуатационными опросами; варианты Box с суффиксами и остальные vendor/model adapters — `protocol_required`.
 - Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE20/TE30/TE40/TE50/TE60 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Реальная write-проверка выполнена на TE20 и TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. Достаточно подтверждённо изменить значения HTTP/Telnet в меню кодека; TCP listener не влияет на статус отчёта.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 

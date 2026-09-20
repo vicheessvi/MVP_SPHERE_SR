@@ -4,7 +4,7 @@
 
 **Decision**: Keep `huawei_bar310_rest_v1` unchanged externally and add `huawei_box310_rest_v1` plus `huawei_box610_rest_v1`. Share only bounded request/session/projection code.
 
-**Rationale**: Huawei publishes a combined “Box 310, Box 610, and Bar 310 HTTP API Reference Guide” and shared upgrade/license/operation documentation, which supports a common family hypothesis. Only Bar 310 has been observed on a real device, so identity/evidence status must remain model-specific.
+**Rationale**: Huawei publishes a combined “Box 310, Box 610, and Bar 310 HTTP API Reference Guide” and shared upgrade/license/operation documentation, which supports a common family hypothesis. Bar 310, Box 310 and Box 610 have now each been observed through a successful user-controlled poll, while identity/evidence remains model-specific.
 
 **Alternatives considered**: One three-model contract was rejected because success on one model would obscure evidence provenance. Full code duplication was rejected because it would cause security drift.
 
@@ -16,7 +16,7 @@
 
 ## Decision 3 — Provisional result marking
 
-**Decision**: Successful Box results carry `vendorPolling.evidenceStatus = provisional_user_validation`; Bar continues with `confirmed_user_validation`.
+**Decision**: The initial Box results carried `provisional_user_validation`. After separate successful working-computer polls of Box 310 and Box 610, both exact contracts now carry `confirmed_user_validation`, independently of Bar and of each other.
 
 **Rationale**: This permits the user-requested field test without presenting synthetic compatibility as already proven.
 
