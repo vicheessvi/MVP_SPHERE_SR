@@ -1,6 +1,13 @@
 # Карта контекста
 
-## Текущая feature 023
+## Текущая feature 024
+
+- Спецификация, Bar 310 HTTPS-контракт и задачи: `specs/024-huawei-bar310-polling/`.
+- Отдельный read-only adapter: `mvp_runtime/adapters/huawei_bar310.py`.
+- Catalog/routing: `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `app.js`.
+- Архитектурное решение: `docs/decisions/ADR-0024-huawei-bar310-polling.md`.
+
+## Feature 023
 
 - Спецификация, TE20 write-contract и задачи: `specs/023-huawei-te20-port-closure/`.
 - Guarded read/minimal-write/re-read: `mvp_runtime/adapters/huawei_te40.py`.

@@ -308,10 +308,11 @@
     assertEqual(panel.transport, "extron_web_dynamic_resources_v1");
   });
 
-  test("Huawei TE20 использует отдельный transport, а TE30, TE40, TE50 и TE60 общий", () => {
+  test("Huawei TE20, TE-family и Bar 310 используют отдельные подтверждённые transport", () => {
     const supported = ["TE30", "TE40", "TE50", "TE60"].map((modelRaw) => api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw }));
     const te20 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE20" });
     const tx50 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TX50" });
+    const bar310Aliases = ["Bar 310", "CloudLink Bar 310", "CloudLinc Bar 310"].map((modelRaw) => api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw }));
     supported.forEach((item) => {
       assertEqual(item.support, "implemented");
       assertEqual(item.transport, "huawei_te_web_cgi_v1");
@@ -323,6 +324,12 @@
     assertEqual(te20.transport, "huawei_te20_web_cgi_v1");
     assertEqual(te20.managementTasks.join(","), "disable_insecure_management_services");
     assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === "te20").length, 2);
+    bar310Aliases.forEach((item) => {
+      assertEqual(item.support, "implemented");
+      assertEqual(item.transport, "huawei_bar310_rest_v1");
+      assertEqual((item.managementTasks || []).length, 0);
+      assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === item.modelNormalized).length, 2);
+    });
     assertEqual(tx50.support, "not_implemented");
     assertEqual(tx50.transport, null);
     const fileMode = api.resolveLaunchMode({ protocol: "file:", fileMarker: true });
@@ -330,11 +337,12 @@
     assertEqual(fileMode.credentialsAvailable, false);
   });
 
-  test("Runtime catalog выбирает TE20 и общий Huawei TE-family раньше закрытого fallback", () => {
+  test("Runtime catalog выбирает TE20, TE-family и Bar 310 раньше закрытого fallback", () => {
     if (!runtimeModelCatalog) return;
     const supported = ["TE30", "TE40", "TE50", "TE60"].map((model) => runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model }));
     const te20 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "TE20" });
     const tx50 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "TX50" });
+    const bar310 = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "Bar 310" });
     const unknown = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: "Unknown Huawei" });
     supported.forEach((item) => {
       assertEqual(item.key, "vcs/huawei/te-family");
@@ -346,6 +354,9 @@
     const te20Action = runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "TE20" }, "disable_insecure_management_services");
     assert(te20Action.supported);
     assertEqual(te20Action.transport, "huawei_te20_web_cgi_v1");
+    assertEqual(bar310.key, "vcs/huawei/bar310");
+    assertEqual(bar310.transport, "huawei_bar310_rest_v1");
+    assert(!runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "Bar 310" }, "disable_insecure_management_services").supported);
     assertEqual(tx50.key, "vcs/huawei");
     assertEqual(tx50.transport, null);
     assertEqual(unknown.key, "vcs/huawei");

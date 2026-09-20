@@ -9,6 +9,7 @@ from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError
 SUPPORTED = {"category": "controller", "manufacturer": "Extron", "model": "IPCP Pro 250", "pollingSupported": True}
 HUAWEI_MODELS = tuple({"category": "vcs", "manufacturer": "Huawei", "model": model, "pollingSupported": True} for model in ("TE30", "TE40", "TE50", "TE60"))
 HUAWEI_TE20 = {"category": "vcs", "manufacturer": "Huawei", "model": "TE20", "pollingSupported": True}
+HUAWEI_BAR310 = {"category": "vcs", "manufacturer": "Huawei", "model": "Bar 310", "pollingSupported": True}
 
 
 class PollingTests(unittest.TestCase):
@@ -82,6 +83,7 @@ class PollingTests(unittest.TestCase):
                 {**HUAWEI_MODELS[1], "ip": "192.0.2.40"},
                 {**SUPPORTED, "ip": "192.0.2.41"},
                 {**HUAWEI_TE20, "ip": "192.0.2.42"},
+                {**HUAWEI_BAR310, "ip": "192.0.2.44"},
                 {"category": "vcs", "manufacturer": "Huawei", "model": "TX50", "ip": "192.0.2.43"},
             ]
         }
@@ -91,14 +93,15 @@ class PollingTests(unittest.TestCase):
             "adapters": {
                 "huawei_te_web_cgi_v1": adapter("huawei"),
                 "huawei_te20_web_cgi_v1": adapter("huawei-te20"),
+                "huawei_bar310_rest_v1": adapter("huawei-bar310"),
                 "extron_web_dynamic_resources_v1": adapter("extron"),
             },
         })
-        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41"), ("huawei-te20", "192.0.2.42")])
-        self.assertEqual([item["ip"] for item in results], ["192.0.2.40", "192.0.2.41", "192.0.2.42", "192.0.2.43"])
-        self.assertTrue(results[2]["ok"])
-        self.assertFalse(results[3]["networkAttempted"])
-        self.assertEqual(results[3]["vendorPolling"]["status"], "protocol_required")
+        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41"), ("huawei-te20", "192.0.2.42"), ("huawei-bar310", "192.0.2.44")])
+        self.assertEqual([item["ip"] for item in results], ["192.0.2.40", "192.0.2.41", "192.0.2.42", "192.0.2.44", "192.0.2.43"])
+        self.assertTrue(results[3]["ok"])
+        self.assertFalse(results[4]["networkAttempted"])
+        self.assertEqual(results[4]["vendorPolling"]["status"], "protocol_required")
 
     def test_management_task_reaches_exact_te_models_through_their_own_transports(self) -> None:
         observed = []

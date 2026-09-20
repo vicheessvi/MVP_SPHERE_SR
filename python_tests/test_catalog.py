@@ -49,6 +49,22 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(fallback["protocolStatus"], "protocol_required")
             self.assertIsNone(fallback["transport"])
 
+    def test_huawei_bar310_has_separate_exact_read_only_manifest(self) -> None:
+        for model in ("Bar 310", "CloudLink Bar 310", "CloudLinc Bar 310"):
+            supported = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": model})
+            self.assertEqual(supported["key"], "vcs/huawei/bar310")
+            self.assertEqual(supported["transport"], "huawei_bar310_rest_v1")
+            self.assertEqual(supported["protocolStatus"], "supported")
+            self.assertTrue(supported["knownModel"])
+            self.assertFalse(resolve_management_action(
+                {"category": "vcs", "manufacturer": "Huawei", "model": model},
+                "disable_insecure_management_services",
+            )["supported"])
+
+        fallback = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "CloudLinc Bar 300"})
+        self.assertEqual(fallback["key"], "vcs/huawei")
+        self.assertEqual(fallback["protocolStatus"], "protocol_required")
+
     def test_management_action_is_exact_te_models_only(self) -> None:
         for model in ("TE20", "TE30", "TE40", "TE50", "TE60"):
             supported = resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": model}, "disable_insecure_management_services")

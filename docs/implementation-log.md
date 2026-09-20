@@ -914,3 +914,13 @@ Production routing plan v3 повторно проверен на реально
 Эксплуатационная проверка выявила модельное различие: прежний TE20 payload `enabletelnet=0`, `enable_http=1` отключал Telnet, но оставлял HTTP включённым в меню кодека. Для exact TE20 безопасная цель HTTP изменена на `enable_http=0`; TE30/TE40/TE50/TE60 продолжают использовать подтверждённое для их firmware значение `enable_http=1`.
 
 Адаптер теперь выбирает целевые значения и трактует post-read по exact-модели, формирует payload из этого закрытого model map и не объявляет успех до повторного чтения обоих модельных значений. Остальные параметры, список целей, opt-in, identity/TLS/schema gates и защита учётных данных не изменены.
+
+## 2026-09-19 — Feature 024: автоматический опрос Huawei Bar 310
+
+Контролируемая read-only проверка реального Bar 310 показала, что модель не использует TE40 web-CGI контракт. До credentials `/v1/login/device` объявляет exact Bar 310; browser bundle задаёт отдельную последовательность session/account, `X-Access-Token` и session-change. Первая строка bounded XLSX-пула была принята. После входа подтверждены отдельные GET-ресурсы версии и identity, MAC/наработки, локального времени, лицензированных возможностей и состояния сна. Значения credentials, cookie, токен, адрес и реальные идентификаторы не сохранялись.
+
+Добавлен отдельный `huawei_bar310_rest_v1`: exact model gate и полный marker set проверяются до пароля, пары перебираются сверху вниз, успех требует post-auth `Bar 310` и SN/ESN либо валидный MAC. Пять GET-only ресурсов проецируются в совместимые `Device Info`, `Firmware`, `Device Status`, `LAN Settings` и `Capabilities`; завершение выполняет best-effort logout. HTTP fallback и конфигурационные записи отсутствуют, задача закрытия HTTP/Telnet намеренно не назначается Bar 310.
+
+Каталог поддерживает точные варианты `Bar 310`, `CloudLink Bar 310` и существующее SR-написание `CloudLinc Bar 310`; остальные Huawei Bar/Box остаются `protocol_required`. Решение описано в ADR-0024 и Full SpecKit feature `024-huawei-bar310-polling`. Commit и push не выполнялись.
+
+Финальная матрица прошла полностью: 55 Python-тестов, 157 JavaScript-тестов, Python compileall, JS syntax, reference validation и `git diff --check`. Проверка tracked/untracked изменений не обнаружила реальных credentials, адреса тестового устройства, пути к исходному XLSX или сохранённых runtime-артефактов. Контролируемый production acceptance завершился успешно через зарегистрированный transport: одна пара credentials была принята, пять разрешённых read-only ресурсов обработаны, обязательные группы результата сформированы, ошибок ресурсов и logout не было.

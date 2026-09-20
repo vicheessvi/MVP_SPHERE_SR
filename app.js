@@ -247,6 +247,16 @@
       normalizerKey: "huawei-te-json-v1",
       credentialMode: "memory_xlsx_pool",
       managementTasks: Object.freeze(["disable_insecure_management_services"])
+    })),
+    ...["bar 310", "cloudlink bar 310", "cloudlinc bar 310"].map((modelNormalized) => Object.freeze({
+      key: "vcs/huawei/bar310",
+      category: "vcs",
+      manufacturerNormalized: "huawei",
+      modelNormalized,
+      support: "implemented",
+      transport: "huawei_bar310_rest_v1",
+      normalizerKey: "huawei-bar310-json-v1",
+      credentialMode: "memory_xlsx_pool"
     }))
   ]);
 

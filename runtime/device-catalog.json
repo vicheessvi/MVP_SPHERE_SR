@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1"],
+  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_bar310_rest_v1"],
   "managementActions": [
     {
       "id": "disable_insecure_management_services",
@@ -35,11 +35,21 @@
       "credentialMode": "memory_xlsx_pool"
     },
     {
+      "key": "vcs/huawei/bar310",
+      "category": "vcs",
+      "manufacturer": "huawei",
+      "aliases": ["huawey"],
+      "models": ["Bar 310", "CloudLink Bar 310", "CloudLinc Bar 310"],
+      "protocolStatus": "supported",
+      "transport": "huawei_bar310_rest_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
+    {
       "key": "vcs/huawei",
       "category": "vcs",
       "manufacturer": "huawei",
       "aliases": ["huawey"],
-      "models": ["TX50", "CloudLinc Bar 310", "CloudLinc Bar 300", "CloudLinc Box 310", "CloudLinc Box 300", "CloudLinc Box 610", "CloudLinc Box 600"],
+      "models": ["TX50", "CloudLinc Bar 300", "CloudLinc Box 310", "CloudLinc Box 300", "CloudLinc Box 610", "CloudLinc Box 600"],
       "protocolStatus": "protocol_required",
       "transport": null,
       "credentialMode": "not_configured"
