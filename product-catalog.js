@@ -88,10 +88,38 @@
       keywords: ["главный экран", "дашборд", "показатели"]
     },
     {
-      route: "reboots", renderer: "reboots", title: "Перезагрузки устройств", order: 15, helpId: "module-reboots", contextHelp: true,
+      route: "reboots", renderer: "reboots", title: "Анализ перезагрузок устройств", order: 15, helpId: "module-reboots", contextHelp: true,
       summary: "Вычисляет перезагрузки Extron по дате устройства и uptime и показывает временные и территориальные закономерности.",
       details: "Правило extron-reboot-v2 для каждого точно сопоставленного файла вычисляет время запуска как Device Status.Date минус Device Status.Uptime. Одинаковые времена запуска объединяются с допуском пять секунд, а новое время запуска считается следующей перезагрузкой. IP берётся из сопоставленного устройства, локация и адрес — по актуальной SR. При неизвестном часовом поясе результат помечается как локальное время устройства; конфликтные данные не увеличивают счётчик.",
       keywords: ["перезагрузки", "uptime", "время безотказной работы", "аналитика", "события"]
+    },
+    {
+      route: "project-versions", renderer: "planned", title: "Анализ версий проектов", order: 16, helpId: "module-project-versions", contextHelp: true,
+      status: "in_development",
+      summary: "Раздел для анализа версий проектов устройств.",
+      details: "Модуль находится в разработке. Источники данных, правила сравнения версий и состав показателей будут определены отдельно.",
+      keywords: ["анализ", "версии", "проекты", "устройства"]
+    },
+    {
+      route: "firmware-versions", renderer: "planned", title: "Анализ версий прошивок", order: 17, helpId: "module-firmware-versions", contextHelp: true,
+      status: "in_development",
+      summary: "Раздел для анализа версий прошивок устройств.",
+      details: "Модуль находится в разработке. Источники данных, правила сравнения версий прошивок и состав показателей будут определены отдельно.",
+      keywords: ["анализ", "версии", "прошивки", "устройства", "firmware"]
+    },
+    {
+      route: "poll-sr-comparison", renderer: "planned", title: "Сравнение полей файлов опроса с значениями параметров выгрузки SR", order: 18, helpId: "module-poll-sr-comparison", contextHelp: true,
+      status: "in_development",
+      summary: "Раздел для сравнения полей файлов опроса со значениями параметров выгрузки SR.",
+      details: "Модуль находится в разработке. Сопоставляемые поля, правила сравнения и представление расхождений будут определены отдельно.",
+      keywords: ["сравнение", "поля", "файлы опроса", "параметры", "выгрузка", "sr", "расхождения"]
+    },
+    {
+      route: "connection-errors", renderer: "planned", title: "Ошибки при подключении", order: 19, helpId: "module-connection-errors", contextHelp: true,
+      status: "in_development",
+      summary: "Раздел для анализа ошибок при подключении к устройствам.",
+      details: "Модуль находится в разработке. Источники данных, правила классификации ошибок и состав показателей будут определены отдельно.",
+      keywords: ["ошибки", "подключение", "устройства", "сеть", "авторизация"]
     },
     {
       route: "equipment", renderer: "equipment", title: "Оборудование", order: 20, helpId: "module-equipment", contextHelp: true,
@@ -121,6 +149,7 @@
   ]);
 
   const UI_TERMS = deepFreeze({
+    moduleStatuses: { in_development: "В разработке" },
     categories: Object.fromEntries(EQUIPMENT_CATEGORY_CATALOG.map((item) => [item.id, item.title])),
     pollStatuses: {
       success: "Успешно", SUCCESS: "Успешно", completed: "Успешно", processed: "Успешно",
@@ -185,7 +214,7 @@
   function buildModuleHelpSection(modules) {
     return deepFreeze({
       id: "modules", title: "2. Модули инструмента", description: "Что показывает каждый доступный модуль и откуда берутся его данные.",
-      entries: orderedModules(modules).map((item) => ({ id: item.helpId, title: item.title, summary: item.summary, details: item.details, keywords: [...item.keywords] }))
+      entries: orderedModules(modules).map((item) => ({ id: item.helpId, title: item.title, summary: item.summary, details: item.details, keywords: [...item.keywords], ...(item.status ? { status: item.status } : {}) }))
     });
   }
 
@@ -223,7 +252,7 @@
     const terms = input.uiTerms || UI_TERMS;
     const statusDescriptors = input.statusDescriptors || STATUS_DESCRIPTORS;
     const pollingHelpEntries = input.pollingHelpEntries || POLLING_HELP_ENTRIES;
-    const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "reboots", "equipment", "inventory", "upload", "settings", "reference"]);
+    const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "reboots", "planned", "equipment", "inventory", "upload", "settings", "reference"]);
     const errors = [];
     const russian = /[А-Яа-яЁё]/;
 

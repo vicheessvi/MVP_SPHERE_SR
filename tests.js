@@ -2284,7 +2284,7 @@
 
   test("Модуль перезагрузок расположен между Главным экраном и Оборудованием", () => {
     const topRoutes = api.PRODUCT_CATALOG.buildNavigation(api.MODULE_CATALOG).map((item) => item.route);
-    assertEqual(topRoutes.slice(0, 3).join(","), "dashboard,reboots,equipment");
+    assertEqual(topRoutes.slice(0, 7).join(","), "dashboard,reboots,project-versions,firmware-versions,poll-sr-comparison,connection-errors,equipment");
   });
 
   test("Uptime извлекается только из поддерживаемого числа или строгой строки", () => {

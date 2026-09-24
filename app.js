@@ -5174,9 +5174,14 @@
     if (descriptor.renderer === "settings") return renderSettings(user);
     if (descriptor.renderer === "upload") return renderUpload();
     if (descriptor.renderer === "reboots") return renderReboots();
+    if (descriptor.renderer === "planned") return renderPlannedModule(descriptor);
     if (descriptor.renderer === "equipment") return renderEquipmentOverview();
     if (descriptor.renderer === "inventory") return renderInventoryRoute(descriptor.route);
     return renderDashboard();
+  }
+
+  function renderPlannedModule(descriptor) {
+    return `<header class="page-header"><div><h1>${escapeHtml(descriptor.title)}</h1><p class="page-subtitle">${escapeHtml(descriptor.summary)}</p></div><button class="button secondary" type="button" data-help-topic="${escapeHtml(descriptor.helpId)}">О модуле</button></header><section class="card"><span class="badge warning">${escapeHtml(UI_TERMS.moduleStatuses[descriptor.status])}</span><p>${escapeHtml(descriptor.details)}</p></section>`;
   }
 
   function navButton(route, label) {
@@ -5249,7 +5254,7 @@
         ${renderDistribution("По моделям", summary.distributions.models, summary.inventory.total)}
         ${renderDistribution("По категориям", summary.distributions.categories, summary.inventory.total)}
       </div>
-      <section class="card section-gap blocked-analytics"><h2>Дополнительная аналитика</h2><div class="blocked-grid"><div><strong>Авторизация</strong><span>Недостаточно данных</span></div><div><strong>Перезагрузки устройств</strong><span>Доступны в отдельном модуле</span><button class="text-button" type="button" data-route="reboots">Открыть аналитику</button></div><div><strong>GCPlus</strong><span>Требует уточнения</span></div><div><strong>Актуальность данных</strong><span>Порог не настроен</span></div></div></section>`;
+      <section class="card section-gap blocked-analytics"><h2>Дополнительная аналитика</h2><div class="blocked-grid"><div><strong>Авторизация</strong><span>Недостаточно данных</span></div><div><strong>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "reboots").title)}</strong><span>Доступны в отдельном модуле</span><button class="text-button" type="button" data-route="reboots">Открыть аналитику</button></div><div><strong>GCPlus</strong><span>Требует уточнения</span></div><div><strong>Актуальность данных</strong><span>Порог не настроен</span></div></div></section>`;
   }
 
   function renderRebootFilters(filters, analytics) {
@@ -5300,7 +5305,7 @@
 
   function renderReboots() {
     const analytics = getRebootAnalytics(state, ui.rebootFilters);
-    const header = `<header class="page-header reboot-header"><div><p class="eyebrow">Эксплуатационная аналитика</p><h1>Перезагрузки устройств</h1><p class="page-subtitle">Для каждого файла Extron время перезагрузки рассчитывается как Device Status.Date минус Device Status.Uptime. Повторные файлы с тем же временем запуска объединяются.</p></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
+    const header = `<header class="page-header reboot-header"><div><p class="eyebrow">Эксплуатационная аналитика</p><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "reboots").title)}</h1><p class="page-subtitle">Для каждого файла Extron время перезагрузки рассчитывается как Device Status.Date минус Device Status.Uptime. Повторные файлы с тем же временем запуска объединяются.</p></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
     const filters = renderRebootFilters(ui.rebootFilters, analytics);
     if (!analytics.valid) return `${header}${filters}<div class="error-panel section-gap" role="alert">${escapeHtml(analytics.errors.join("; "))}</div>`;
     const empty = analytics.emptyState ? `<div class="${analytics.emptyState === "no_events" ? "success" : "info"}-panel section-gap"><strong>${escapeHtml(rebootEmptyMessage(analytics.emptyState))}</strong></div>` : "";
