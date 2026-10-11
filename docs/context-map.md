@@ -83,7 +83,7 @@
 - Спецификация, план, задачи и контракты: `specs/014-python-runtime-migration/`.
 - Пользовательский запуск: `START_MVP_SPHERE_SR.py`, `mvp_runtime/launcher.py`.
 - Loopback session и browser API: `mvp_runtime/server.py`.
-- XLSX credentials и redaction: `mvp_runtime/credentials.py`, `mvp_runtime/redaction.py`, `runtime/credential-pool.js`.
+- Ручной ввод учётных данных, проверка и redaction: `app.js`, `mvp_runtime/server.py`, `mvp_runtime/credentials.py`, `mvp_runtime/redaction.py`; прежний XLSX parser сохранён для совместимости.
 - План, exact-IP allowlist, job и ACK: `mvp_runtime/polling.py`, `mvp_runtime/polling_job.py`.
 - Подтверждённый Extron adapter: `mvp_runtime/adapters/extron.py`.
 - Общий Huawei TE30/TE40/TE50/TE60 adapter: `mvp_runtime/adapters/huawei_te40.py`.

@@ -2073,8 +2073,8 @@
     if (!scheduledAt) errors.push("Дата и время начала опроса обязательны");
     const intervalSeconds = Number(input.intervalSeconds);
     if (!Number.isInteger(intervalSeconds) || intervalSeconds < 0 || !Number.isFinite(intervalSeconds)) errors.push("Интервал должен быть целым числом секунд от 0");
-    if (!input.credentialsReady) errors.push("Загрузите файл «Учётные данные оборудования» в модуле «Загрузка»");
-    if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить выбранный файл учётных данных");
+    if (!input.credentialsReady) errors.push("Введите учётные данные оборудования в модуле «Загрузка»");
+    if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить введённые учётные данные");
     if (!projection.supportedDevices.length) errors.push("Среди выбранных устройств нет оборудования с поддерживаемым автоматическим опросом");
     const managementTasks = input.disableInsecureManagementServices === true ? [MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES] : [];
     if (managementTasks.length && !projection.managementEligibleDevices.length) errors.push("Среди выбранных устройств нет Huawei TE20, TE30, TE40, TE50 или TE60 с поддержкой закрытия HTTP и Telnet");
@@ -4977,7 +4977,7 @@
   }
 
   function automaticPollingErrorMessage(code) {
-    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Повторно загрузите XLSX с учётными данными.", credential_file_invalid: "Файл учётных данных не принят локальным исполнителем.", credential_sha_mismatch: "Файл учётных данных изменился после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить очередной JSON. Опрос остановлен.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
+    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Введите учётные данные перед запуском опроса.", credential_file_invalid: "Учётные данные не приняты локальным исполнителем.", credential_sha_mismatch: "Учётные данные изменились после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить очередной JSON. Опрос остановлен.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
   }
 
   async function monitorAutomaticPolling(jobId, monitorToken) {
@@ -5029,26 +5029,10 @@
   async function startAutomaticPolling(planId, allowInsecureTls) {
     if (launchMode.kind !== "local") throw Object.assign(new Error("runtime_required"), { safeCode: "runtime_required" });
     if (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
-    if (!credentialPoolSession?.file) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
+    if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
     const exported = buildPollingPlanExport(state, planId);
     if (!exported.ok) throw Object.assign(new Error("plan_invalid"), { safeCode: "plan_invalid" });
-    const credentialBytes = await readFileArrayBuffer(credentialPoolSession.file);
-    let credentialsUploaded = false;
-    let started;
-    try {
-      const credentialResponse = await runtimeRequest("/api/polling/credentials", { method: "POST", headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-File-Name": encodeURIComponent(credentialPoolSession.file.name) }, body: credentialBytes });
-      credentialsUploaded = true;
-      if (credentialResponse.sourceSha256 !== credentialPoolSession.sourceSha256) throw Object.assign(new Error("credential_sha_mismatch"), { safeCode: "credential_sha_mismatch" });
-      started = await runtimeRequest("/api/polling/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId, plan: exported.payload, allowInsecureTls: allowInsecureTls === true }) });
-      credentialsUploaded = false;
-    } catch (error) {
-      if (credentialsUploaded) {
-        try { await runtimeRequest("/api/polling/credentials", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch { /* runtime may already have cleared the pool */ }
-      }
-      throw error;
-    } finally {
-      new Uint8Array(credentialBytes).fill(0);
-    }
+    const started = await runtimeRequest("/api/polling/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId, plan: exported.payload, allowInsecureTls: allowInsecureTls === true }) });
     ui.automaticPolling = { jobId: started.jobId, status: started.status, total: exported.payload.devices.length, processed: 0, successful: 0, failed: 0, unsupported: 0, allowInsecureTls: allowInsecureTls === true };
     const monitorToken = Symbol("automatic-polling-monitor");
     automaticPollingMonitor = monitorToken;
@@ -5137,7 +5121,7 @@
           <h1 id="login-title">MVP_SPHERE_SR</h1>
           <p class="page-subtitle">Локальный сеанс Администратора МЦТП</p>
           ${renderMessage()}
-          <p class="muted">Учётные данные оборудования на этом экране не принимаются. Они загружаются отдельным XLSX только перед автоматическим опросом.</p>
+          <p class="muted">Учётные данные вводятся в модуле «Загрузка» перед автоматическим опросом и действуют только в текущем сеансе.</p>
           <div class="button-row"><button class="button primary" type="button" data-start-local-session>Продолжить</button></div>
         </section>
       </main>`;
@@ -5495,7 +5479,7 @@
     return `<header class="page-header"><div><button class="text-button" type="button" data-back-inventory="${route}">← К списку</button><h1>${escapeHtml(device.nameRaw || device.modelRaw || "Устройство")}</h1><p class="page-subtitle">${escapeHtml(location?.name || "Без локации")} · ${escapeHtml(device.ipNormalized || "IP не задан")}</p></div><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Не в актуальной SR" : "В актуальной SR"}</span></header>
       <div class="detail-grid"><section class="card"><h2>Карточка SR</h2><dl class="definition-list">
         <div><dt>Производитель / модель</dt><dd>${escapeHtml(device.manufacturerRaw || "—")} / ${escapeHtml(device.modelRaw || "—")}</dd></div><div><dt>IP / MAC</dt><dd>${escapeHtml(device.ipNormalized || "—")} / ${escapeHtml(device.macNormalized || device.macRaw || "—")}</dd></div><div><dt>SIP URI / домен</dt><dd>${escapeHtml(device.sipUri || "—")} / ${escapeHtml(device.domain || location?.domain || "—")}</dd></div><div><dt>Инвентарный / серийный</dt><dd>${escapeHtml(device.inventoryNumber || "—")} / ${escapeHtml(device.serialNumber || "—")}</dd></div>
-      </dl></section><section class="card"><h2>Поддержка автоматического опроса</h2><span class="badge ${pollingSupported ? "success" : "warning"}">${escapeHtml(formatCapabilityStatus(capability.support))}</span><p>Механизм опроса: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">${pollingSupported ? "Устройство можно включить в JSON-план для отдельного локального polling-скрипта. Логины и пароли загружаются в скрипт из Excel и не попадают в страницу." : "Подтверждённый протокол подключения отсутствует; сетевой опрос не выполняется. Учётные данные хранятся отдельно."}</p>${pollingSupported ? `<button class="button secondary" type="button" data-route="upload">Сформировать план в модуле «Загрузка»</button>` : `<button class="button secondary" type="button" disabled>Опрос недоступен</button>`}</section></div>
+      </dl></section><section class="card"><h2>Поддержка автоматического опроса</h2><span class="badge ${pollingSupported ? "success" : "warning"}">${escapeHtml(formatCapabilityStatus(capability.support))}</span><p>Механизм опроса: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">${pollingSupported ? "Устройство можно включить в JSON-план для отдельного локального polling-скрипта. Учётные данные вводятся в модуле «Загрузка» и передаются локальному исполнителю на время задания." : "Подтверждённый протокол подключения отсутствует; сетевой опрос не выполняется. Учётные данные хранятся отдельно."}</p>${pollingSupported ? `<button class="button secondary" type="button" data-route="upload">Сформировать план в модуле «Загрузка»</button>` : `<button class="button secondary" type="button" disabled>Опрос недоступен</button>`}</section></div>
       <section class="card section-gap"><h2>История опросов (${results.length})</h2><p class="muted">«Дата и время опроса» берётся из времени последнего изменения выбранного JSON-файла. Это не время создания файла и не время папки запуска.</p><ul class="result-list">${results.map((result) => `<li><div><strong>Дата и время опроса: ${escapeHtml(formatDateTime(result.capturedAt))}</strong><br><span class="muted">${result.capturedAtSource === "file_last_modified" ? "Время последнего изменения файла" : "Время файла недоступно"} · ${escapeHtml(result.filename)} · ${escapeHtml(formatCategoryLabel(result.detectedCategory))} · ${escapeHtml(formatPingStatus(result.pingStatus))}</span></div><span class="badge ${(result.operationalStatus || result.pollStatus) === "success" ? "success" : "critical"}">${escapeHtml(formatPollStatus(result.operationalStatus || result.pollStatus))}</span></li>`).join("") || "<li>Результатов пока нет</li>"}</ul></section>
       <section class="card section-gap"><h2>Обнаруженные изменения (${changes.length})</h2><ul class="result-list">${changes.slice(0, 200).map((change) => `<li><div><strong>${escapeHtml(change.parameterLabel || formatChangePath(change.path))}</strong><br><span class="muted">${escapeHtml(displayValue(change.oldValue))} → ${escapeHtml(displayValue(change.newValue))}</span></div><span class="badge info">Изменение</span></li>`).join("") || "<li>Изменений не выявлено</li>"}</ul></section>`;
   }
@@ -5725,33 +5709,28 @@
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     return `
-      <header class="page-header">
-        <div>
-          <h1>Импорт данных</h1>
-          <p class="page-subtitle">Загрузите выгрузку SR и результаты уже выполненных опросов. Все операции выполняются локально.</p>
-        </div>
-      </header>
-      <div class="card-grid section-gap">
+      <header class="page-header"><div><p class="eyebrow">Рабочее пространство</p><h1>Загрузка и опрос</h1><p class="page-subtitle">Подготовьте данные, затем сформируйте план опроса.</p></div></header>
+      <div class="upload-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR</h2>
-          <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file">Файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить выгрузку SR</button></form>
+          <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file" class="sr-only">Выберите XLSX-файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить SR</button></form>
           ${ui.srProgress ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(ui.srProgress.stage)}</span><strong>${ui.srProgress.processed || 0} из ${ui.srProgress.total || 0} строк</strong></div><strong>${srPercent}%</strong></div><progress max="100" value="${srPercent}">${srPercent}%</progress><p class="muted">Принято: ${ui.srProgress.accepted || 0} · отклонено: ${ui.srProgress.rejected || 0}</p></section>` : ""}
           ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
-        <section class="card upload-card"><h2>2. Общая папка результатов опросов</h2>
-          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files">Главная папка со всеми результатами</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
+        <section class="card upload-card upload-folder-card"><h2>2. Общая папка результатов опросов</h2>
+          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files" class="sr-only">Выберите общую папку результатов</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
           <div class="output-folder-picker section-gap"><div><strong>Папка для новых автоматических опросов</strong><p class="muted">${launchMode.kind === "local" ? (ui.pollingOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.pollingOutputFolderName)}` : "Выберите общую папку до формирования плана.") : "Автоматический опрос доступен после запуска START_MVP_SPHERE_SR.py."}</p></div><button class="button secondary" type="button" data-select-polling-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку</button></div>
-          ${pollingProgress ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="${ui.inventoryBusy ? "true" : "false"}">
+          ${pollingProgress && ui.inventoryBusy ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="true">
             <div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(pollingProgress.stage)}</span><strong>${pollingProgress.processed} из ${pollingProgress.total} JSON</strong></div><strong>${pollingPercent}%</strong></div>
             <div class="polling-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pollingPercent}"><span style="width:${pollingPercent}%"></span></div>
             <dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${pollingProgress.succeeded}</dd></div><div><dt>Ошибки</dt><dd>${pollingProgress.errors}</dd></div><div><dt>Дубликаты</dt><dd>${pollingProgress.duplicates}</dd></div><div><dt>Скорость</dt><dd>${Number(pollingProgress.filesPerSecond || 0).toFixed(1)} файл/с</dd></div><div><dt>Осталось</dt><dd>${escapeHtml(formatPollingEta(pollingProgress.etaSeconds))}</dd></div></dl>
             ${pollingProgress.currentRun ? `<p class="muted">Текущий запуск: <span class="mono">${escapeHtml(pollingProgress.currentRun)}</span></p>` : ""}
             ${ui.inventoryBusy ? `<button class="button danger" type="button" data-cancel-polling-import${ui.pollingCancelRequested ? " disabled" : ""}>${ui.pollingCancelRequested ? "Остановка…" : "Отменить загрузку"}</button>` : ""}
           </section>` : ""}
-          ${ui.pollingImportResults.length ? `<ul class="result-list section-gap">${ui.pollingImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
         <section class="card upload-card"><h2>3. Учётные данные оборудования</h2>
-          <form class="form-grid" data-credential-import-form><div class="field"><label for="credential-file">Файл учётных данных (.xlsx)</label><input id="credential-file" name="credentialFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit">Загрузить учётные данные</button></form>
-          ${ui.credentialSummary ? `<div class="safe-summary section-gap" aria-live="polite"><strong>Учётные данные загружены</strong><span>Доступно пар: ${ui.credentialSummary.acceptedCount}</span><span>Отклонено строк: ${ui.credentialSummary.rejectedCount}</span><span>Точных дублей: ${ui.credentialSummary.duplicateCount}</span></div>` : ""}
+          <p class="muted">Введите пары в порядке проверки. Они действуют только в текущем сеансе.</p>
+          <form data-credential-entry-form autocomplete="off"><div data-credential-rows class="credential-rows"><div class="credential-row"><label>Логин<input name="username" autocomplete="off" required maxlength="256"></label><label>Пароль<input name="password" type="password" autocomplete="new-password" required maxlength="1024"></label><button class="button secondary" type="button" data-remove-credential aria-label="Удалить пару">Удалить</button></div></div><div class="button-row section-gap"><button class="button secondary" type="button" data-add-credential>Добавить пару</button><button class="button primary" type="submit"${launchMode.kind !== "local" ? " disabled" : ""}>Передать для опроса</button>${ui.credentialSummary ? `<button class="button secondary" type="button" data-clear-credentials>Очистить</button>` : ""}</div></form>
+          ${ui.credentialSummary ? `<p class="credential-ready" role="status">Готово пар: ${ui.credentialSummary.acceptedCount}. Данные будут удалены после опроса.</p>` : ""}
         </section>
       </div>
       <section class="card section-gap"><h2>4. План автоматического опроса</h2>
@@ -6012,6 +5991,31 @@
   }
 
   async function handleClick(event) {
+    if (event.target.closest("[data-add-credential]")) {
+      const rows = document.querySelector("[data-credential-rows]");
+      if (rows && rows.children.length < 10000) {
+        const row = rows.firstElementChild.cloneNode(true);
+        row.querySelectorAll("input").forEach((input) => { input.value = ""; });
+        rows.append(row);
+        row.querySelector("input")?.focus();
+      }
+      return;
+    }
+    if (event.target.closest("[data-remove-credential]")) {
+      const row = event.target.closest(".credential-row");
+      const rows = row?.parentElement;
+      if (rows?.children.length > 1) row.remove();
+      else row?.querySelectorAll("input").forEach((input) => { input.value = ""; });
+      return;
+    }
+    if (event.target.closest("[data-clear-credentials]")) {
+      try { await runtimeRequest("/api/polling/credentials", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch { /* session may have ended */ }
+      credentialPoolSession = null;
+      ui.credentialSummary = null;
+      ui.pollingPlanResult = null;
+      render();
+      return;
+    }
     const navigationAction = resolveNavigationAction(event.target);
     if (navigationAction?.type === "toggle_equipment") {
       const navigation = reduceNavigationState(ui, navigationAction);
@@ -6373,27 +6377,26 @@
       return;
     }
 
-    const credentialImportForm = event.target.closest("[data-credential-import-form]");
+    const credentialImportForm = event.target.closest("[data-credential-entry-form]");
     if (credentialImportForm) {
       event.preventDefault();
-      const file = credentialImportForm.elements.credentialFile?.files?.[0];
-      if (!file || !/\.xlsx$/i.test(file.name)) { setMessage("Выберите файл учётных данных в формате XLSX.", "error"); render(); return; }
-      let credentialBuffer = null;
+      if (launchMode.kind !== "local") { setMessage(automaticPollingErrorMessage("runtime_required"), "error"); render(); return; }
+      const pairs = Array.from(credentialImportForm.querySelectorAll(".credential-row"), (row) => ({ username: row.querySelector('[name="username"]')?.value.trim() || "", password: row.querySelector('[name="password"]')?.value || "" }));
+      const payload = JSON.stringify({ pairs });
       try {
-        credentialBuffer = await readFileArrayBuffer(file);
-        const parsed = CREDENTIAL_POOL.parseCredentialWorkbook(credentialBuffer, global.XLSX);
-        credentialPoolSession = { file, sourceSha256: await sha256Bytes(credentialBuffer) };
-        ui.credentialSummary = deepClone(parsed.summary);
+        const response = await runtimeRequest("/api/polling/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload });
+        credentialPoolSession = { sourceSha256: response.sourceSha256 };
+        ui.credentialSummary = { acceptedCount: response.summary.acceptedCount };
         ui.pollingPlanResult = null;
-        setMessage(`Учётные данные загружены. Доступно пар: ${parsed.summary.acceptedCount}; отклонено строк: ${parsed.summary.rejectedCount}; дублей: ${parsed.summary.duplicateCount}.`, "success");
+        setMessage(`Учётные данные готовы к опросу. Пар: ${response.summary.acceptedCount}.`, "success");
       } catch {
         credentialPoolSession = null;
         ui.credentialSummary = null;
-        setMessage("Файл учётных данных не принят. Проверьте формат XLSX и колонки «Логин» и «Пароль».", "error");
+        setMessage("Учётные данные не приняты. Проверьте пары и отсутствие повторов.", "error");
       } finally {
-        if (credentialBuffer) new Uint8Array(credentialBuffer).fill(0);
+        pairs.forEach((pair) => { pair.username = ""; pair.password = ""; });
+        credentialImportForm.querySelectorAll("input").forEach((input) => { input.value = ""; });
       }
-      credentialImportForm.reset();
       render();
       return;
     }
@@ -6410,7 +6413,7 @@
       ui.pollingPlanSelection.disableInsecureManagementServices = formData.get("disableInsecureManagementServices") === "on";
       if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
       if (!pollingOutputRootHandle) { setMessage("Сначала выберите общую папку для сохранения результатов.", "error"); render(); return; }
-      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [], managementTargetSourceSha256: managementTargetListSession?.sourceSha256 || "", credentialsReady: Boolean(credentialPoolSession?.file), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
+      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [], managementTargetSourceSha256: managementTargetListSession?.sourceSha256 || "", credentialsReady: Boolean(credentialPoolSession?.sourceSha256), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
       if (ui.pollingPlanSelection.disableInsecureManagementServices && !global.confirm(`Будут отключены HTTP (порт 80) и Telnet (порт 23) на точных моделях Huawei TE30, TE40, TE50 и TE60 после проверки контракта устройства. Поддерживается целей: ${result.plan.selectionSummary.managementEligible}; будет пропущено: ${result.plan.selectionSummary.managementSkipped}. Продолжить?`)) return;
       ui.pollingPlanResult = { ...result.plan.selectionSummary, planId: result.plan.id };
@@ -6419,6 +6422,8 @@
         await startAutomaticPolling(result.plan.id, ui.pollingPlanSelection.allowInsecureTls);
         setMessage("План сформирован и передан локальному исполнителю. Опрос запустится в указанное время.", "success");
       } catch (error) {
+        credentialPoolSession = null;
+        ui.credentialSummary = null;
         setMessage(automaticPollingErrorMessage(error.safeCode || "local_runtime_error"), "error");
         render();
       }
@@ -6710,10 +6715,6 @@
         onProgress: (progress) => updatePollingProgress(progress, progress.status !== "running")
       });
       if (!result.ok) {
-        ui.pollingImportResults = [
-          ...result.rejected.map((item) => ({ name: item.relativePath, ok: false, label: "failed", detail: item.reason })),
-          ...result.ignored.map((item) => ({ name: item.relativePath, ok: true, label: "unsupported", detail: "Файл проигнорирован: требуется JSON" }))
-        ];
         setMessage(result.errors.join("; "), "error");
         ui.inventoryBusy = false;
         ui.pollingCancelRequested = false;
@@ -6725,16 +6726,9 @@
       }
       state = result.state;
       pollingImportContextCache = result.context;
-      ui.pollingImportResults = [
-        ...result.folderResults.map((item) => ({ name: item.folderPath, ok: item.outcome !== "failed", label: item.outcome, detail: `JSON: ${item.importedCount} из ${item.fileCount}; ошибок: ${item.errorCount}; время опроса: ${formatDateTime(item.capturedAt)}` })),
-        ...result.folderResults.flatMap((item) => item.fileErrors.map((error) => ({ name: error.relativePath || error.name, ok: false, label: "failed", detail: error.reason }))),
-        ...result.rejected.map((item) => ({ name: item.relativePath, ok: false, label: "failed", detail: item.reason })),
-        ...result.ignored.map((item) => ({ name: item.relativePath, ok: true, label: "unsupported", detail: "Файл проигнорирован: требуется JSON" }))
-      ];
       if (result.cancelled) setMessage("Загрузка остановлена пользователем.", "warning");
       else setMessage(`Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.summary.processed}; успешно: ${result.summary.succeeded}; дубликатов: ${result.summary.duplicates}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`, result.outcome === "partial" ? "warning" : "success");
     } catch (error) {
-      ui.pollingImportResults.push({ name: "Главная папка результатов", ok: false, label: "failed", detail: "Не удалось завершить импорт. Проверьте доступ к файлам, структуру JSON и имена папок." });
       setMessage("Импорт результатов опросов не завершён. Прежние данные сохранены.", "error");
     }
     ui.inventoryBusy = false;

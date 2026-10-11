@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
 import json
 import threading
 import time
@@ -105,6 +106,20 @@ class ServerTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertNotIn("SYNTHETIC-SERVER-SECRET", body.decode())
         return payload["sourceSha256"]
+
+    def test_manual_credentials_are_ordered_redacted_and_cleared(self) -> None:
+        cookie, csrf = self.harness.session()
+        pairs = [{"username": "first", "password": "SYNTHETIC-FIRST-SECRET"}, {"username": "second", "password": "SYNTHETIC-SECOND-SECRET"}]
+        body = json.dumps({"pairs": pairs}).encode()
+        status, _, response = self.harness.request("POST", "/api/polling/credentials", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=body)
+        self.assertEqual(status, 200, response)
+        payload = json.loads(response)
+        self.assertEqual(payload["summary"]["acceptedCount"], 2)
+        self.assertNotIn("SYNTHETIC-FIRST-SECRET", response.decode())
+        self.assertEqual(payload["sourceSha256"], hashlib.sha256(body).hexdigest())
+        status, _, response = self.harness.request("POST", "/api/polling/credentials", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=json.dumps({"pairs": [pairs[0], pairs[0]]}).encode())
+        self.assertEqual(status, 400)
+        self.assertNotIn("SYNTHETIC-FIRST-SECRET", response.decode())
 
     def test_credential_plan_result_ack_and_terminal_clear_contract(self) -> None:
         cookie, csrf = self.harness.session()

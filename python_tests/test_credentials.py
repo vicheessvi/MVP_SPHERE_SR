@@ -4,11 +4,18 @@ import io
 import unittest
 import zipfile
 
-from mvp_runtime.credentials import CredentialFileError, parse_credential_rows, parse_credential_workbook
+from mvp_runtime.credentials import CredentialFileError, parse_credential_pairs, parse_credential_rows, parse_credential_workbook
 from python_tests.helpers import credential_xlsx
 
 
 class CredentialTests(unittest.TestCase):
+    def test_manual_pairs_keep_order_and_reject_invalid_entries(self) -> None:
+        parsed = parse_credential_pairs([{"username": " first ", "password": "one"}, {"username": "second", "password": "two"}])
+        self.assertEqual([item["username"] for item in parsed.credentials], ["first", "second"])
+        for invalid in ([], [{"username": "", "password": "x"}], [{"username": "a", "password": ""}], [{"username": "a", "password": "x"}, {"username": "a", "password": "x"}], [{"username": "a", "password": "x", "extra": "y"}]):
+            with self.assertRaises(CredentialFileError):
+                parse_credential_pairs(invalid)
+
     def test_rows_require_russian_headers_and_normalize_pool(self) -> None:
         parsed = parse_credential_rows([
             ["  Логин ", "Пароль"],

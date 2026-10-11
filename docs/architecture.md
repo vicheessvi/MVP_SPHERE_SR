@@ -14,7 +14,7 @@ START_MVP_SPHERE_SR.py
         |
         +-- Python ThreadingHTTPServer (127.0.0.1, random port)
         |       +-- one-time token -> HttpOnly session + CSRF
-        |       +-- XLSX -> bounded parser -> in-memory credential pool
+        |       +-- ручной ввод пар -> bounded validator -> in-memory credential pool
         |       +-- plan v3 -> immutable exact-IP allowlist + explicit management tasks
         |       +-- ping -> confirmed Python adapter -> redacted result
         |       +-- pending result <-> browser save ACK
@@ -41,7 +41,7 @@ index.html (file://) -> volatile browser state -> manual import/analytics only
 
 - `runtime-config.js` подтверждает статический ручной режим; Python-server динамически отдаёт marker/CSRF для полного режима.
 - `app.js` использует непостоянный memory adapter, загружает SR/дерево JSON, строит Dashboard/таблицы и сохраняет pending JSON через File System Access API.
-- `runtime/credential-pool.js` проверяет XLSX в браузере до передачи исходных bytes Python-runtime; пары не попадают в UI state.
+- Форма ввода передаёт пары через same-origin JSON в Python-runtime; поля очищаются сразу после передачи, пары не попадают в UI state.
 - `product-catalog.js` — единый browser/CommonJS-источник модулей, Справочника и русских presentation labels.
 - `runtime/device-catalog.json` — единый межъязыковой источник производителей, моделей и protocol status.
 
@@ -51,7 +51,7 @@ index.html (file://) -> volatile browser state -> manual import/analytics only
 - Начальный token используется один раз; cookie — `HttpOnly; SameSite=Strict`; mutation требует exact Origin и CSRF.
 - Статические пути и API заданы точным allowlist; traversal и неизвестные маршруты возвращают 404.
 - Browser state, folder handle, credential pool, session и jobs не сериализуются.
-- XLSX ограничен 10 MiB; ZIP/XML имеют отдельные limits. Secret-bearing планы отвергаются рекурсивно.
+- Ручной ввод ограничен 10 000 пар и размерами полей; legacy XLSX ограничен 10 MiB. Secret-bearing планы отвергаются рекурсивно.
 - Network target должен быть точным допустимым IPv4 из текущего плана. Похожий, исторический или отличающийся последним октетом IP не разрешается.
 - Extron, Huawei TE20/TE30/TE40/TE50/TE60, Bar 310, Box 310 и Box 610 используют HTTPS/443. Unverified TLS context создаётся только для текущего задания при явном согласии; HTTP fallback и глобальное отключение проверки отсутствуют. TE20 получает exact TLS 1.1 min/max и legacy cipher profile только внутри соединения этой модели; остальные Huawei используют системный TLS-профиль с локальным legacy-cipher разрешением только в unverified-сессии.
 - Каждый результат проходит redaction до browser API. Runtime ждёт успешной записи и только затем начинает интервал.

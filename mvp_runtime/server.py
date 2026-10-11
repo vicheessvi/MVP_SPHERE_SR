@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .catalog import CATALOG
-from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_workbook
+from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_pairs, parse_credential_workbook
 from .polling import normalize_ipv4
 from .polling_job import JobInputError, PollingJob, TERMINAL_STATUSES, create_polling_job
 from .redaction import PlanSecretError, assert_no_plan_secrets
@@ -243,8 +243,9 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
                 if session.active_job_id:
                     self._json(HTTPStatus.CONFLICT, {"ok": False, "error": "job_already_active"})
                     return True
+            manual = str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().casefold() == "application/json"
             filename = str(self.headers.get("X-File-Name") or "")
-            if not filename.casefold().endswith(".xlsx"):
+            if not manual and not filename.casefold().endswith(".xlsx"):
                 with self.server.state.lock:
                     session.clear_credentials()
                 self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "credential_file_invalid"})
@@ -256,8 +257,14 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
                     session.clear_credentials()
                 raise
             try:
-                parsed = parse_credential_workbook(body)
-            except CredentialFileError:
+                if manual:
+                    payload = json.loads(body)
+                    if not isinstance(payload, dict) or set(payload) != {"pairs"}:
+                        raise CredentialFileError("credential_pairs_invalid")
+                    parsed = parse_credential_pairs(payload["pairs"])
+                else:
+                    parsed = parse_credential_workbook(body)
+            except (CredentialFileError, ValueError, UnicodeDecodeError):
                 with self.server.state.lock:
                     session.clear_credentials()
                 self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "credential_file_invalid"})

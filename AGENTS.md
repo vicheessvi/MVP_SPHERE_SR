@@ -29,8 +29,8 @@
 - Доступные модули, их названия, справочные описания, пользовательские статусы и подсказки изменять через `product-catalog.js`; после правки обязательно запускать `node scripts/validate-reference.js`.
 - Не добавлять новый доступный маршрут в обход `MODULE_CATALOG` и не дублировать модульные карточки вручную в `app.js`.
 - Никогда не помещать реальные логины, пароли, токены, ключи, IP-выгрузки или runtime data в Git, fixtures, логи, state, аналитику и ответы API.
-- XLSX credentials допускается читать только в замкнутой памяти вкладки и передавать бинарно в same-origin loopback runtime. Пары нельзя помещать в state, DOM, plan, browser storage или постоянное хранилище.
-- Runtime сверяет SHA-256 текущего XLSX, очищает пул во всех terminal paths и выдаёт redacted JSON по одному до ACK записи. Vault и fallback credentials запрещены.
+- Учётные данные вводятся пользователем в форме текущей вкладки и передаются только в same-origin loopback runtime. После передачи поля очищаются; пары нельзя помещать в state, plan, browser storage или постоянное хранилище.
+- Runtime сверяет SHA-256 переданных пар, очищает пул во всех terminal paths и выдаёт redacted JSON по одному до ACK записи. Vault и fallback credentials запрещены.
 - Не добавлять внешнюю передачу, CDN, телеметрию, third-party Python dependency или non-loopback bind без явного решения пользователя и security review.
 - Не делать commit/push без явного указания пользователя.
 - Значимые решения фиксировать в `docs/decisions`, этапы — в `docs/implementation-log.md`.

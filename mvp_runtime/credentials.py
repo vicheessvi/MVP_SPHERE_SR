@@ -84,6 +84,26 @@ def parse_credential_rows(rows: list[list[Any]]) -> CredentialParseResult:
     return CredentialParseResult(tuple(credentials), summary)
 
 
+def parse_credential_pairs(value: Any) -> CredentialParseResult:
+    """Validate an ordered, memory-only pool entered in the local UI."""
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_ROWS:
+        raise CredentialFileError("credential_pairs_invalid")
+    pairs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"username", "password"}:
+            raise CredentialFileError("credential_pairs_invalid")
+        username, password = item["username"], item["password"]
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise CredentialFileError("credential_pairs_invalid")
+        username = username.strip()
+        if not username or not password or len(username) > 256 or len(password) > 1024 or (username, password) in seen:
+            raise CredentialFileError("credential_pairs_invalid")
+        seen.add((username, password))
+        pairs.append({"username": username, "password": password})
+    return CredentialParseResult(tuple(pairs), {"acceptedCount": len(pairs), "rejectedCount": 0, "duplicateCount": 0})
+
+
 def _read_bounded(archive: zipfile.ZipFile, name: str, maximum: int = MAX_XML_BYTES) -> bytes:
     try:
         info = archive.getinfo(name)
