@@ -2100,10 +2100,17 @@
     assertEqual(intersection.selectedDevices.length, intersection.supportedDevices.length + intersection.unsupportedDevices.length);
   });
 
-  test("Экран Загрузка использует четыре операционных секции без старых пояснений", () => {
+  test("Экран загрузки сохраняет итог импорта и показывает SR и папку рядом", () => {
     if (typeof require !== "function") return;
     const fs = require("fs");
     const source = fs.readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    const css = fs.readFileSync(require("path").join(__dirname, "styles.css"), "utf8");
+    assertEqual(api.MODULE_CATALOG.find((item) => item.route === "upload")?.title, "Загрузка данных и опрос устройств");
+    assert(source.includes('ui.pollingImportSummary = { title: result.cancelled'));
+    assert(source.includes('ui.pollingImportSummary && !ui.inventoryBusy'));
+    assert(!source.includes('<header class="topbar">'));
+    assert(css.includes('.upload-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)'));
+    assert(css.includes('.upload-folder-card { grid-column: auto; }'));
     ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "Закрыть порты 80, 23 (http, telnet)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
     assert(source.includes("START_MVP_SPHERE_SR.py"));
     assert(!source.includes("start.ps1"));

@@ -2073,7 +2073,7 @@
     if (!scheduledAt) errors.push("Дата и время начала опроса обязательны");
     const intervalSeconds = Number(input.intervalSeconds);
     if (!Number.isInteger(intervalSeconds) || intervalSeconds < 0 || !Number.isFinite(intervalSeconds)) errors.push("Интервал должен быть целым числом секунд от 0");
-    if (!input.credentialsReady) errors.push("Введите учётные данные оборудования в модуле «Загрузка»");
+    if (!input.credentialsReady) errors.push("Введите учётные данные оборудования в модуле «Загрузка данных и опрос устройств»");
     if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить введённые учётные данные");
     if (!projection.supportedDevices.length) errors.push("Среди выбранных устройств нет оборудования с поддерживаемым автоматическим опросом");
     const managementTasks = input.disableInsecureManagementServices === true ? [MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES] : [];
@@ -4900,6 +4900,7 @@
     srImportResults: [],
     srProgress: null,
     pollingImportResults: [],
+    pollingImportSummary: null,
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
@@ -5121,7 +5122,7 @@
           <h1 id="login-title">MVP_SPHERE_SR</h1>
           <p class="page-subtitle">Локальный сеанс Администратора МЦТП</p>
           ${renderMessage()}
-          <p class="muted">Учётные данные вводятся в модуле «Загрузка» перед автоматическим опросом и действуют только в текущем сеансе.</p>
+          <p class="muted">Учётные данные вводятся в модуле «Загрузка данных и опрос устройств» перед автоматическим опросом и действуют только в текущем сеансе.</p>
           <div class="button-row"><button class="button primary" type="button" data-start-local-session>Продолжить</button></div>
         </section>
       </main>`;
@@ -5137,13 +5138,6 @@
           </nav>
         </aside>
         <div class="workspace">
-          <header class="topbar">
-            <div><strong>MVP_SPHERE_SR</strong><br><span class="muted">Инвентаризация и аналитика оборудования ВКС</span></div>
-            <div class="user-summary">
-              <span>${escapeHtml(user.name)}</span>
-              <span class="role-chip">${escapeHtml(ROLE_NAMES[user.role])}</span>
-            </div>
-          </header>
           <main id="main-content" class="page" tabindex="-1">
             ${renderMessage()}
             ${renderRoute(user)}
@@ -5184,6 +5178,7 @@
 
   function renderMessage() {
     if (!ui.message) return "";
+    if (ui.route === "upload" && ui.message.type === "success") return "";
     const type = ["error", "success", "warning", "info"].includes(ui.message.type) ? ui.message.type : "info";
     return `<div class="${type}-panel" role="${type === "error" ? "alert" : "status"}" aria-live="${type === "error" ? "assertive" : "polite"}">${escapeHtml(ui.message.text)}</div>`;
   }
@@ -5479,7 +5474,7 @@
     return `<header class="page-header"><div><button class="text-button" type="button" data-back-inventory="${route}">← К списку</button><h1>${escapeHtml(device.nameRaw || device.modelRaw || "Устройство")}</h1><p class="page-subtitle">${escapeHtml(location?.name || "Без локации")} · ${escapeHtml(device.ipNormalized || "IP не задан")}</p></div><span class="badge ${device.inCurrentSr === false ? "warning" : "success"}">${device.inCurrentSr === false ? "Не в актуальной SR" : "В актуальной SR"}</span></header>
       <div class="detail-grid"><section class="card"><h2>Карточка SR</h2><dl class="definition-list">
         <div><dt>Производитель / модель</dt><dd>${escapeHtml(device.manufacturerRaw || "—")} / ${escapeHtml(device.modelRaw || "—")}</dd></div><div><dt>IP / MAC</dt><dd>${escapeHtml(device.ipNormalized || "—")} / ${escapeHtml(device.macNormalized || device.macRaw || "—")}</dd></div><div><dt>SIP URI / домен</dt><dd>${escapeHtml(device.sipUri || "—")} / ${escapeHtml(device.domain || location?.domain || "—")}</dd></div><div><dt>Инвентарный / серийный</dt><dd>${escapeHtml(device.inventoryNumber || "—")} / ${escapeHtml(device.serialNumber || "—")}</dd></div>
-      </dl></section><section class="card"><h2>Поддержка автоматического опроса</h2><span class="badge ${pollingSupported ? "success" : "warning"}">${escapeHtml(formatCapabilityStatus(capability.support))}</span><p>Механизм опроса: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">${pollingSupported ? "Устройство можно включить в JSON-план для отдельного локального polling-скрипта. Учётные данные вводятся в модуле «Загрузка» и передаются локальному исполнителю на время задания." : "Подтверждённый протокол подключения отсутствует; сетевой опрос не выполняется. Учётные данные хранятся отдельно."}</p>${pollingSupported ? `<button class="button secondary" type="button" data-route="upload">Сформировать план в модуле «Загрузка»</button>` : `<button class="button secondary" type="button" disabled>Опрос недоступен</button>`}</section></div>
+      </dl></section><section class="card"><h2>Поддержка автоматического опроса</h2><span class="badge ${pollingSupported ? "success" : "warning"}">${escapeHtml(formatCapabilityStatus(capability.support))}</span><p>Механизм опроса: <span class="mono">${escapeHtml(capability.key || "не определён")}</span></p><p class="muted">${pollingSupported ? "Устройство можно включить в JSON-план для отдельного локального polling-скрипта. Учётные данные вводятся в модуле «Загрузка данных и опрос устройств» и передаются локальному исполнителю на время задания." : "Подтверждённый протокол подключения отсутствует; сетевой опрос не выполняется. Учётные данные хранятся отдельно."}</p>${pollingSupported ? `<button class="button secondary" type="button" data-route="upload">Сформировать план в модуле «Загрузка данных и опрос устройств»</button>` : `<button class="button secondary" type="button" disabled>Опрос недоступен</button>`}</section></div>
       <section class="card section-gap"><h2>История опросов (${results.length})</h2><p class="muted">«Дата и время опроса» берётся из времени последнего изменения выбранного JSON-файла. Это не время создания файла и не время папки запуска.</p><ul class="result-list">${results.map((result) => `<li><div><strong>Дата и время опроса: ${escapeHtml(formatDateTime(result.capturedAt))}</strong><br><span class="muted">${result.capturedAtSource === "file_last_modified" ? "Время последнего изменения файла" : "Время файла недоступно"} · ${escapeHtml(result.filename)} · ${escapeHtml(formatCategoryLabel(result.detectedCategory))} · ${escapeHtml(formatPingStatus(result.pingStatus))}</span></div><span class="badge ${(result.operationalStatus || result.pollStatus) === "success" ? "success" : "critical"}">${escapeHtml(formatPollStatus(result.operationalStatus || result.pollStatus))}</span></li>`).join("") || "<li>Результатов пока нет</li>"}</ul></section>
       <section class="card section-gap"><h2>Обнаруженные изменения (${changes.length})</h2><ul class="result-list">${changes.slice(0, 200).map((change) => `<li><div><strong>${escapeHtml(change.parameterLabel || formatChangePath(change.path))}</strong><br><span class="muted">${escapeHtml(displayValue(change.oldValue))} → ${escapeHtml(displayValue(change.newValue))}</span></div><span class="badge info">Изменение</span></li>`).join("") || "<li>Изменений не выявлено</li>"}</ul></section>`;
   }
@@ -5709,7 +5704,7 @@
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     return `
-      <header class="page-header"><div><p class="eyebrow">Рабочее пространство</p><h1>Загрузка и опрос</h1><p class="page-subtitle">Подготовьте данные, затем сформируйте план опроса.</p></div></header>
+      <header class="page-header upload-page-header"><div><p class="eyebrow">Рабочее пространство</p><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "upload").title)}</h1><p class="page-subtitle">Подготовьте данные, затем сформируйте план опроса.</p></div></header>
       <div class="upload-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR</h2>
           <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file" class="sr-only">Выберите XLSX-файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить SR</button></form>
@@ -5726,8 +5721,9 @@
             ${pollingProgress.currentRun ? `<p class="muted">Текущий запуск: <span class="mono">${escapeHtml(pollingProgress.currentRun)}</span></p>` : ""}
             ${ui.inventoryBusy ? `<button class="button danger" type="button" data-cancel-polling-import${ui.pollingCancelRequested ? " disabled" : ""}>${ui.pollingCancelRequested ? "Остановка…" : "Отменить загрузку"}</button>` : ""}
           </section>` : ""}
+          ${ui.pollingImportSummary && !ui.inventoryBusy ? `<div class="upload-outcome section-gap" role="status"><strong>${escapeHtml(ui.pollingImportSummary.title)}</strong><span>Папок: ${ui.pollingImportSummary.folders} · JSON: ${ui.pollingImportSummary.files} · успешно: ${ui.pollingImportSummary.succeeded}</span><span>Дубликаты: ${ui.pollingImportSummary.duplicates} · ошибки: ${ui.pollingImportSummary.errors} · пропущено: ${ui.pollingImportSummary.ignored}</span></div>` : ""}
         </section>
-        <section class="card upload-card"><h2>3. Учётные данные оборудования</h2>
+        <section class="card upload-card upload-credential-card"><h2>3. Учётные данные оборудования</h2>
           <p class="muted">Введите пары в порядке проверки. Они действуют только в текущем сеансе.</p>
           <form data-credential-entry-form autocomplete="off"><div data-credential-rows class="credential-rows"><div class="credential-row"><label>Логин<input name="username" autocomplete="off" required maxlength="256"></label><label>Пароль<input name="password" type="password" autocomplete="new-password" required maxlength="1024"></label><button class="button secondary" type="button" data-remove-credential aria-label="Удалить пару">Удалить</button></div></div><div class="button-row section-gap"><button class="button secondary" type="button" data-add-credential>Добавить пару</button><button class="button primary" type="submit"${launchMode.kind !== "local" ? " disabled" : ""}>Передать для опроса</button>${ui.credentialSummary ? `<button class="button secondary" type="button" data-clear-credentials>Очистить</button>` : ""}</div></form>
           ${ui.credentialSummary ? `<p class="credential-ready" role="status">Готово пар: ${ui.credentialSummary.acceptedCount}. Данные будут удалены после опроса.</p>` : ""}
@@ -6702,6 +6698,7 @@
     ui.inventoryBusy = true;
     ui.pollingCancelRequested = false;
     ui.pollingImportResults = [];
+    ui.pollingImportSummary = null;
     ui.pollingProgress = { stage: "Поиск файлов", total: selectedFiles.length, processed: 0, succeeded: 0, errors: 0, duplicates: 0, currentRun: null, filesPerSecond: 0, etaSeconds: null, status: "running" };
     render();
     try {
@@ -6715,6 +6712,7 @@
         onProgress: (progress) => updatePollingProgress(progress, progress.status !== "running")
       });
       if (!result.ok) {
+        ui.pollingImportSummary = { title: "Импорт не завершён", folders: 0, files: 0, succeeded: 0, duplicates: 0, errors: result.rejected?.length || 0, ignored: result.ignored?.length || 0 };
         setMessage(result.errors.join("; "), "error");
         ui.inventoryBusy = false;
         ui.pollingCancelRequested = false;
@@ -6726,9 +6724,11 @@
       }
       state = result.state;
       pollingImportContextCache = result.context;
+      ui.pollingImportSummary = { title: result.cancelled ? "Импорт остановлен" : result.outcome === "partial" ? "Импорт завершён частично" : "Папка импортирована", folders: result.importedFolderCount, files: result.summary.processed, succeeded: result.summary.succeeded, duplicates: result.summary.duplicates, errors: result.errorCount, ignored: result.ignored.length };
       if (result.cancelled) setMessage("Загрузка остановлена пользователем.", "warning");
       else setMessage(`Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.summary.processed}; успешно: ${result.summary.succeeded}; дубликатов: ${result.summary.duplicates}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`, result.outcome === "partial" ? "warning" : "success");
     } catch (error) {
+      ui.pollingImportSummary = { title: "Импорт не завершён", folders: 0, files: 0, succeeded: 0, duplicates: 0, errors: 1, ignored: 0 };
       setMessage("Импорт результатов опросов не завершён. Прежние данные сохранены.", "error");
     }
     ui.inventoryBusy = false;
