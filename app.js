@@ -5159,7 +5159,7 @@
   }
 
   function renderPlannedModule(descriptor) {
-    return `<header class="page-header"><div><h1>${escapeHtml(descriptor.title)}</h1><p class="page-subtitle">${escapeHtml(descriptor.summary)}</p></div><button class="button secondary" type="button" data-help-topic="${escapeHtml(descriptor.helpId)}">О модуле</button></header><section class="card"><span class="badge warning">${escapeHtml(UI_TERMS.moduleStatuses[descriptor.status])}</span><p>${escapeHtml(descriptor.details)}</p></section>`;
+    return `<header class="page-header"><div><h1>${escapeHtml(descriptor.title)}</h1></div><button class="button secondary" type="button" data-help-topic="${escapeHtml(descriptor.helpId)}">О модуле</button></header><section class="card"><span class="badge warning">${escapeHtml(UI_TERMS.moduleStatuses[descriptor.status])}</span><p>${escapeHtml(descriptor.details)}</p></section>`;
   }
 
   function navButton(route, label) {
@@ -5173,7 +5173,7 @@
 
   function renderEquipmentOverview() {
     const counts = Object.fromEntries(EQUIPMENT_CATEGORY_IDS.map((category) => [category, state.inventoryDevices.filter((device) => device.inCurrentSr !== false && device.category === category).length]));
-    return `<header class="page-header"><div><p class="eyebrow">Перечень SR</p><h1>Оборудование</h1><p class="page-subtitle">Семь категорий используют общие фильтры, карточки, историю опросов и аналитику.</p></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.equipment}">О модуле</button></header><section class="equipment-category-grid">${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<article class="card"><h2>${escapeHtml(item.title)}</h2><strong class="stat-value">${counts[item.id]}</strong><p class="muted">Устройств в актуальной SR</p><button class="button secondary" type="button" data-route="${item.route}">Открыть</button></article>`).join("")}</section>`;
+    return `<header class="page-header"><div><h1>Оборудование</h1></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.equipment}">О модуле</button></header><section class="equipment-category-grid">${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<article class="card"><h2>${escapeHtml(item.title)}</h2><strong class="stat-value">${counts[item.id]}</strong><p class="muted">Устройств в актуальной SR</p><button class="button secondary" type="button" data-route="${item.route}">Открыть</button></article>`).join("")}</section>`;
   }
 
   function renderMessage() {
@@ -5185,7 +5185,7 @@
 
   function renderDashboard() {
     const summary = getDashboardSummary(state, ui.dashboardFilters);
-    const header = `<header class="page-header dashboard-header"><div><p class="eyebrow">Дашборд</p><h1>Главный экран</h1><p class="page-subtitle">Фактические данные актуальной выгрузки SR и истории опросов без демонстрационных значений.</p></div><div class="button-row"><button class="button primary" type="button" data-route="upload">Запустить опрос</button><button class="button secondary" type="button" data-route="upload">Загрузить данные</button><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.dashboard}">О модуле</button></div></header>`;
+    const header = `<header class="page-header dashboard-header"><div><h1>Главный экран</h1></div><div class="button-row"><button class="button primary" type="button" data-route="upload">Запустить опрос</button><button class="button secondary" type="button" data-route="upload">Загрузить данные</button><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.dashboard}">О модуле</button></div></header>`;
     const filterPanel = renderDashboardFilters(ui.dashboardFilters);
     if (!summary.valid) return `${header}${filterPanel}<div class="error-panel section-gap" role="alert">${escapeHtml(summary.errors.join("; "))}</div>`;
     if (summary.emptyState === "no_sr") return `${header}<section class="empty-state dashboard-empty"><h2>Нет данных SR</h2><p>Для начала работы загрузите локальную выгрузку SR в формате XLSX. Данные останутся на этом компьютере.</p><button class="button primary" type="button" data-route="upload">Загрузить выгрузку SR</button></section>`;
@@ -5284,7 +5284,7 @@
 
   function renderReboots() {
     const analytics = getRebootAnalytics(state, ui.rebootFilters);
-    const header = `<header class="page-header reboot-header"><div><p class="eyebrow">Эксплуатационная аналитика</p><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "reboots").title)}</h1><p class="page-subtitle">Для каждого файла Extron время перезагрузки рассчитывается как Device Status.Date минус Device Status.Uptime. Повторные файлы с тем же временем запуска объединяются.</p></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
+    const header = `<header class="page-header reboot-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "reboots").title)}</h1></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
     const filters = renderRebootFilters(ui.rebootFilters, analytics);
     if (!analytics.valid) return `${header}${filters}<div class="error-panel section-gap" role="alert">${escapeHtml(analytics.errors.join("; "))}</div>`;
     const empty = analytics.emptyState ? `<div class="${analytics.emptyState === "no_events" ? "success" : "info"}-panel section-gap"><strong>${escapeHtml(rebootEmptyMessage(analytics.emptyState))}</strong></div>` : "";
@@ -5409,7 +5409,7 @@
       if (!sectionEntries.length) return "";
       return `<details class="reference-section"${query || index === 0 ? " open" : ""}><summary><span>${escapeHtml(section.title)}</span><small>${sectionEntries.length}</small></summary><p class="reference-description">${escapeHtml(section.description)}</p><div class="reference-grid">${sectionEntries.map((entry) => `<article class="reference-entry${ui.helpTopicId === entry.id ? " selected" : ""}" id="help-${escapeHtml(entry.id)}"><div class="reference-entry-heading"><h3>${escapeHtml(entry.title)}</h3>${statusLabel[entry.status] ? `<span class="badge warning">${escapeHtml(statusLabel[entry.status])}</span>` : ""}</div><p>${escapeHtml(entry.summary)}</p>${entry.details ? `<p class="muted">${escapeHtml(entry.details)}</p>` : ""}</article>`).join("")}</div></details>`;
     }).join("");
-    return `<header class="page-header"><div><p class="eyebrow">Помощь пользователю</p><h1>Справочник</h1><p class="page-subtitle">Назначение модулей, термины, показатели, источники данных и правила определения состояний оборудования.</p></div><span class="badge info">${entries.length} ${russianCountLabel(entries.length, "материал", "материала", "материалов")}</span></header>
+    return `<header class="page-header"><div><h1>Справочник</h1></div><span class="badge info">${entries.length} ${russianCountLabel(entries.length, "материал", "материала", "материалов")}</span></header>
       <section class="card reference-search-card"><form class="reference-search" data-reference-search><div class="field"><label for="reference-query">Поиск по Справочнику</label><input id="reference-query" name="query" type="search" value="${escapeHtml(query)}" placeholder="Например: ping, ВКС, SR, изменения"></div><div class="button-row"><button class="button primary" type="submit">Найти</button><button class="button secondary" type="button" data-clear-help-search>Сбросить поиск</button></div></form><p class="muted">Поиск проверяет названия, сокращения, определения и технические синонимы. Запрос никуда не отправляется и не сохраняется.</p></section>
       <div class="reference-sections section-gap">${sections || `<section class="empty-state"><h2>Ничего не найдено</h2><p>Измените запрос или сбросьте поиск, чтобы увидеть все разделы.</p><button class="button secondary" type="button" data-clear-help-search>Показать весь Справочник</button></section>`}</div>`;
   }
@@ -5437,7 +5437,7 @@
     const categoryLocationIds = new Set(state.inventoryDevices.filter((item) => item.category === config.category).map((item) => item.locationId).filter(Boolean));
     const categoryLocations = state.locations.filter((item) => categoryLocationIds.has(item.id)).sort((a, b) => String(a.name).localeCompare(String(b.name), "ru"));
     const analytics = getInventoryAnalytics(state, config.category);
-    return `<header class="page-header"><div><h1>${config.title}</h1><p class="page-subtitle">Одна строка — устройство из SR; результаты открываются как история опросов устройства.</p></div><div class="button-row"><span class="badge info">${devices.length}</span><button class="button secondary" type="button" data-help-topic="${config.help}">О модуле</button></div></header>
+    return `<header class="page-header"><div><h1>${config.title}</h1></div><div class="button-row"><span class="badge info">${devices.length}</span><button class="button secondary" type="button" data-help-topic="${config.help}">О модуле</button></div></header>
       <section class="stats-grid">${statCard("Всего", analytics.total)}${statCard("Опрошено / не опрашивалось", `${analytics.polled} / ${analytics.unpolled}`)}${statCard("Успешно / ошибки", `${analytics.success} / ${analytics.errors}`)}${statCard("Устройства с изменениями / обнаруженные изменения", `${analytics.changedDevices} / ${analytics.changes}`)}</section>
       <section class="card"><form class="filter-grid inventory-filter-grid" data-inventory-filters>
         <input type="hidden" name="route" value="${route}"><div class="field"><label>Поиск</label><input name="search" value="${escapeHtml(ui.inventoryFilters.search || "")}" placeholder="IP, модель, комната…"></div>
@@ -5654,18 +5654,11 @@
       </section>`;
   }
 
-  function selectedPollingLabels(options, selection) {
-    if (selection.includes(POLLING_ALL)) return ["Все"];
-    const labels = new Map(options.map((item) => [item.value, item.label]));
-    return selection.map((value) => labels.get(value) || "Не указано");
-  }
-
   function renderPollingChoiceGroup(name, label, options, selection) {
-    const selectedLabels = selectedPollingLabels(options, selection);
     return `<fieldset class="polling-choice-group"><legend>${escapeHtml(label)}</legend><div class="polling-choice-options">
       <label class="polling-choice"><input type="checkbox" data-polling-plan-filter="${name}" value="${POLLING_ALL}"${selection.includes(POLLING_ALL) ? " checked" : ""}${options.length ? "" : " disabled"}>Все</label>
       ${options.map((item) => `<label class="polling-choice"><input type="checkbox" data-polling-plan-filter="${name}" value="${escapeHtml(item.value)}"${selection.includes(item.value) ? " checked" : ""}>${escapeHtml(item.label)}</label>`).join("")}
-    </div><div class="polling-choice-tags" aria-live="polite">${selectedLabels.map((item) => `<span class="selection-tag">${escapeHtml(item)}</span>`).join("") || `<span class="muted">Ничего не выбрано</span>`}</div></fieldset>`;
+    </div></fieldset>`;
   }
 
   function renderPollingIpTarget(projection) {
@@ -5704,7 +5697,7 @@
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     return `
-      <header class="page-header upload-page-header"><div><p class="eyebrow">Рабочее пространство</p><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "upload").title)}</h1><p class="page-subtitle">Подготовьте данные, затем сформируйте план опроса.</p></div></header>
+      <header class="page-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "upload").title)}</h1></div></header>
       <div class="upload-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR</h2>
           <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file" class="sr-only">Выберите XLSX-файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить SR</button></form>
@@ -5743,7 +5736,7 @@
             ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
             ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
           </div>` : `<div class="polling-ip-selector"><div class="field"><label for="polling-target-ip">IP-адрес</label><input id="polling-target-ip" name="ipAddress" data-polling-ip-input inputmode="decimal" autocomplete="off" placeholder="Например, 192.0.2.10" value="${escapeHtml(ui.pollingPlanSelection.ipAddress || "")}"></div><div data-polling-ip-result aria-live="polite">${renderPollingIpTarget(projection)}</div></div>`}
-          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><label>Интервал</label><div class="field-with-unit"><input name="intervalSeconds" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalSeconds || "0")}" required><span>секунд</span></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Закрыть порты 80, 23 (http, telnet)</label><p class="muted">${ui.pollingPlanSelection.disableInsecureManagementServices ? "Фильтры и поиск по IP используют только отдельный загруженный список." : "Фильтры и поиск по IP используют актуальную выгрузку SR."} Задача доступна для точных моделей Huawei TE20, TE30, TE40, TE50 и TE60: целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Успех фиксируется после повторного чтения в меню кодека значений «HTTP отключён» и «Telnet отключён».</p><button class="button primary" type="submit"${automaticPollingMonitor ? " disabled" : ""}>Сформировать и запустить опрос</button></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><label>Интервал</label><div class="field-with-unit"><input name="intervalSeconds" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalSeconds || "0")}" required><span>секунд</span></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Закрыть порты 80, 23 (http, telnet)</label>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Закрытие портов: доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Фильтры используют отдельный список устройств.</p>` : ""}<button class="button primary" type="submit"${automaticPollingMonitor ? " disabled" : ""}>Сформировать и запустить опрос</button></div>
         </form>
         <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div><div><dt>Закрытие портов доступно</dt><dd data-polling-count="management-eligible">${projection.managementEligibleDevices.length}</dd></div><div><dt>Закрытие портов будет пропущено</dt><dd data-polling-count="management-skipped">${projection.managementSkippedDevices.length}</dd></div></dl>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
@@ -5945,8 +5938,7 @@
     return `
       <header class="page-header">
         <div>
-          <h1>Данные текущего сеанса</h1>
-          <p class="page-subtitle">Прямой запуск index.html использует только память открытой вкладки.</p>
+          <h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "settings").title)}</h1>
         </div>
       </header>
       <div class="info-panel">После перезагрузки или закрытия страницы импортированные данные удаляются из памяти текущей вкладки.</div>

@@ -2111,6 +2111,11 @@
     assert(!source.includes('<header class="topbar">'));
     assert(css.includes('.upload-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)'));
     assert(css.includes('.upload-folder-card { grid-column: auto; }'));
+    assert(!source.includes('>Рабочее пространство</p>'));
+    assert(!source.includes('class="polling-choice-tags"'));
+    assert(/\.polling-cascade\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/.test(css));
+    assert(css.includes('.polling-choice input {'));
+    assert(css.includes('flex: 0 0 17px;'));
     ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "Закрыть порты 80, 23 (http, telnet)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
     assert(source.includes("START_MVP_SPHERE_SR.py"));
     assert(!source.includes("start.ps1"));
