@@ -5067,6 +5067,7 @@
       return;
     }
     app.innerHTML = renderShell(user);
+    global.MVP_SPHERE_BRAND?.mount(app);
   }
 
   function updatePollingProgress(snapshot, forceRender) {
@@ -5655,7 +5656,7 @@
   }
 
   function renderPollingChoiceGroup(name, label, options, selection) {
-    return `<fieldset class="polling-choice-group"><legend>${escapeHtml(label)}</legend><div class="polling-choice-options">
+    return `<fieldset class="polling-choice-group"><legend class="sr-only">${escapeHtml(label)}</legend><div class="polling-choice-heading" aria-hidden="true">${escapeHtml(label)}</div><div class="polling-choice-options">
       <label class="polling-choice"><input type="checkbox" data-polling-plan-filter="${name}" value="${POLLING_ALL}"${selection.includes(POLLING_ALL) ? " checked" : ""}${options.length ? "" : " disabled"}>Все</label>
       ${options.map((item) => `<label class="polling-choice"><input type="checkbox" data-polling-plan-filter="${name}" value="${escapeHtml(item.value)}"${selection.includes(item.value) ? " checked" : ""}>${escapeHtml(item.label)}</label>`).join("")}
     </div></fieldset>`;
@@ -5718,7 +5719,7 @@
         </section>
         <section class="card upload-card upload-credential-card"><h2>3. Учётные данные оборудования</h2>
           <p class="muted">Введите пары в порядке проверки. Они действуют только в текущем сеансе.</p>
-          <form data-credential-entry-form autocomplete="off"><div data-credential-rows class="credential-rows"><div class="credential-row"><label>Логин<input name="username" autocomplete="off" required maxlength="256"></label><label>Пароль<input name="password" type="password" autocomplete="new-password" required maxlength="1024"></label><button class="button secondary" type="button" data-remove-credential aria-label="Удалить пару">Удалить</button></div></div><div class="button-row section-gap"><button class="button secondary" type="button" data-add-credential>Добавить пару</button><button class="button primary" type="submit"${launchMode.kind !== "local" ? " disabled" : ""}>Передать для опроса</button>${ui.credentialSummary ? `<button class="button secondary" type="button" data-clear-credentials>Очистить</button>` : ""}</div></form>
+          <form data-credential-entry-form autocomplete="off"><div data-credential-rows class="credential-rows"><div class="credential-row"><label>Логин<input name="username" autocomplete="off" required maxlength="256"></label><div class="credential-password-field"><label>Пароль<input name="password" type="password" autocomplete="new-password" required maxlength="1024"></label><button class="password-visibility" type="button" data-toggle-password aria-label="Показать пароль" aria-pressed="false">Показать</button></div><button class="button secondary" type="button" data-remove-credential aria-label="Удалить пару">Удалить</button></div></div><div class="button-row section-gap"><button class="button secondary" type="button" data-add-credential>Добавить пару</button><button class="button primary" type="submit"${launchMode.kind !== "local" ? " disabled" : ""}>Передать для опроса</button>${ui.credentialSummary ? `<button class="button secondary" type="button" data-clear-credentials>Очистить</button>` : ""}</div></form>
           ${ui.credentialSummary ? `<p class="credential-ready" role="status">Готово пар: ${ui.credentialSummary.acceptedCount}. Данные будут удалены после опроса.</p>` : ""}
         </section>
       </div>
@@ -5979,11 +5980,28 @@
   }
 
   async function handleClick(event) {
+    const visibilityToggle = event.target.closest("[data-toggle-password]");
+    if (visibilityToggle) {
+      const password = visibilityToggle.closest(".credential-row")?.querySelector('[name="password"]');
+      if (password) {
+        const reveal = password.type === "password";
+        password.type = reveal ? "text" : "password";
+        visibilityToggle.textContent = reveal ? "Скрыть" : "Показать";
+        visibilityToggle.setAttribute("aria-label", reveal ? "Скрыть пароль" : "Показать пароль");
+        visibilityToggle.setAttribute("aria-pressed", String(reveal));
+      }
+      return;
+    }
     if (event.target.closest("[data-add-credential]")) {
       const rows = document.querySelector("[data-credential-rows]");
       if (rows && rows.children.length < 10000) {
         const row = rows.firstElementChild.cloneNode(true);
         row.querySelectorAll("input").forEach((input) => { input.value = ""; });
+        row.querySelector('[name="password"]').type = "password";
+        const toggle = row.querySelector("[data-toggle-password]");
+        toggle.textContent = "Показать";
+        toggle.setAttribute("aria-label", "Показать пароль");
+        toggle.setAttribute("aria-pressed", "false");
         rows.append(row);
         row.querySelector("input")?.focus();
       }

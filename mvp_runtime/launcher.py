@@ -19,6 +19,7 @@ REQUIRED_FILES = (
     "styles.css",
     "vendor/xlsx.full.min.js",
     "runtime/credential-pool.js",
+    "runtime/sphere.js",
     "runtime/device-catalog.json",
 )
 

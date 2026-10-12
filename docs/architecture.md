@@ -42,6 +42,7 @@ index.html (file://) -> volatile browser state -> manual import/analytics only
 - `runtime-config.js` подтверждает статический ручной режим; Python-server динамически отдаёт marker/CSRF для полного режима.
 - `app.js` использует непостоянный memory adapter, загружает SR/дерево JSON, строит Dashboard/таблицы и сохраняет pending JSON через File System Access API.
 - Форма ввода передаёт пары через same-origin JSON в Python-runtime; поля очищаются сразу после передачи, пары не попадают в UI state.
+- `runtime/sphere.js` рисует локальный Canvas-элемент SR SPHERE в заголовке каждого доступного модуля; при системном уменьшении движения выводит статичный кадр. Никаких внешних ресурсов не требуется.
 - `product-catalog.js` — единый browser/CommonJS-источник модулей, Справочника и русских presentation labels.
 - `runtime/device-catalog.json` — единый межъязыковой источник производителей, моделей и protocol status.
 

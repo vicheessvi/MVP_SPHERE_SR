@@ -84,7 +84,7 @@ class ServerTests(unittest.TestCase):
 
     def test_static_allowlist_runtime_marker_and_removed_storage(self) -> None:
         cookie, csrf = self.harness.session()
-        for path, expected in (("/", b"<!doctype html"), ("/app.js", b"MvpSphereSR"), ("/runtime-config.js", b"__MVP_CSRF__")):
+        for path, expected in (("/", b"<!doctype html"), ("/app.js", b"MvpSphereSR"), ("/runtime/sphere.js", b"MVP_SPHERE_BRAND"), ("/runtime-config.js", b"__MVP_CSRF__")):
             status, headers, body = self.harness.request("GET", path, headers={"Cookie": cookie})
             self.assertEqual(status, 200)
             self.assertIn(expected, body)

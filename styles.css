@@ -391,6 +391,10 @@ meter {
 .credential-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 10px; align-items: end; }
 .credential-row label { display: grid; gap: 6px; min-width: 0; font-size: 0.86rem; font-weight: 600; }
 .credential-row input { width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid #b9c9c5; border-radius: 10px; background: #fff; }
+.credential-password-field { position: relative; min-width: 0; }
+.credential-password-field input { padding-right: 92px; }
+.password-visibility { position: absolute; right: 7px; bottom: 6px; min-width: 78px; padding: 6px 8px; border: 0; border-radius: 7px; color: var(--brand-strong); background: #e8f3ee; cursor: pointer; font-size: 0.78rem; font-weight: 700; }
+.password-visibility:hover, .password-visibility:focus-visible { background: #d3e9de; }
 .credential-ready { margin-bottom: 0; color: var(--brand-strong); font-weight: 600; }
 .upload-outcome { display: grid; gap: 5px; padding: 14px 16px; border: 1px solid #bddbc9; border-radius: 13px; color: #164a38; background: linear-gradient(115deg, #eaf6ef, #f6faf5); font-size: 0.88rem; }
 .upload-outcome strong { font-size: 0.96rem; }
@@ -518,6 +522,10 @@ meter {
 }
 
 .page-header h1 { margin: 0; letter-spacing: -0.035em; line-height: 1.15; }
+.page-header:has(.module-sphere) { min-height: 148px; align-items: center; }
+.page-header:has(.module-sphere) > div:first-child { min-width: 0; }
+.module-sphere { display: grid; flex: 0 0 116px; width: 116px; height: 116px; place-items: center; margin: -15px -10px -15px 0; pointer-events: none; }
+.module-sphere canvas { display: block; width: 116px; height: 116px; }
 .page-header .page-subtitle { max-width: 62ch; margin-bottom: 0; }
 .page-header .eyebrow { margin-top: 0; }
 .page-header .button-row { flex-wrap: wrap; justify-content: flex-end; }
@@ -771,7 +779,7 @@ th {
 }
 
 .polling-cascade {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: start;
 }
 
@@ -867,17 +875,24 @@ th {
   min-width: 0;
   width: 100%;
   margin: 0;
-  padding: 16px;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 15px;
   background: linear-gradient(150deg, #f7fbf9, #eaf3ef);
   box-shadow: 0 7px 22px rgba(18, 57, 49, 0.045);
+  overflow: hidden;
 }
 
-.polling-choice-group legend {
-  padding: 0 5px;
+.polling-choice-heading {
+  display: flex;
+  align-items: center;
+  min-height: 47px;
+  padding: 11px 14px;
+  border-bottom: 1px solid #cddfd5;
+  background: linear-gradient(115deg, #dcefe5, #eff8f2);
+  color: #194d3f;
   font-size: 0.9rem;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 .polling-choice-options {
@@ -886,6 +901,7 @@ th {
   gap: 7px;
   overflow: auto;
   min-width: 0;
+  padding: 10px;
 }
 
 .polling-choice {
@@ -1691,7 +1707,7 @@ table .mono {
   }
 
   .polling-cascade {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .polling-progress-metrics {
@@ -1700,6 +1716,9 @@ table .mono {
 }
 
 @media (max-width: 620px) {
+  .polling-cascade { grid-template-columns: 1fr; }
+  .module-sphere { position: static; align-self: flex-end; flex-basis: 76px; width: 76px; height: 76px; margin: -8px 0 -10px; }
+  .module-sphere canvas { width: 76px; height: 76px; }
   .login-card,
   .page {
     padding: 20px;

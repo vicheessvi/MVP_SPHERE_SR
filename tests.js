@@ -2113,9 +2113,16 @@
     assert(css.includes('.upload-folder-card { grid-column: auto; }'));
     assert(!source.includes('>Рабочее пространство</p>'));
     assert(!source.includes('class="polling-choice-tags"'));
-    assert(/\.polling-cascade\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/.test(css));
+    assert(/\.polling-cascade\s*\{\s*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/.test(css));
     assert(css.includes('.polling-choice input {'));
     assert(css.includes('flex: 0 0 17px;'));
+    assert(source.includes('data-toggle-password aria-label="Показать пароль"'));
+    assert(source.includes('visibilityToggle.setAttribute("aria-pressed", String(reveal))'));
+    assert(source.includes('row.querySelector(\'[name="password"]\').type = "password"'));
+    assert(source.includes('class="polling-choice-heading"'));
+    assert(css.includes('grid-template-columns: repeat(4, minmax(0, 1fr));'));
+    assert(fs.readFileSync(require("path").join(__dirname, "index.html"), "utf8").includes('runtime/sphere.js'));
+    assertEqual(typeof require("./runtime/sphere").mount, "function");
     ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "Закрыть порты 80, 23 (http, telnet)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
     assert(source.includes("START_MVP_SPHERE_SR.py"));
     assert(!source.includes("start.ps1"));
