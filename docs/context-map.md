@@ -1,5 +1,11 @@
 # Карта контекста
 
+## Текущая feature 027 — раскрываемая аналитика
+
+- Правила таблиц перезагрузок, истории версий и ошибок: `specs/027-analytics-drilldowns/`.
+- Производные selectors и renderers: `app.js`; названия и Справочник: `product-catalog.js`; оформление: `styles.css`.
+- Архитектурное решение: `docs/decisions/ADR-0027-analytics-drilldowns.md`.
+
 ## Текущая feature 025
 
 - Спецификация, отдельные подтверждённые контракты Box 310/610 и задачи: `specs/025-huawei-box-polling/`.

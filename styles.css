@@ -1581,35 +1581,45 @@ table .mono {
   margin: 14px 0 0;
 }
 
+.reboot-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
 .reboot-filter-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .reboot-leader-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 14px;
 }
 
-.reboot-leader {
+.reboot-drill-card {
   display: grid;
-  align-content: start;
-  gap: 8px;
+  min-width: 0;
+  min-height: 118px;
+  align-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
-
-.reboot-leader > span,
-.reboot-leader > p {
-  color: var(--muted);
-}
-
-.reboot-leader > strong {
-  font-size: clamp(1.6rem, 3vw, 2.5rem);
-}
-
-.reboot-leader > p {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
+.reboot-drill-card:hover { transform: translateY(-3px); border-color: #8fc4b1; }
+.reboot-drill-card.selected { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(26, 92, 82, 0.13); }
+.reboot-drill-card:focus-visible { outline: 3px solid var(--brand); outline-offset: 3px; }
+.reboot-drill-card > span { font-size: 0.88rem; font-weight: 700; overflow-wrap: anywhere; }
+.reboot-drill-card > strong { font-size: clamp(1.5rem, 2.2vw, 2rem); font-variant-numeric: tabular-nums; }
+.reboot-drill-card > small { color: var(--brand); font-size: 0.78rem; font-weight: 700; }
+.reboot-detail { scroll-margin-top: 18px; }
+.reboot-detail .section-heading { margin-bottom: 18px; }
+.reboot-detail .reboot-chart { margin-bottom: 18px; box-shadow: none; }
+.reboot-detail th, .reboot-detail td { vertical-align: top; }
+.analytics-table-card h2 { margin-top: 0; }
+.analytics-pagination { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 16px; color: var(--muted); font-size: 0.88rem; }
+.analytics-pagination .button-row { flex-wrap: nowrap; }
+@media (max-width: 620px) { .analytics-pagination { align-items: stretch; flex-direction: column; } }
+@media (prefers-reduced-motion: reduce) { .reboot-drill-card { transition: none; } .reboot-drill-card:hover { transform: none; } }
 
 .reboot-chart-grid {
   display: grid;

@@ -2390,6 +2390,91 @@
     assertEqual(api.getRebootAnalytics(state, { period: "all", address: "Другой адрес" }).events.length, 0);
   });
 
+  test("Раскрываемые рейтинги не смешивают одноимённые устройства и считают адрес один раз за дату", () => {
+    const state = rebootFixture([
+      rebootResult("one", "reboot-device", "2026-08-10T10:00:00.000Z", 3600),
+      rebootResult("two", "reboot-device", "2026-08-10T12:00:00.000Z", 600),
+      rebootResult("three", "reboot-device-2", "2026-08-10T13:00:00.000Z", 1800)
+    ]);
+    state.inventoryDevices[0].macNormalized = "02:00:00:00:00:01";
+    state.locations.find((item) => item.id === "reboot-location").vip = true;
+    state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "reboot-device-2", ip: "198.51.100.11", macNormalized: "02:00:00:00:00:02" });
+    const analysis = api.getRebootAnalytics(state, { period: "all" }, { timeZone: "UTC" });
+    assertEqual(analysis.summary.minimumReboots, 3);
+    assertEqual(analysis.summary.affectedDevices, 2);
+    assertEqual(analysis.summary.affectedLocations, 1);
+    assertEqual(analysis.details.devices.length, 2);
+    assertEqual(analysis.details.devices[0].count, 2);
+    assertEqual(analysis.details.devices[1].count, 1);
+    assertEqual(analysis.details.devices[0].mac, "02:00:00:00:00:01");
+    assertEqual(analysis.details.devices[0].vip, true);
+    assertEqual(analysis.details.topDates[0].count, 3);
+    assertEqual(analysis.details.topDates[0].addresses.length, 1);
+    assertEqual(analysis.details.topDates[0].addresses[0].count, 3);
+    assertEqual(analysis.details.topLocationsByDevices[0].uniqueDeviceCount, 2);
+    assertEqual(analysis.details.topLocationsByDevices[0].count, 3);
+    assertEqual(analysis.details.topLocationsByDevices[0].deviceNames.length, 2);
+  });
+
+  test("Обзор перезагрузок содержит 13 раскрываемых карточек без постоянной таблицы событий", () => {
+    if (typeof require !== "function") return;
+    const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    const view = source.slice(source.indexOf("  function renderReboots()"), source.indexOf("  function renderAnalyticsPage("));
+    assertEqual((view.match(/renderRebootCard\(/g) || []).length, 13);
+    assert(view.includes("renderRebootDetail(analytics)"));
+    assert(!view.includes("reboot-events"));
+    assert(source.includes('data-reboot-view="${view}"'));
+  });
+
+  test("TOP 5 ограничивает число дат и часов, сохраняя полную динамику", () => {
+    const results = Array.from({ length: 6 }, (_, index) => rebootResult(`day-${index}`, "reboot-device", new Date(Date.UTC(2026, 7, 10 + index, index, 0, 0)).toISOString(), 60));
+    const analytics = api.getRebootAnalytics(rebootFixture(results), { period: "all" }, { timeZone: "UTC" });
+    assertEqual(analytics.events.length, 6);
+    assertEqual(analytics.details.topDates.length, 5);
+    assertEqual(analytics.details.topHours.length, 5);
+    assertEqual(analytics.byDate.length, 6);
+    assertEqual(analytics.byHour.reduce((sum, item) => sum + item.count, 0), 6);
+  });
+
+  test("Версии сравниваются по времени только внутри своего устройства", () => {
+    const state = rebootFixture([]);
+    state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "reboot-device-2", nameRaw: "Контроллер Б", ip: "198.51.100.11" });
+    const result = (id, deviceId, date, project, firmware, status = "success") => ({
+      id, deviceId, capturedAt: date, parseStatus: "parsed", matchStatus: "matched", pollStatus: status,
+      normalizedData: { webBlocks: { "Project Info": project === null ? {} : { Version: project }, Firmware: firmware === null ? {} : { Version: firmware } } }
+    });
+    state.pollingResults.push(
+      result("late", "reboot-device", "2026-08-12T10:00:00.000Z", "2.0", "5.0"),
+      result("first", "reboot-device", "2026-08-10T10:00:00.000Z", "1.0", "4.0"),
+      result("other", "reboot-device-2", "2026-08-11T10:00:00.000Z", "9.0", "9.0"),
+      result("missing", "reboot-device", "2026-08-13T10:00:00.000Z", null, null),
+      result("failed", "reboot-device", "2026-08-14T10:00:00.000Z", "3.0", "6.0", "processing_error"),
+      { ...result("ambiguous", "reboot-device", "2026-08-15T10:00:00.000Z", "4.0", "7.0"), matchStatus: "ambiguous" }
+    );
+    const projects = api.getVersionAnalysis(state, "project");
+    const firmware = api.getVersionAnalysis(state, "firmware");
+    assertEqual(projects.rows.length, 3);
+    assertEqual(projects.changes, 1);
+    assertEqual(projects.rows.find((item) => item.resultId === "late").previousVersion, "1.0");
+    assertEqual(projects.rows.find((item) => item.resultId === "other").comparison, "first");
+    assertEqual(firmware.rows.find((item) => item.resultId === "late").previousVersion, "4.0");
+  });
+
+  test("Ошибки авторизации и сети выводятся раздельно без ошибок обработки", () => {
+    const state = rebootFixture([]);
+    state.pollingResults.push(
+      { id: "auth-1", deviceId: "reboot-device", matchStatus: "matched", pollStatus: "authorization_error", capturedAt: "2026-08-10T10:00:00.000Z" },
+      { id: "auth-2", deviceId: "reboot-device", matchStatus: "matched", pollStatus: "authorization_error", capturedAt: "2026-08-11T10:00:00.000Z" },
+      { id: "network", deviceId: "reboot-device", matchStatus: "matched", pollStatus: "network_unreachable", capturedAt: "2026-08-12T10:00:00.000Z" },
+      { id: "other", deviceId: "reboot-device", matchStatus: "matched", pollStatus: "processing_error", capturedAt: "2026-08-13T10:00:00.000Z" }
+    );
+    const analysis = api.getConnectionErrorAnalysis(state);
+    assertEqual(analysis.authorization.length, 1);
+    assertEqual(analysis.authorization[0].count, 2);
+    assertEqual(analysis.network.length, 1);
+    assertEqual(analysis.network[0].count, 1);
+  });
+
   test("Аналитика перезагрузок обрабатывает 5000 устройств и 25000 результатов быстрее 2 секунд", () => {
     const state = api.createDemoState();
     state.locations.push({ id: "reboot-large-location", name: "Synthetic", address: "Synthetic", inCurrentSr: true });

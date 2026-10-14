@@ -2300,6 +2300,8 @@
       manufacturer: device.manufacturerRaw || device.manufacturerNormalized || "Не указано",
       model: device.modelRaw || "Не указано",
       ip: device.ipNormalized || device.ip || "Не указано",
+      mac: device.macNormalized || device.macRaw || "Не указано",
+      vip: Boolean(device.deviceVip || location?.vip),
       locationId: location?.id || device.locationId || null,
       locationName: location?.name || "Не указано",
       address: location?.address || "Не указано",
@@ -2439,6 +2441,56 @@
     return { count: maximum, labels: maximum ? rows.filter((item) => item.count === maximum).map((item) => item.label) : [] };
   }
 
+  function buildRebootDetailRows(events, eventDates, eventHours) {
+    const devices = new Map(), locations = new Map(), addresses = new Map();
+    const dates = new Map(), hours = new Map();
+    events.forEach((event, index) => {
+      const device = devices.get(event.deviceId) || {
+        deviceId: event.deviceId, deviceName: event.deviceName, ip: event.ip, mac: event.mac,
+        vip: event.vip, locationName: event.locationName, address: event.address, count: 0
+      };
+      device.count += 1;
+      devices.set(event.deviceId, device);
+
+      if (event.locationId) {
+        const location = locations.get(event.locationId) || {
+          locationId: event.locationId, locationName: event.locationName, address: event.address,
+          count: 0, deviceIds: new Set(), deviceNames: new Map()
+        };
+        location.count += 1;
+        location.deviceIds.add(event.deviceId);
+        location.deviceNames.set(event.deviceId, `${event.deviceName} (${event.ip})`);
+        locations.set(event.locationId, location);
+      }
+
+      const address = addresses.get(event.address) || { address: event.address, count: 0, deviceIds: new Set(), deviceNames: new Map(), locationNames: new Set() };
+      address.count += 1;
+      address.deviceIds.add(event.deviceId);
+      address.deviceNames.set(event.deviceId, `${event.deviceName} (${event.ip})`);
+      address.locationNames.add(event.locationName);
+      addresses.set(event.address, address);
+
+      const dateKey = eventDates[index];
+      const date = dates.get(dateKey) || { date: dateKey, count: 0, addresses: new Map() };
+      date.count += 1;
+      date.addresses.set(event.address, (date.addresses.get(event.address) || 0) + 1);
+      dates.set(dateKey, date);
+      hours.set(eventHours[index], (hours.get(eventHours[index]) || 0) + 1);
+    });
+    const byCount = (left, right) => right.count - left.count || String(left.deviceName || left.locationName || left.address || left.date || left.hour).localeCompare(String(right.deviceName || right.locationName || right.address || right.date || right.hour), "ru");
+    const deviceRows = [...devices.values()].sort(byCount);
+    const locationRows = [...locations.values()].map((row) => ({ ...row, uniqueDeviceCount: row.deviceIds.size, deviceNames: [...row.deviceNames.values()].sort((a, b) => a.localeCompare(b, "ru")) })).sort(byCount);
+    const addressRows = [...addresses.values()].map((row) => ({ ...row, uniqueDeviceCount: row.deviceIds.size, deviceNames: [...row.deviceNames.values()].sort((a, b) => a.localeCompare(b, "ru")), locationNames: [...row.locationNames].sort((a, b) => a.localeCompare(b, "ru")) })).sort(byCount);
+    const dateRows = [...dates.values()].map((row) => ({ ...row, addresses: [...row.addresses].map(([address, count]) => ({ address, count })).sort(byCount) })).sort(byCount);
+    const hourRows = [...hours].map(([hour, count]) => ({ hour, count })).sort(byCount);
+    return {
+      devices: deviceRows, locations: locationRows, addresses: addressRows, dates: dateRows, hours: hourRows,
+      topDates: dateRows.slice(0, 5), topHours: hourRows.slice(0, 5), topDevices: deviceRows.slice(0, 5),
+      topLocationsByDevices: [...locationRows].sort((left, right) => right.uniqueDeviceCount - left.uniqueDeviceCount || left.locationName.localeCompare(right.locationName, "ru")).slice(0, 5),
+      topAddressesByDevices: [...addressRows].sort((left, right) => right.uniqueDeviceCount - left.uniqueDeviceCount || left.address.localeCompare(right.address, "ru")).slice(0, 5)
+    };
+  }
+
   function getRebootAnalytics(candidateState, inputFilters, options) {
     const filters = { period: "all", ...(inputFilters || {}) };
     const settings = options || {};
@@ -2454,11 +2506,12 @@
       && (!filters.address || normalizeText(event.address) === normalizeText(filters.address));
     const events = index.events.filter(match);
     const timeZone = settings.timeZone;
-    const dateMap = new Map(); const hourMap = new Map();
+    const dateMap = new Map(); const hourMap = new Map(); const eventDates = []; const eventHours = [];
     events.forEach((event) => {
       const eventTimeZone = event.timeBasis === "device_local_unknown_timezone" ? "UTC" : timeZone;
       const date = rebootLocalPart(event.estimatedAt, "date", eventTimeZone);
       const hour = rebootLocalPart(event.estimatedAt, "hour", eventTimeZone);
+      eventDates.push(date); eventHours.push(hour);
       dateMap.set(date, (dateMap.get(date) || 0) + 1);
       hourMap.set(hour, (hourMap.get(hour) || 0) + 1);
     });
@@ -2469,6 +2522,7 @@
     const byAddress = aggregateRebootDimension(events, "address");
     const affectedDevices = new Set(events.map((event) => event.deviceId)).size;
     const affectedLocations = new Set(events.map((event) => event.locationId).filter(Boolean)).size;
+    const details = buildRebootDetailRows(events, eventDates, eventHours);
     let emptyState = null;
     if (!index.coverage.currentDevices) emptyState = "no_sr";
     else if (!index.coverage.pollingResults) emptyState = "no_polling";
@@ -2478,9 +2532,72 @@
     return {
       valid: true, errors: [], events, coverage: index.coverage, filterOptions: index.filterOptions, emptyState,
       summary: { minimumReboots: events.length, affectedDevices, affectedLocations, comparableDevices: index.coverage.devicesWithComparablePairs, excludedResults: index.coverage.excludedResults },
-      byDate, byHour, byDevice, byLocation, byAddress,
+      byDate, byHour, byDevice, byLocation, byAddress, details,
       leaders: { dates: rebootLeaders([...byDate].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))), hours: rebootLeaders([...byHour].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))), devices: rebootLeaders(byDevice), locations: rebootLeaders(byLocation), addresses: rebootLeaders(byAddress) }
     };
+  }
+
+  function getVersionAnalysis(candidateState, kind) {
+    if (!["project", "firmware"].includes(kind)) return { rows: [], devices: 0, changes: 0 };
+    const devices = new Map((candidateState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
+    const locations = new Map((candidateState?.locations || []).map((item) => [item.id, item]));
+    const histories = new Map();
+    for (const result of candidateState?.pollingResults || []) {
+      if (!devices.has(result.deviceId) || result.matchStatus !== "matched" || result.parseStatus !== "parsed" || result.pollStatus !== "success") continue;
+      const blocks = getCaseInsensitive(result.normalizedData, "webBlocks");
+      const section = getCaseInsensitive(blocks, kind === "project" ? "Project Info" : "Firmware");
+      const raw = getCaseInsensitive(section, "Version");
+      if (typeof raw !== "string" && typeof raw !== "number") continue;
+      const version = String(raw).trim();
+      if (!version || version.length > 160) continue;
+      const capturedAt = normalizeDate(result.capturedAt);
+      if (!capturedAt) continue;
+      const history = histories.get(result.deviceId) || [];
+      history.push({ resultId: result.id, filename: result.filename || "Не указано", capturedAt, version });
+      histories.set(result.deviceId, history);
+    }
+    const rows = [];
+    for (const [deviceId, history] of histories) {
+      history.sort((left, right) => timeValue(left.capturedAt) - timeValue(right.capturedAt) || String(left.resultId).localeCompare(String(right.resultId)));
+      const device = devices.get(deviceId);
+      const location = locations.get(device.locationId);
+      history.forEach((item, index) => rows.push({
+        ...item, deviceId, deviceName: device.nameRaw || device.modelRaw || "Не указано",
+        model: device.modelRaw || "Не указано", ip: device.ipNormalized || device.ip || "Не указано",
+        locationName: location?.name || "Не указано", address: location?.address || "Не указано",
+        previousVersion: index ? history[index - 1].version : null,
+        comparison: index === 0 ? "first" : history[index - 1].version === item.version ? "unchanged" : "changed"
+      }));
+    }
+    rows.sort((left, right) => timeValue(right.capturedAt) - timeValue(left.capturedAt) || left.deviceName.localeCompare(right.deviceName, "ru"));
+    return { rows, devices: histories.size, changes: rows.filter((item) => item.comparison === "changed").length };
+  }
+
+  function getConnectionErrorAnalysis(candidateState) {
+    const devices = new Map((candidateState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
+    const locations = new Map((candidateState?.locations || []).map((item) => [item.id, item]));
+    const groups = { authorization_error: new Map(), network_unreachable: new Map() };
+    for (const result of candidateState?.pollingResults || []) {
+      if (!devices.has(result.deviceId) || result.matchStatus !== "matched" || !groups[result.pollStatus]) continue;
+      const group = groups[result.pollStatus];
+      const device = devices.get(result.deviceId);
+      const location = locations.get(device.locationId);
+      const row = group.get(device.id) || {
+        deviceId: device.id, deviceName: device.nameRaw || device.modelRaw || "Не указано",
+        ip: device.ipNormalized || device.ip || "Не указано", mac: device.macNormalized || device.macRaw || "Не указано",
+        model: device.modelRaw || "Не указано", locationName: location?.name || "Не указано",
+        address: location?.address || "Не указано", count: 0, lastAt: null, lastFilename: "Не указано"
+      };
+      row.count += 1;
+      const capturedAt = normalizeDate(result.capturedAt);
+      if (capturedAt && (!row.lastAt || timeValue(capturedAt) > timeValue(row.lastAt))) {
+        row.lastAt = capturedAt;
+        row.lastFilename = result.filename || "Не указано";
+      }
+      group.set(device.id, row);
+    }
+    const ordered = (group) => [...group.values()].sort((left, right) => right.count - left.count || left.deviceName.localeCompare(right.deviceName, "ru"));
+    return { authorization: ordered(groups.authorization_error), network: ordered(groups.network_unreachable) };
   }
 
   function getDashboardSummary(candidateState, inputFilters, options) {
@@ -4763,6 +4880,8 @@
     deriveMinimumReboot,
     buildRebootAnalysisIndex,
     getRebootAnalytics,
+    getVersionAnalysis,
+    getConnectionErrorAnalysis,
     getChangeEvents,
     getLatestReviewDecision,
     getProjectCurrentSnapshot,
@@ -4913,6 +5032,8 @@
     equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
     rebootFilters: { period: "all" },
+    rebootView: null,
+    analyticsPage: { rebootEvents: 0, project: 0, firmware: 0, authorization: 0, network: 0 },
     helpQuery: "",
     helpTopicId: null
   };
@@ -5153,6 +5274,9 @@
     if (descriptor.renderer === "settings") return renderSettings(user);
     if (descriptor.renderer === "upload") return renderUpload();
     if (descriptor.renderer === "reboots") return renderReboots();
+    if (descriptor.renderer === "project-versions") return renderVersionModule("project");
+    if (descriptor.renderer === "firmware-versions") return renderVersionModule("firmware");
+    if (descriptor.renderer === "connection-errors") return renderConnectionErrors();
     if (descriptor.renderer === "planned") return renderPlannedModule(descriptor);
     if (descriptor.renderer === "equipment") return renderEquipmentOverview();
     if (descriptor.renderer === "inventory") return renderInventoryRoute(descriptor.route);
@@ -5258,11 +5382,7 @@
     const visible = options.includeZero ? rows : rows.filter((item) => item.count > 0);
     const limited = visible.slice(0, options.limit || 15);
     const maximum = Math.max(1, ...visible.map((item) => item.count));
-    return `<figure class="card reboot-chart"><figcaption><h2>${escapeHtml(title)}</h2>${visible.length > limited.length ? `<small>Показано ${limited.length} из ${visible.length}; итоги рассчитаны по полной выборке.</small>` : ""}</figcaption>${limited.length ? `<div class="reboot-bars">${limited.map((item) => `<div class="reboot-bar-row"><span title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</span><progress max="${maximum}" value="${item.count}">${item.count}</progress><strong>${item.count}</strong></div>`).join("")}</div>` : `<p class="muted">Событий нет.</p>`}</figure>`;
-  }
-
-  function renderRebootLeader(title, leader) {
-    return `<article class="card reboot-leader"><span>${escapeHtml(title)}</span><strong>${leader.count}</strong><p>${leader.labels.length ? leader.labels.map(escapeHtml).join(" · ") : "Нет рассчитанных событий"}</p></article>`;
+    return `<figure class="card reboot-chart">${options.hideTitle ? "" : `<figcaption><h2>${escapeHtml(title)}</h2>${visible.length > limited.length ? `<small>Показано ${limited.length} из ${visible.length}; итоги рассчитаны по полной выборке.</small>` : ""}</figcaption>`}${limited.length ? `<div class="reboot-bars">${limited.map((item) => `<div class="reboot-bar-row"><span title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</span><progress max="${maximum}" value="${item.count}">${item.count}</progress><strong>${item.count}</strong></div>`).join("")}</div>` : `<p class="muted">Событий нет.</p>`}</figure>`;
   }
 
   function rebootEmptyMessage(kind) {
@@ -5283,33 +5403,105 @@
     return `${pad(date.getUTCDate())}.${pad(date.getUTCMonth() + 1)}.${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
   }
 
+  function renderRebootCard(title, value, view) {
+    return `<button class="card reboot-drill-card${ui.rebootView === view ? " selected" : ""}" type="button" data-reboot-view="${view}" aria-expanded="${ui.rebootView === view}"><span>${escapeHtml(title)}</span><strong>${escapeHtml(value)}</strong><small>Открыть данные <span aria-hidden="true">↗</span></small></button>`;
+  }
+
+  function renderRebootTable(headers, rows) {
+    return rows.length ? `<div class="table-wrap"><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : `<p class="muted">В выбранной области данных нет.</p>`;
+  }
+
+  function renderRebootDetail(analytics) {
+    const view = ui.rebootView;
+    if (!view) return "";
+    const details = analytics.details;
+    const deviceRow = (item) => `<tr><td>${escapeHtml(item.deviceName)}</td><td>${item.count}</td><td class="mono">${escapeHtml(item.ip)}</td><td class="mono">${escapeHtml(item.mac)}</td><td>${item.vip ? "Да" : "Нет"}</td><td>${escapeHtml(item.locationName)}</td><td>${escapeHtml(item.address)}</td></tr>`;
+    const locationRow = (item, unique = false) => `<tr><td>${escapeHtml(item.locationName)}</td><td>${unique ? item.uniqueDeviceCount : item.count}</td><td>${escapeHtml(item.address)}</td><td>${escapeHtml(item.deviceNames.join(", ") || "Не указано")}</td></tr>`;
+    const addressRow = (item, unique = false) => `<tr><td>${escapeHtml(item.address)}</td><td>${unique ? item.uniqueDeviceCount : item.count}</td><td>${escapeHtml(item.locationNames.join(", ") || "Не указано")}</td><td>${escapeHtml(item.deviceNames.join(", ") || "Не указано")}</td></tr>`;
+    const deviceHeaders = ["Устройство", "Перезагрузки", "IP", "MAC", "VIP", "Локация", "Адрес"];
+    const locationHeaders = ["Локация", "Перезагрузки", "Адрес", "Устройства"];
+    const addressHeaders = ["Адрес", "Перезагрузки", "Локации", "Устройства"];
+    const dateRows = (rows) => rows.map((item) => `<tr><td>${escapeHtml(item.date)}</td><td>${item.count}</td><td>${item.addresses.map((address) => `${escapeHtml(address.address)} — ${address.count}`).join("<br>")}</td></tr>`);
+    const hourRows = (rows) => rows.map((item) => `<tr><td>${escapeHtml(item.hour)}:00–${escapeHtml(item.hour)}:59</td><td>${item.count}</td></tr>`);
+    const eventRow = (event) => `<tr><td>${escapeHtml(formatRebootTimestamp(event.estimatedAt, event))}</td><td>${escapeHtml(event.deviceName)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}<br><small>${escapeHtml(event.address)}</small></td><td>${event.evidenceResultIds?.length || 1}</td><td>${event.confidence === "confirmed" ? "Date − Uptime" : "Резервное время"}</td></tr>`;
+    const views = {
+      events: ["Выявленные события", () => renderAnalyticsPage("rebootEvents", ["Расчётное время", "Устройство", "IP", "Локация и адрес", "Файлов", "Основание"], analytics.events, eventRow)],
+      devices: ["Количество перезагруженных устройств", () => renderRebootTable(deviceHeaders, details.devices.map(deviceRow))],
+      locations: ["Затронутые локации", () => renderRebootTable(locationHeaders, details.locations.map((item) => locationRow(item)))],
+      topDates: ["TOP 5 дат по перезагрузкам", () => renderRebootTable(["Дата", "Перезагрузки", "Адреса и число событий"], dateRows(details.topDates))],
+      topHours: ["TOP 5 часов за сутки по перезагрузкам", () => renderRebootTable(["Час", "Перезагрузки"], hourRows(details.topHours))],
+      topDevices: ["TOP 5 перезагрузок по устройствам", () => renderRebootTable(deviceHeaders, details.topDevices.map(deviceRow))],
+      topLocations: ["TOP 5 локаций по количеству перезагруженных устройств", () => renderRebootTable(["Локация", "Устройств", "Адрес", "Наименования устройств"], details.topLocationsByDevices.map((item) => locationRow(item, true)))],
+      topAddresses: ["TOP 5 адресов с перезагруженными устройствами", () => renderRebootTable(["Адрес", "Устройств", "Локации", "Устройства"], details.topAddressesByDevices.map((item) => addressRow(item, true)))],
+      byDate: ["Динамика по датам", () => `${renderRebootChart("Динамика по датам", analytics.byDate, { limit: 31, hideTitle: true })}${renderRebootTable(["Дата", "Перезагрузки", "Адреса"], dateRows([...details.dates].sort((left, right) => left.date.localeCompare(right.date))))}`],
+      byHour: ["Помещение по часам", () => `${renderRebootChart("Распределение по часам", analytics.byHour, { limit: 24, includeZero: true, hideTitle: true })}${renderRebootTable(["Час", "Перезагрузки"], hourRows(analytics.byHour.map((item) => ({ hour: item.label, count: item.count }))))}`],
+      byDevice: ["Устройства", () => renderRebootTable(deviceHeaders, details.devices.map(deviceRow))],
+      byLocation: ["Локации", () => renderRebootTable(locationHeaders, details.locations.map((item) => locationRow(item)))],
+      byAddress: ["Адреса", () => renderRebootTable(addressHeaders, details.addresses.map((item) => addressRow(item)))]
+    };
+    const selected = views[view];
+    if (!selected) return "";
+    return `<section class="card reboot-detail section-gap" id="reboot-detail" aria-live="polite"><div class="section-heading"><h2>${escapeHtml(selected[0])}</h2><button class="button secondary" type="button" data-close-reboot-view>Закрыть</button></div>${selected[1]()}</section>`;
+  }
+
   function renderReboots() {
     const analytics = getRebootAnalytics(state, ui.rebootFilters);
     const header = `<header class="page-header reboot-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "reboots").title)}</h1></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
     const filters = renderRebootFilters(ui.rebootFilters, analytics);
     if (!analytics.valid) return `${header}${filters}<div class="error-panel section-gap" role="alert">${escapeHtml(analytics.errors.join("; "))}</div>`;
     const empty = analytics.emptyState ? `<div class="${analytics.emptyState === "no_events" ? "success" : "info"}-panel section-gap"><strong>${escapeHtml(rebootEmptyMessage(analytics.emptyState))}</strong></div>` : "";
-    const leaders = analytics.leaders;
-    const displayedEvents = analytics.events;
+    if (["no_sr", "no_polling", "insufficient"].includes(analytics.emptyState)) return `${header}${filters}${empty}`;
     return `${header}${filters}${empty}
       <section class="dashboard-kpi-grid reboot-kpi-grid section-gap">
-        ${dashboardRouteKpi("Рассчитанные перезагрузки", analytics.summary.minimumReboots, "Уникальные времена запуска по Date − Uptime")}
-        ${dashboardRouteKpi("Затронутые устройства", analytics.summary.affectedDevices, "По текущей SR")}
-        ${dashboardRouteKpi("Затронутые локации", analytics.summary.affectedLocations, "Локация и адрес по актуальной SR")}
-        ${dashboardRouteKpi("Устройства с расчётом", analytics.summary.comparableDevices, "Имеют минимум один пригодный файл Extron")}
+        ${renderRebootCard("Общее количество перезагрузок", analytics.summary.minimumReboots, "events")}
+        ${renderRebootCard("Количество перезагруженных устройств", analytics.summary.affectedDevices, "devices")}
+        ${renderRebootCard("Затронутые локации", analytics.summary.affectedLocations, "locations")}
       </section>
-      <section class="reboot-leader-grid section-gap">${renderRebootLeader("Максимум за дату", leaders.dates)}${renderRebootLeader("Максимум за час", leaders.hours)}${renderRebootLeader("Чаще всего: устройства", leaders.devices)}${renderRebootLeader("Чаще всего: локации", leaders.locations)}${renderRebootLeader("Чаще всего: адреса", leaders.addresses)}</section>
+      <section class="reboot-leader-grid section-gap">
+        ${renderRebootCard("TOP 5 дат по перезагрузкам", analytics.details.topDates.reduce((sum, item) => sum + item.count, 0), "topDates")}
+        ${renderRebootCard("TOP 5 часов за сутки по перезагрузкам", analytics.details.topHours.reduce((sum, item) => sum + item.count, 0), "topHours")}
+        ${renderRebootCard("TOP 5 перезагрузок по устройствам", analytics.details.topDevices.reduce((sum, item) => sum + item.count, 0), "topDevices")}
+        ${renderRebootCard("TOP 5 локаций по количеству перезагруженных устройств", analytics.details.topLocationsByDevices.reduce((sum, item) => sum + item.uniqueDeviceCount, 0), "topLocations")}
+        ${renderRebootCard("TOP 5 адресов с перезагруженными устройствами", analytics.details.topAddressesByDevices.reduce((sum, item) => sum + item.uniqueDeviceCount, 0), "topAddresses")}
+      </section>
       <section class="reboot-chart-grid section-gap">
-        ${renderRebootChart("Динамика по датам", analytics.byDate, { limit: 31 })}
-        ${renderRebootChart("Распределение по часам", analytics.byHour, { limit: 24, includeZero: true })}
-        ${renderRebootChart("Устройства", analytics.byDevice, { limit: 15 })}
-        ${renderRebootChart("Локации", analytics.byLocation, { limit: 15 })}
-        ${renderRebootChart("Адреса", analytics.byAddress, { limit: 15 })}
+        ${renderRebootCard("Динамика по датам", analytics.byDate.length, "byDate")}
+        ${renderRebootCard("Помещение по часам", analytics.byHour.filter((item) => item.count > 0).length, "byHour")}
+        ${renderRebootCard("Устройства", analytics.details.devices.length, "byDevice")}
+        ${renderRebootCard("Локации", analytics.details.locations.length, "byLocation")}
+        ${renderRebootCard("Адреса", analytics.details.addresses.length, "byAddress")}
       </section>
-      <section class="card section-gap reboot-events"><div class="section-heading"><div><p class="eyebrow">Доказательства</p><h2>Выявленные события</h2></div><span class="badge info">${analytics.events.length}</span></div>
-        <p class="muted">При недоступном Time Zone дата и время показаны по локальным часам устройства. IP относится к точно сопоставленному устройству; локация и адрес показаны по актуальной SR.</p>
-        ${displayedEvents.length ? `<div class="table-wrap"><table><thead><tr><th>Расчётное время перезагрузки</th><th>Устройство</th><th>IP</th><th>Локация и адрес</th><th>Доказательство</th><th>Правило</th></tr></thead><tbody>${displayedEvents.map((event) => `<tr><td><strong>${escapeHtml(formatRebootTimestamp(event.estimatedAt, event))}</strong><br><small>${event.timeBasis === "device_local_unknown_timezone" ? "Локальное время устройства; часовой пояс не указан" : `Допуск: ${escapeHtml(formatRebootTimestamp(event.occurredFrom, event))} — ${escapeHtml(formatRebootTimestamp(event.occurredTo, event))}`}</small></td><td><strong>${escapeHtml(event.deviceName)}</strong><br><small>${escapeHtml(formatCategoryLabel(event.category))} · ${escapeHtml(event.manufacturer)} · ${escapeHtml(event.model)}</small></td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}<br><small>${escapeHtml(event.address)}</small></td><td><small>Файлов: ${event.evidenceResultIds?.length || 1}<br>Дата опроса устройства: ${escapeHtml(formatRebootTimestamp(event.currentObservedAt, event))}</small></td><td><span class="badge ${event.confidence === "confirmed" ? "success" : "warning"}">${event.confidence === "confirmed" ? "Date − Uptime" : "Резервный источник времени"}</span><br><small>${escapeHtml(event.ruleVersion)}</small></td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Таблица появится после расчёта событий.</p>`}
-      </section>`;
+      ${renderRebootDetail(analytics)}`;
+  }
+
+  function renderAnalyticsPage(key, headers, rows, renderRow) {
+    const pageSize = 100;
+    const lastPage = Math.max(0, Math.ceil(rows.length / pageSize) - 1);
+    const page = Math.min(lastPage, Math.max(0, ui.analyticsPage[key] || 0));
+    const displayed = rows.slice(page * pageSize, (page + 1) * pageSize);
+    const controls = rows.length > pageSize ? `<div class="analytics-pagination"><span>Показано ${page * pageSize + 1}–${page * pageSize + displayed.length} из ${rows.length}</span><div class="button-row"><button class="button secondary" type="button" data-analytics-page="${key}:${page - 1}"${page === 0 ? " disabled" : ""}>Назад</button><button class="button secondary" type="button" data-analytics-page="${key}:${page + 1}"${page === lastPage ? " disabled" : ""}>Далее</button></div></div>` : "";
+    return `${renderRebootTable(headers, displayed.map(renderRow))}${controls}`;
+  }
+
+  function renderVersionModule(kind) {
+    const route = kind === "project" ? "project-versions" : "firmware-versions";
+    const descriptor = MODULE_CATALOG.find((item) => item.route === route);
+    const analysis = getVersionAnalysis(state, kind);
+    const label = kind === "project" ? "Версия проекта" : "Версия прошивки";
+    return `<header class="page-header"><div><h1>${escapeHtml(descriptor.title)}</h1></div><button class="button secondary" type="button" data-help-topic="${escapeHtml(descriptor.helpId)}">О модуле</button></header>
+      <section class="dashboard-kpi-grid section-gap">${dashboardRouteKpi("Устройств с версией", analysis.devices, "По истории точных опросов")}${dashboardRouteKpi("Зафиксировано изменений", analysis.changes, "Между соседними результатами одного устройства")}</section>
+      <section class="card section-gap analytics-table-card"><h2>История версий</h2>${renderAnalyticsPage(kind, ["Устройство", "IP", "Локация и адрес", "Дата опроса", "Файл", label, "Предыдущая версия", "Сравнение"], analysis.rows, (row) => `<tr><td>${escapeHtml(row.deviceName)}<br><small>${escapeHtml(row.model)}</small></td><td class="mono">${escapeHtml(row.ip)}</td><td>${escapeHtml(row.locationName)}<br><small>${escapeHtml(row.address)}</small></td><td>${escapeHtml(formatDateTime(row.capturedAt))}</td><td>${escapeHtml(row.filename)}</td><td>${escapeHtml(row.version)}</td><td>${escapeHtml(row.previousVersion || "—")}</td><td>${row.comparison === "changed" ? `<span class="badge warning">Изменена</span>` : row.comparison === "first" ? "Первый опрос" : "Без изменений"}</td></tr>`)}</section>`;
+  }
+
+  function renderConnectionErrors() {
+    const descriptor = MODULE_CATALOG.find((item) => item.route === "connection-errors");
+    const analysis = getConnectionErrorAnalysis(state);
+    const headers = ["Устройство", "IP", "MAC", "Локация и адрес", "Случаев", "Последний случай", "Файл"];
+    const row = (item) => `<tr><td>${escapeHtml(item.deviceName)}<br><small>${escapeHtml(item.model)}</small></td><td class="mono">${escapeHtml(item.ip)}</td><td class="mono">${escapeHtml(item.mac)}</td><td>${escapeHtml(item.locationName)}<br><small>${escapeHtml(item.address)}</small></td><td>${item.count}</td><td>${escapeHtml(formatDateTime(item.lastAt))}</td><td>${escapeHtml(item.lastFilename)}</td></tr>`;
+    return `<header class="page-header"><div><h1>${escapeHtml(descriptor.title)}</h1></div><button class="button secondary" type="button" data-help-topic="${escapeHtml(descriptor.helpId)}">О модуле</button></header>
+      <section class="dashboard-kpi-grid section-gap">${dashboardRouteKpi("Ошибка авторизации", analysis.authorization.length, "Устройства")}${dashboardRouteKpi("Недоступны по сети", analysis.network.length, "Устройства")}</section>
+      <section class="card section-gap analytics-table-card"><h2>Не удалось авторизоваться</h2>${renderAnalyticsPage("authorization", headers, analysis.authorization, row)}</section>
+      <section class="card section-gap analytics-table-card"><h2>Недоступны по сети</h2>${renderAnalyticsPage("network", headers, analysis.network, row)}</section>`;
   }
 
   function dashboardRunLabel(run) {
@@ -6142,10 +6334,33 @@
       render();
       return;
     }
+    const rebootCard = event.target.closest("[data-reboot-view]");
+    if (rebootCard) {
+      ui.rebootView = ui.rebootView === rebootCard.dataset.rebootView ? null : rebootCard.dataset.rebootView;
+      render();
+      if (ui.rebootView) document.getElementById("reboot-detail")?.scrollIntoView({ behavior: global.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+      return;
+    }
+    if (event.target.closest("[data-close-reboot-view]")) {
+      ui.rebootView = null;
+      render();
+      return;
+    }
+    const analyticsPageButton = event.target.closest("[data-analytics-page]");
+    if (analyticsPageButton) {
+      const [key, pageText] = String(analyticsPageButton.dataset.analyticsPage || "").split(":");
+      if (Object.hasOwn(ui.analyticsPage, key) && Number.isSafeInteger(Number(pageText)) && Number(pageText) >= 0) {
+        ui.analyticsPage[key] = Number(pageText);
+        render();
+      }
+      return;
+    }
 
     if (navigationAction?.type === "navigate") {
+      const previousRoute = ui.route;
       const navigation = reduceNavigationState(ui, navigationAction);
       ui.route = navigation.route;
+      if (ui.route === "reboots" && previousRoute !== "reboots") ui.rebootView = null;
       ui.equipmentExpanded = navigation.equipmentExpanded;
       if (ui.route === "reference") {
         ui.helpQuery = "";

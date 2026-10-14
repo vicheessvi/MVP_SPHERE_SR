@@ -89,22 +89,20 @@
     },
     {
       route: "reboots", renderer: "reboots", title: "Анализ перезагрузок устройств", order: 15, helpId: "module-reboots", contextHelp: true,
-      summary: "Вычисляет перезагрузки Extron по дате устройства и uptime и показывает временные и территориальные закономерности.",
-      details: "Правило extron-reboot-v2 для каждого точно сопоставленного файла вычисляет время запуска как Device Status.Date минус Device Status.Uptime. Одинаковые времена запуска объединяются с допуском пять секунд, а новое время запуска считается следующей перезагрузкой. IP берётся из сопоставленного устройства, локация и адрес — по актуальной SR. При неизвестном часовом поясе результат помечается как локальное время устройства; конфликтные данные не увеличивают счётчик.",
+      summary: "Вычисляет перезагрузки Extron и раскрывает рейтинги по устройствам, датам, часам, локациям и адресам.",
+      details: "Правило extron-reboot-v2 вычисляет время запуска как Device Status.Date минус Device Status.Uptime. Одинаковые времена объединяются с допуском пять секунд. Карточки открывают таблицы по текущим фильтрам; TOP 5 локаций и адресов считает уникальные устройства, другие рейтинги — события. IP, MAC, VIP, локация и адрес берутся из актуальной SR. При неизвестном часовом поясе время остаётся локальным временем устройства; конфликтные данные исключаются.",
       keywords: ["перезагрузки", "uptime", "время безотказной работы", "аналитика", "события"]
     },
     {
-      route: "project-versions", renderer: "planned", title: "Анализ версий проектов", order: 16, helpId: "module-project-versions", contextHelp: true,
-      status: "in_development",
-      summary: "Раздел для анализа версий проектов устройств.",
-      details: "Модуль находится в разработке. Источники данных, правила сравнения версий и состав показателей будут определены отдельно.",
+      route: "project-versions", renderer: "project-versions", title: "Анализ версий проектов", order: 16, helpId: "module-project-versions", contextHelp: true,
+      summary: "Сравнивает версии проектов в последовательных результатах опроса каждого устройства.",
+      details: "Берёт версию только из подтверждённого поля Project Info.Version успешного и однозначно связанного с актуальной SR результата. Показывает первую, неизменную и изменившуюся версию по времени опроса. Отсутствующее значение не считается изменением.",
       keywords: ["анализ", "версии", "проекты", "устройства"]
     },
     {
-      route: "firmware-versions", renderer: "planned", title: "Анализ версий прошивок", order: 17, helpId: "module-firmware-versions", contextHelp: true,
-      status: "in_development",
-      summary: "Раздел для анализа версий прошивок устройств.",
-      details: "Модуль находится в разработке. Источники данных, правила сравнения версий прошивок и состав показателей будут определены отдельно.",
+      route: "firmware-versions", renderer: "firmware-versions", title: "Анализ версий прошивок", order: 17, helpId: "module-firmware-versions", contextHelp: true,
+      summary: "Сравнивает версии прошивок по истории опросов каждого устройства.",
+      details: "Использует поле Firmware.Version только из успешных однозначно сопоставленных результатов. Сравнение не смешивает разные устройства, а отсутствие версии не создаёт ложного изменения.",
       keywords: ["анализ", "версии", "прошивки", "устройства", "firmware"]
     },
     {
@@ -115,10 +113,9 @@
       keywords: ["сравнение", "поля", "файлы опроса", "параметры", "выгрузка", "sr", "расхождения"]
     },
     {
-      route: "connection-errors", renderer: "planned", title: "Ошибки при подключении", order: 19, helpId: "module-connection-errors", contextHelp: true,
-      status: "in_development",
-      summary: "Раздел для анализа ошибок при подключении к устройствам.",
-      details: "Модуль находится в разработке. Источники данных, правила классификации ошибок и состав показателей будут определены отдельно.",
+      route: "connection-errors", renderer: "connection-errors", title: "Ошибки при подключении", order: 19, helpId: "module-connection-errors", contextHelp: true,
+      summary: "Разделяет подтверждённые отказы авторизации и сетевую недоступность при опросах.",
+      details: "Показывает по актуальной SR устройства с подтверждёнными статусами, число случаев и дату последнего. Ошибки обработки и неизвестные статусы не называются ошибкой авторизации или сети.",
       keywords: ["ошибки", "подключение", "устройства", "сеть", "авторизация"]
     },
     {
@@ -252,7 +249,7 @@
     const terms = input.uiTerms || UI_TERMS;
     const statusDescriptors = input.statusDescriptors || STATUS_DESCRIPTORS;
     const pollingHelpEntries = input.pollingHelpEntries || POLLING_HELP_ENTRIES;
-    const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "reboots", "planned", "equipment", "inventory", "upload", "settings", "reference"]);
+    const allowedRenderers = new Set(input.allowedRenderers || ["dashboard", "reboots", "planned", "project-versions", "firmware-versions", "connection-errors", "equipment", "inventory", "upload", "settings", "reference"]);
     const errors = [];
     const russian = /[А-Яа-яЁё]/;
 
