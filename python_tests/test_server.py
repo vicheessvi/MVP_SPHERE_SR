@@ -124,7 +124,7 @@ class ServerTests(unittest.TestCase):
     def test_credential_plan_result_ack_and_terminal_clear_contract(self) -> None:
         cookie, csrf = self.harness.session()
         digest = self._upload_credentials(cookie, csrf)
-        plan = {"schemaVersion": 3, "scheduledAt": "1970-01-01T00:00:00.000Z", "intervalSeconds": 0, "authenticationInputSha256": digest, "managementTasks": [], "devices": [{"ip": "192.0.2.20", "category": "controller", "manufacturer": "Extron", "model": "Synthetic", "pollingSupported": False}]}
+        plan = {"schemaVersion": 3, "scheduledAt": "1970-01-01T00:00:00.000Z", "intervalMinSeconds": 5, "intervalMaxSeconds": 10, "authenticationInputSha256": digest, "managementTasks": [], "devices": [{"ip": "192.0.2.20", "category": "controller", "manufacturer": "Extron", "model": "Synthetic", "pollingSupported": False}]}
         status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=json.dumps({"planId": "synthetic-plan", "plan": plan, "allowInsecureTls": True}).encode())
         self.assertEqual(status, 202, body)
         job_id = json.loads(body)["jobId"]
@@ -165,6 +165,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["error"], "credentials_required")
         status, _, body = self.harness.request("POST", "/api/polling/jobs/not-this-session/cancel", headers=self._mutation_headers(cookie, csrf), body=b"")
         self.assertEqual(status, 404)
+
+    def test_invalid_random_interval_rejected_before_job_start(self) -> None:
+        cookie, csrf = self.harness.session()
+        for bounds in ({"intervalMinSeconds": 10}, {"intervalMinSeconds": 11, "intervalMaxSeconds": 10}, {"intervalMinSeconds": True, "intervalMaxSeconds": 10}):
+            with self.subTest(bounds=bounds):
+                digest = self._upload_credentials(cookie, csrf)
+                plan = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": [], "devices": [{"ip": "192.0.2.20"}], **bounds}
+                status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=json.dumps({"plan": plan}).encode())
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(body)["error"], "plan_invalid")
 
     def test_preparatory_parse_errors_clear_previous_credentials(self) -> None:
         cookie, csrf = self.harness.session()

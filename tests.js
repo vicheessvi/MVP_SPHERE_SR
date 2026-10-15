@@ -2123,7 +2123,7 @@
     assert(css.includes('grid-template-columns: repeat(4, minmax(0, 1fr));'));
     assert(fs.readFileSync(require("path").join(__dirname, "index.html"), "utf8").includes('runtime/sphere.js'));
     assertEqual(typeof require("./runtime/sphere").mount, "function");
-    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "Закрыть порты 80, 23 (http, telnet)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Закрыть порты 80, 23 (http, telnet)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
     assert(source.includes("START_MVP_SPHERE_SR.py"));
     assert(!source.includes("start.ps1"));
     assert(!source.includes("START_MVP_SPHERE_SR.cmd"));
@@ -2160,6 +2160,20 @@
     assert(exported.payload.devices.some((device) => device.manufacturer === "Extron" && device.pollingSupported));
     assert(exported.payload.devices.some((device) => device.manufacturer === "Crestron" && !device.pollingSupported));
     assert(!/password|login|credential/i.test(JSON.stringify(exported.payload)));
+  });
+
+  test("План передаёт включительные границы случайного интервала", () => {
+    const sr = api.importSrRows(api.createDemoState(), { filename: "plan.xlsx", headers: srHeaders(), rows: [srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron" })] });
+    const input = { categories: ["controller"], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL], scheduledAt: "2026-06-10T10:00:00", intervalMinSeconds: "5", intervalMaxSeconds: "10", credentialsReady: true, credentialSourceSha256: "a".repeat(64) };
+    const result = api.createPollingPlan(sr.state, input);
+    assert(result.ok, result.errors?.join("; "));
+    const exported = api.buildPollingPlanExport(result.state, result.plan.id);
+    assertEqual(exported.payload.intervalMinSeconds, 5);
+    assertEqual(exported.payload.intervalMaxSeconds, 10);
+    assert(!Object.hasOwn(exported.payload, "intervalSeconds"));
+    assert(!api.createPollingPlan(sr.state, { ...input, intervalMinSeconds: "11" }).ok);
+    assert(!api.createPollingPlan(sr.state, { ...input, intervalMaxSeconds: "" }).ok);
+    assert(!api.createPollingPlan(sr.state, { ...input, intervalMinSeconds: "1.5" }).ok);
   });
 
   function dashboardFixture() {
@@ -2411,9 +2425,35 @@
     assertEqual(analysis.details.topDates[0].count, 3);
     assertEqual(analysis.details.topDates[0].addresses.length, 1);
     assertEqual(analysis.details.topDates[0].addresses[0].count, 3);
+    assertEqual(analysis.details.topDevices[0].rebootDates[0].date, "2026-08-10");
+    assertEqual(analysis.details.topDevices[0].rebootDates[0].count, 2);
     assertEqual(analysis.details.topLocationsByDevices[0].uniqueDeviceCount, 2);
     assertEqual(analysis.details.topLocationsByDevices[0].count, 3);
     assertEqual(analysis.details.topLocationsByDevices[0].deviceNames.length, 2);
+  });
+
+  test("TOP 5 часов раскрывает локации, адреса и устройства без повторного счёта", () => {
+    const state = rebootFixture([
+      rebootResult("a1", "reboot-device", "2026-08-10T10:00:00.000Z", 3600),
+      rebootResult("a2", "reboot-device", "2026-08-10T10:30:00.000Z", 4500),
+      rebootResult("b1", "reboot-device-2", "2026-08-10T10:20:00.000Z", 3600),
+      rebootResult("c1", "reboot-device-3", "2026-08-10T10:15:00.000Z", 3600)
+    ]);
+    state.locations.push({ id: "reboot-location-2", name: "Локация Б", address: "Адрес Б", inCurrentSr: true });
+    state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "reboot-device-2", name: "Контроллер Б", ip: "198.51.100.11" });
+    state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "reboot-device-3", name: "Контроллер В", ip: "198.51.100.12", locationId: "reboot-location-2" });
+    const details = api.getRebootAnalytics(state, { period: "all" }, { timeZone: "UTC" }).details;
+    assertEqual(details.topHours[0].hour, "09");
+    assertEqual(details.topHours[0].count, 4);
+    assertEqual(details.topHours[0].locations.length, 2);
+    assertEqual(details.topHours[0].locations[0].locationName, "Локация А");
+    assertEqual(details.topHours[0].locations[0].address, "Адрес А");
+    assertEqual(details.topHours[0].locations[0].count, 3);
+    assertEqual(details.topHours[0].locations[0].devices.length, 2);
+    assertEqual(details.topHours[0].locations[0].devices[0].count, 2);
+    assertEqual(details.topHours[0].locations[1].address, "Адрес Б");
+    assertEqual(details.topHours[0].locations[1].count, 1);
+    assertEqual(details.topDevices[0].rebootDates[0].count, 2);
   });
 
   test("Обзор перезагрузок содержит 13 раскрываемых карточек без постоянной таблицы событий", () => {
@@ -2424,6 +2464,11 @@
     assert(view.includes("renderRebootDetail(analytics)"));
     assert(!view.includes("reboot-events"));
     assert(source.includes('data-reboot-view="${view}"'));
+    assert(source.includes('<span class="reboot-top-list" role="list">'));
+    assert(view.includes('analytics.details.topDates.map((item) => ({ label: item.date, count: item.count }))'));
+    assert(view.includes('analytics.details.topLocationsByDevices.map((item) => ({ label: item.locationName, count: item.uniqueDeviceCount, detail: item.deviceNames.join(", ") }))'));
+    assert(source.includes('"Даты перезагрузок"'));
+    assert(source.includes('"Перезагрузки в локации"'));
   });
 
   test("TOP 5 ограничивает число дат и часов, сохраняя полную динамику", () => {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import secrets
 import subprocess
 import sys
 import threading
@@ -202,6 +203,19 @@ def abortable_wait(milliseconds: Any, cancel_event: threading.Event | None = Non
         raise PollingCancelled("Polling cancelled")
 
 
+def plan_interval_bounds(plan: dict[str, Any]) -> tuple[int, int]:
+    """Return inclusive seconds bounds; accept older fixed-interval plans."""
+    if "intervalMinSeconds" in plan or "intervalMaxSeconds" in plan:
+        if "intervalMinSeconds" not in plan or "intervalMaxSeconds" not in plan:
+            raise PollingError("Polling interval bounds must both be present")
+        minimum, maximum = plan["intervalMinSeconds"], plan["intervalMaxSeconds"]
+    else:
+        minimum = maximum = plan.get("intervalSeconds", 0)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 2**53 - 1 for value in (minimum, maximum)) or minimum > maximum:
+        raise PollingError("Polling interval bounds must be ordered non-negative safe integers")
+    return minimum, maximum
+
+
 def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     if not isinstance(plan, dict) or not isinstance(plan.get("devices"), list):
         raise PollingError("Polling plan must contain devices[]")
@@ -223,9 +237,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
     valid_ips = [ip for ip in ips if ip]
     if len(set(valid_ips)) != len(valid_ips):
         raise PollingError("Polling plan contains duplicate IP")
-    interval = plan.get("intervalSeconds") or 0
-    if isinstance(interval, bool) or not isinstance(interval, int) or interval < 0:
-        raise PollingError("Polling interval must be a non-negative integer")
+    interval_min, interval_max = plan_interval_bounds(plan)
     cancel_event = settings.get("cancel_event")
     if settings.get("honor_schedule") and plan.get("scheduledAt"):
         scheduled = str(plan["scheduledAt"]).replace("Z", "+00:00")
@@ -257,8 +269,10 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
         if settings.get("on_progress"):
             settings["on_progress"]({"stage": "processed", "index": index + 1, "total": len(devices), "result": result})
         has_next_supported = any(plan_device_supported(candidate) for candidate in devices[index + 1 :])
-        if result.get("networkAttempted") is not False and has_next_supported and interval > 0:
-            if settings.get("on_progress"):
-                settings["on_progress"]({"stage": "waiting", "index": index + 1, "total": len(devices), "waitSeconds": interval})
-            abortable_wait(interval * 1000, cancel_event, settings.get("wait"))
+        if result.get("networkAttempted") is not False and has_next_supported:
+            interval = interval_min + secrets.randbelow(interval_max - interval_min + 1)
+            if interval > 0:
+                if settings.get("on_progress"):
+                    settings["on_progress"]({"stage": "waiting", "index": index + 1, "total": len(devices), "waitSeconds": interval})
+                abortable_wait(interval * 1000, cancel_event, settings.get("wait"))
     return results

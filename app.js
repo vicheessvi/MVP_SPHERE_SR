@@ -2071,8 +2071,16 @@
     }
     const scheduledAt = normalizeDate(input.scheduledAt);
     if (!scheduledAt) errors.push("Дата и время начала опроса обязательны");
-    const intervalSeconds = Number(input.intervalSeconds);
-    if (!Number.isInteger(intervalSeconds) || intervalSeconds < 0 || !Number.isFinite(intervalSeconds)) errors.push("Интервал должен быть целым числом секунд от 0");
+    const legacyInterval = input.intervalMinSeconds === undefined && input.intervalMaxSeconds === undefined;
+    const minInput = legacyInterval ? input.intervalSeconds : input.intervalMinSeconds;
+    const maxInput = legacyInterval ? input.intervalSeconds : input.intervalMaxSeconds;
+    const intervalMinSeconds = Number(minInput);
+    const intervalMaxSeconds = Number(maxInput);
+    if (minInput === undefined || maxInput === undefined || String(minInput).trim() === "" || String(maxInput).trim() === "" ||
+        !Number.isSafeInteger(intervalMinSeconds) || !Number.isSafeInteger(intervalMaxSeconds) ||
+        intervalMinSeconds < 0 || intervalMaxSeconds < intervalMinSeconds) {
+      errors.push("Укажите целые границы интервала в секундах: от 0 и не больше значения «До»");
+    }
     if (!input.credentialsReady) errors.push("Введите учётные данные оборудования в модуле «Загрузка данных и опрос устройств»");
     if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить введённые учётные данные");
     if (!projection.supportedDevices.length) errors.push("Среди выбранных устройств нет оборудования с поддерживаемым автоматическим опросом");
@@ -2083,7 +2091,8 @@
     const plan = {
       id: createId("polling-run"), kind: "plan", identityKey: `plan|${scheduledAt}|${nowIso()}`,
       folderName: null, capturedAt: scheduledAt, capturedAtSource: "planned", importedAt: nowIso(), importedById: input.actorId || "system",
-      intervalSeconds, authenticationInputSha256: String(input.credentialSourceSha256).toLowerCase(), selection: deepClone(projection.selection),
+      intervalMinSeconds, intervalMaxSeconds, ...(legacyInterval ? { intervalSeconds: intervalMinSeconds } : {}),
+      authenticationInputSha256: String(input.credentialSourceSha256).toLowerCase(), selection: deepClone(projection.selection),
       targetSource: projection.targetSource,
       targetSourceSha256: usesManagementTargetList ? String(input.managementTargetSourceSha256).toLowerCase() : null,
       deviceIds: usesManagementTargetList ? [] : projection.selectedDevices.map((device) => device.id),
@@ -2105,7 +2114,7 @@
       : (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).map(pollingRuntimeDevice);
     return {
       ok: true,
-      payload: { schemaVersion: 3, scheduledAt: plan.capturedAt, intervalSeconds: plan.intervalSeconds || 0, authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), devices },
+      payload: { schemaVersion: 3, scheduledAt: plan.capturedAt, intervalMinSeconds: plan.intervalMinSeconds, intervalMaxSeconds: plan.intervalMaxSeconds, ...(Number.isInteger(plan.intervalSeconds) ? { intervalSeconds: plan.intervalSeconds } : {}), authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), devices },
       filename: `extron-polling-plan-${String(plan.capturedAt || "").slice(0, 10) || "local"}.json`,
       errors: []
     };
@@ -2445,11 +2454,14 @@
     const devices = new Map(), locations = new Map(), addresses = new Map();
     const dates = new Map(), hours = new Map();
     events.forEach((event, index) => {
+      const dateKey = eventDates[index];
+      const hourKey = eventHours[index];
       const device = devices.get(event.deviceId) || {
         deviceId: event.deviceId, deviceName: event.deviceName, ip: event.ip, mac: event.mac,
-        vip: event.vip, locationName: event.locationName, address: event.address, count: 0
+        vip: event.vip, locationName: event.locationName, address: event.address, count: 0, rebootDates: new Map()
       };
       device.count += 1;
+      device.rebootDates.set(dateKey, (device.rebootDates.get(dateKey) || 0) + 1);
       devices.set(event.deviceId, device);
 
       if (event.locationId) {
@@ -2470,19 +2482,32 @@
       address.locationNames.add(event.locationName);
       addresses.set(event.address, address);
 
-      const dateKey = eventDates[index];
       const date = dates.get(dateKey) || { date: dateKey, count: 0, addresses: new Map() };
       date.count += 1;
       date.addresses.set(event.address, (date.addresses.get(event.address) || 0) + 1);
       dates.set(dateKey, date);
-      hours.set(eventHours[index], (hours.get(eventHours[index]) || 0) + 1);
+      const hour = hours.get(hourKey) || { hour: hourKey, count: 0, locations: new Map() };
+      hour.count += 1;
+      const locationKey = event.locationId || `unknown:${event.locationName}|${event.address}`;
+      const hourLocation = hour.locations.get(locationKey) || {
+        locationId: event.locationId, locationName: event.locationName, address: event.address, count: 0, devices: new Map()
+      };
+      hourLocation.count += 1;
+      const hourDevice = hourLocation.devices.get(event.deviceId) || { deviceId: event.deviceId, deviceName: event.deviceName, ip: event.ip, count: 0 };
+      hourDevice.count += 1;
+      hourLocation.devices.set(event.deviceId, hourDevice);
+      hour.locations.set(locationKey, hourLocation);
+      hours.set(hourKey, hour);
     });
     const byCount = (left, right) => right.count - left.count || String(left.deviceName || left.locationName || left.address || left.date || left.hour).localeCompare(String(right.deviceName || right.locationName || right.address || right.date || right.hour), "ru");
-    const deviceRows = [...devices.values()].sort(byCount);
+    const deviceRows = [...devices.values()].map((row) => ({ ...row, rebootDates: [...row.rebootDates].map(([date, count]) => ({ date, count })).sort((left, right) => right.date.localeCompare(left.date)) })).sort(byCount);
     const locationRows = [...locations.values()].map((row) => ({ ...row, uniqueDeviceCount: row.deviceIds.size, deviceNames: [...row.deviceNames.values()].sort((a, b) => a.localeCompare(b, "ru")) })).sort(byCount);
     const addressRows = [...addresses.values()].map((row) => ({ ...row, uniqueDeviceCount: row.deviceIds.size, deviceNames: [...row.deviceNames.values()].sort((a, b) => a.localeCompare(b, "ru")), locationNames: [...row.locationNames].sort((a, b) => a.localeCompare(b, "ru")) })).sort(byCount);
     const dateRows = [...dates.values()].map((row) => ({ ...row, addresses: [...row.addresses].map(([address, count]) => ({ address, count })).sort(byCount) })).sort(byCount);
-    const hourRows = [...hours].map(([hour, count]) => ({ hour, count })).sort(byCount);
+    const hourRows = [...hours.values()].map((row) => ({
+      ...row,
+      locations: [...row.locations.values()].map((location) => ({ ...location, devices: [...location.devices.values()].sort(byCount) })).sort(byCount)
+    })).sort(byCount);
     return {
       devices: deviceRows, locations: locationRows, addresses: addressRows, dates: dateRows, hours: hourRows,
       topDates: dateRows.slice(0, 5), topHours: hourRows.slice(0, 5), topDevices: deviceRows.slice(0, 5),
@@ -5023,7 +5048,7 @@
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
-    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false },
+    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "5", intervalMaxSeconds: "10", allowInsecureTls: true, disableInsecureManagementServices: false },
     credentialSummary: null,
     managementTargetListSummary: null,
     pollingOutputFolderName: null,
@@ -5403,8 +5428,13 @@
     return `${pad(date.getUTCDate())}.${pad(date.getUTCMonth() + 1)}.${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
   }
 
-  function renderRebootCard(title, value, view) {
-    return `<button class="card reboot-drill-card${ui.rebootView === view ? " selected" : ""}" type="button" data-reboot-view="${view}" aria-expanded="${ui.rebootView === view}"><span>${escapeHtml(title)}</span><strong>${escapeHtml(value)}</strong><small>Открыть данные <span aria-hidden="true">↗</span></small></button>`;
+  function renderRebootCard(title, value, view, previewRows) {
+    const content = Array.isArray(previewRows)
+      ? previewRows.length
+        ? `<span class="reboot-top-list" role="list">${previewRows.map((item) => `<span class="reboot-top-item" role="listitem"><span>${escapeHtml(item.label)}</span><strong>${item.count}</strong>${item.detail ? `<small>${escapeHtml(item.detail)}</small>` : ""}</span>`).join("")}</span>`
+        : `<span class="muted">Данных нет</span>`
+      : `<strong>${escapeHtml(value)}</strong>`;
+    return `<button class="card reboot-drill-card${ui.rebootView === view ? " selected" : ""}" type="button" data-reboot-view="${view}" aria-expanded="${ui.rebootView === view}"><span>${escapeHtml(title)}</span>${content}<small>Открыть данные <span aria-hidden="true">↗</span></small></button>`;
   }
 
   function renderRebootTable(headers, rows) {
@@ -5415,7 +5445,7 @@
     const view = ui.rebootView;
     if (!view) return "";
     const details = analytics.details;
-    const deviceRow = (item) => `<tr><td>${escapeHtml(item.deviceName)}</td><td>${item.count}</td><td class="mono">${escapeHtml(item.ip)}</td><td class="mono">${escapeHtml(item.mac)}</td><td>${item.vip ? "Да" : "Нет"}</td><td>${escapeHtml(item.locationName)}</td><td>${escapeHtml(item.address)}</td></tr>`;
+    const deviceRow = (item, showDates = false) => `<tr><td>${escapeHtml(item.deviceName)}</td><td>${item.count}</td>${showDates ? `<td>${item.rebootDates.map((date) => `${escapeHtml(date.date)}${date.count > 1 ? ` (${date.count})` : ""}`).join("<br>")}</td>` : ""}<td class="mono">${escapeHtml(item.ip)}</td><td class="mono">${escapeHtml(item.mac)}</td><td>${item.vip ? "Да" : "Нет"}</td><td>${escapeHtml(item.locationName)}</td><td>${escapeHtml(item.address)}</td></tr>`;
     const locationRow = (item, unique = false) => `<tr><td>${escapeHtml(item.locationName)}</td><td>${unique ? item.uniqueDeviceCount : item.count}</td><td>${escapeHtml(item.address)}</td><td>${escapeHtml(item.deviceNames.join(", ") || "Не указано")}</td></tr>`;
     const addressRow = (item, unique = false) => `<tr><td>${escapeHtml(item.address)}</td><td>${unique ? item.uniqueDeviceCount : item.count}</td><td>${escapeHtml(item.locationNames.join(", ") || "Не указано")}</td><td>${escapeHtml(item.deviceNames.join(", ") || "Не указано")}</td></tr>`;
     const deviceHeaders = ["Устройство", "Перезагрузки", "IP", "MAC", "VIP", "Локация", "Адрес"];
@@ -5423,14 +5453,15 @@
     const addressHeaders = ["Адрес", "Перезагрузки", "Локации", "Устройства"];
     const dateRows = (rows) => rows.map((item) => `<tr><td>${escapeHtml(item.date)}</td><td>${item.count}</td><td>${item.addresses.map((address) => `${escapeHtml(address.address)} — ${address.count}`).join("<br>")}</td></tr>`);
     const hourRows = (rows) => rows.map((item) => `<tr><td>${escapeHtml(item.hour)}:00–${escapeHtml(item.hour)}:59</td><td>${item.count}</td></tr>`);
+    const hourDetailRows = (rows) => rows.flatMap((item) => item.locations.map((location, index) => `<tr>${index === 0 ? `<th scope="rowgroup" rowspan="${item.locations.length}">${escapeHtml(item.hour)}:00–${escapeHtml(item.hour)}:59</th><td rowspan="${item.locations.length}">${item.count}</td>` : ""}<td>${escapeHtml(location.locationName)}</td><td>${escapeHtml(location.address)}</td><td>${location.count}</td><td>${location.devices.map((device) => `${escapeHtml(device.deviceName)} (${escapeHtml(device.ip)}) — ${device.count}`).join("<br>")}</td></tr>`));
     const eventRow = (event) => `<tr><td>${escapeHtml(formatRebootTimestamp(event.estimatedAt, event))}</td><td>${escapeHtml(event.deviceName)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}<br><small>${escapeHtml(event.address)}</small></td><td>${event.evidenceResultIds?.length || 1}</td><td>${event.confidence === "confirmed" ? "Date − Uptime" : "Резервное время"}</td></tr>`;
     const views = {
       events: ["Выявленные события", () => renderAnalyticsPage("rebootEvents", ["Расчётное время", "Устройство", "IP", "Локация и адрес", "Файлов", "Основание"], analytics.events, eventRow)],
       devices: ["Количество перезагруженных устройств", () => renderRebootTable(deviceHeaders, details.devices.map(deviceRow))],
       locations: ["Затронутые локации", () => renderRebootTable(locationHeaders, details.locations.map((item) => locationRow(item)))],
       topDates: ["TOP 5 дат по перезагрузкам", () => renderRebootTable(["Дата", "Перезагрузки", "Адреса и число событий"], dateRows(details.topDates))],
-      topHours: ["TOP 5 часов за сутки по перезагрузкам", () => renderRebootTable(["Час", "Перезагрузки"], hourRows(details.topHours))],
-      topDevices: ["TOP 5 перезагрузок по устройствам", () => renderRebootTable(deviceHeaders, details.topDevices.map(deviceRow))],
+      topHours: ["TOP 5 часов за сутки по перезагрузкам", () => renderRebootTable(["Интервал", "Всего перезагрузок", "Локация", "Адрес", "Перезагрузки в локации", "Устройства"], hourDetailRows(details.topHours))],
+      topDevices: ["TOP 5 перезагрузок по устройствам", () => renderRebootTable(["Устройство", "Перезагрузки", "Даты перезагрузок", "IP", "MAC", "VIP", "Локация", "Адрес"], details.topDevices.map((item) => deviceRow(item, true)))],
       topLocations: ["TOP 5 локаций по количеству перезагруженных устройств", () => renderRebootTable(["Локация", "Устройств", "Адрес", "Наименования устройств"], details.topLocationsByDevices.map((item) => locationRow(item, true)))],
       topAddresses: ["TOP 5 адресов с перезагруженными устройствами", () => renderRebootTable(["Адрес", "Устройств", "Локации", "Устройства"], details.topAddressesByDevices.map((item) => addressRow(item, true)))],
       byDate: ["Динамика по датам", () => `${renderRebootChart("Динамика по датам", analytics.byDate, { limit: 31, hideTitle: true })}${renderRebootTable(["Дата", "Перезагрузки", "Адреса"], dateRows([...details.dates].sort((left, right) => left.date.localeCompare(right.date))))}`],
@@ -5458,11 +5489,11 @@
         ${renderRebootCard("Затронутые локации", analytics.summary.affectedLocations, "locations")}
       </section>
       <section class="reboot-leader-grid section-gap">
-        ${renderRebootCard("TOP 5 дат по перезагрузкам", analytics.details.topDates.reduce((sum, item) => sum + item.count, 0), "topDates")}
-        ${renderRebootCard("TOP 5 часов за сутки по перезагрузкам", analytics.details.topHours.reduce((sum, item) => sum + item.count, 0), "topHours")}
-        ${renderRebootCard("TOP 5 перезагрузок по устройствам", analytics.details.topDevices.reduce((sum, item) => sum + item.count, 0), "topDevices")}
-        ${renderRebootCard("TOP 5 локаций по количеству перезагруженных устройств", analytics.details.topLocationsByDevices.reduce((sum, item) => sum + item.uniqueDeviceCount, 0), "topLocations")}
-        ${renderRebootCard("TOP 5 адресов с перезагруженными устройствами", analytics.details.topAddressesByDevices.reduce((sum, item) => sum + item.uniqueDeviceCount, 0), "topAddresses")}
+        ${renderRebootCard("TOP 5 дат по перезагрузкам", null, "topDates", analytics.details.topDates.map((item) => ({ label: item.date, count: item.count })))}
+        ${renderRebootCard("TOP 5 часов за сутки по перезагрузкам", null, "topHours", analytics.details.topHours.map((item) => ({ label: `${item.hour}:00–${item.hour}:59`, count: item.count })))}
+        ${renderRebootCard("TOP 5 перезагрузок по устройствам", null, "topDevices", analytics.details.topDevices.map((item) => ({ label: item.deviceName, count: item.count })))}
+        ${renderRebootCard("TOP 5 локаций по количеству перезагруженных устройств", null, "topLocations", analytics.details.topLocationsByDevices.map((item) => ({ label: item.locationName, count: item.uniqueDeviceCount, detail: item.deviceNames.join(", ") })))}
+        ${renderRebootCard("TOP 5 адресов с перезагруженными устройствами", null, "topAddresses", analytics.details.topAddressesByDevices.map((item) => ({ label: item.address, count: item.uniqueDeviceCount })))}
       </section>
       <section class="reboot-chart-grid section-gap">
         ${renderRebootCard("Динамика по датам", analytics.byDate.length, "byDate")}
@@ -5929,7 +5960,7 @@
             ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
             ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
           </div>` : `<div class="polling-ip-selector"><div class="field"><label for="polling-target-ip">IP-адрес</label><input id="polling-target-ip" name="ipAddress" data-polling-ip-input inputmode="decimal" autocomplete="off" placeholder="Например, 192.0.2.10" value="${escapeHtml(ui.pollingPlanSelection.ipAddress || "")}"></div><div data-polling-ip-result aria-live="polite">${renderPollingIpTarget(projection)}</div></div>`}
-          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><label>Интервал</label><div class="field-with-unit"><input name="intervalSeconds" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalSeconds || "0")}" required><span>секунд</span></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Закрыть порты 80, 23 (http, telnet)</label>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Закрытие портов: доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Фильтры используют отдельный список устройств.</p>` : ""}<button class="button primary" type="submit"${automaticPollingMonitor ? " disabled" : ""}>Сформировать и запустить опрос</button></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><span class="field-label">Интервал между устройствами, секунд</span><div class="polling-interval-range"><label for="polling-interval-min">От<input id="polling-interval-min" name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMinSeconds ?? "5")}" required></label><label for="polling-interval-max">До<input id="polling-interval-max" name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMaxSeconds ?? "10")}" required></label></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Закрыть порты 80, 23 (http, telnet)</label>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Закрытие портов: доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Фильтры используют отдельный список устройств.</p>` : ""}<button class="button primary" type="submit"${automaticPollingMonitor ? " disabled" : ""}>Сформировать и запустить опрос</button></div>
         </form>
         <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div><div><dt>Закрытие портов доступно</dt><dd data-polling-count="management-eligible">${projection.managementEligibleDevices.length}</dd></div><div><dt>Закрытие портов будет пропущено</dt><dd data-polling-count="management-skipped">${projection.managementSkippedDevices.length}</dd></div></dl>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
@@ -6629,7 +6660,8 @@
       ui.pollingPlanSelection.mode = formData.get("pollingMode") === POLLING_SELECTION_MODE_SINGLE_IP ? POLLING_SELECTION_MODE_SINGLE_IP : POLLING_SELECTION_MODE_FILTERS;
       if (ui.pollingPlanSelection.mode === POLLING_SELECTION_MODE_SINGLE_IP) ui.pollingPlanSelection.ipAddress = String(formData.get("ipAddress") || "");
       ui.pollingPlanSelection.scheduledAt = String(formData.get("scheduledAt") || "");
-      ui.pollingPlanSelection.intervalSeconds = String(formData.get("intervalSeconds") || "");
+      ui.pollingPlanSelection.intervalMinSeconds = String(formData.get("intervalMinSeconds") ?? "");
+      ui.pollingPlanSelection.intervalMaxSeconds = String(formData.get("intervalMaxSeconds") ?? "");
       ui.pollingPlanSelection.allowInsecureTls = formData.get("allowInsecureTls") === "on";
       ui.pollingPlanSelection.disableInsecureManagementServices = formData.get("disableInsecureManagementServices") === "on";
       if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
@@ -6902,7 +6934,7 @@
       if (result.ok && result.outcome !== "duplicate") {
         state = result.state;
         pollingImportContextCache = null;
-        ui.pollingPlanSelection = { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalSeconds: ui.pollingPlanSelection.intervalSeconds || "0", allowInsecureTls: ui.pollingPlanSelection.allowInsecureTls === true, disableInsecureManagementServices: false };
+        ui.pollingPlanSelection = { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalMinSeconds: ui.pollingPlanSelection.intervalMinSeconds ?? "5", intervalMaxSeconds: ui.pollingPlanSelection.intervalMaxSeconds ?? "10", allowInsecureTls: ui.pollingPlanSelection.allowInsecureTls === true, disableInsecureManagementServices: false };
         ui.pollingPlanResult = null;
       }
       ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
@@ -7070,7 +7102,7 @@
       render();
       return;
     }
-    if (pollingPlanForm && ["scheduledAt", "intervalSeconds"].includes(event.target.name)) {
+    if (pollingPlanForm && ["scheduledAt", "intervalMinSeconds", "intervalMaxSeconds"].includes(event.target.name)) {
       ui.pollingPlanSelection[event.target.name] = String(event.target.value || "");
       ui.pollingPlanResult = null;
       return;

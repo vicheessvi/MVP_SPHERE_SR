@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import threading
 import unittest
+from unittest.mock import patch
 
-from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError, abortable_wait, probe_device, register_adapter, run_plan
+from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError, abortable_wait, plan_interval_bounds, probe_device, register_adapter, run_plan
 
 
 SUPPORTED = {"category": "controller", "manufacturer": "Extron", "model": "IPCP Pro 250", "pollingSupported": True}
@@ -33,6 +34,39 @@ class PollingTests(unittest.TestCase):
         self.assertEqual(order, ["192.0.2.10", "ack:192.0.2.10", "ack:192.0.2.20", "192.0.2.30", "ack:192.0.2.30"])
         self.assertEqual(waits, [2.0])
         self.assertFalse(results[1]["networkAttempted"])
+
+    def test_random_interval_drawn_for_each_next_device_with_inclusive_bounds(self) -> None:
+        waits: list[float] = []
+        progress: list[dict] = []
+        plan = {"intervalMinSeconds": 5, "intervalMaxSeconds": 10, "devices": [{**SUPPORTED, "ip": f"192.0.2.{number}"} for number in (10, 20, 30)]}
+        options = {
+            "ping": lambda *_args: {"ok": True, "durationMs": 1},
+            "adapters": {"extron_web_dynamic_resources_v1": lambda *_args: {"ok": True}},
+            "wait": lambda duration, _event: waits.append(duration),
+            "on_progress": progress.append,
+        }
+        with patch("mvp_runtime.polling.secrets.randbelow", side_effect=[0, 5]) as draw:
+            results = run_plan(plan, options)
+        self.assertEqual(len(results), 3)
+        self.assertEqual(draw.call_args_list[0].args, (6,))
+        self.assertEqual(draw.call_args_list[1].args, (6,))
+        self.assertEqual(draw.call_count, 2)
+        self.assertEqual(waits, [5.0, 10.0])
+        self.assertEqual([item["waitSeconds"] for item in progress if item["stage"] == "waiting"], [5, 10])
+
+    def test_interval_bounds_reject_partial_reversed_and_noninteger_values(self) -> None:
+        self.assertEqual(plan_interval_bounds({"intervalSeconds": 2}), (2, 2))
+        self.assertEqual(plan_interval_bounds({"intervalMinSeconds": 5, "intervalMaxSeconds": 10}), (5, 10))
+        for invalid in (
+            {"intervalMinSeconds": 5},
+            {"intervalMaxSeconds": 10},
+            {"intervalMinSeconds": 11, "intervalMaxSeconds": 10},
+            {"intervalMinSeconds": True, "intervalMaxSeconds": 10},
+            {"intervalMinSeconds": 0.5, "intervalMaxSeconds": 10},
+            {"intervalSeconds": -1},
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(PollingError):
+                plan_interval_bounds(invalid)
 
     def test_duplicate_ip_ping_failure_and_cancellation(self) -> None:
         with self.assertRaises(PollingError):
