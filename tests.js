@@ -1941,7 +1941,7 @@
     assertEqual(projection.managementEligibleDevices.map((item) => item.modelNormalized).join(","), "te20,te30,te40,te50,te60");
     assertEqual(projection.managementSkippedDevices.length, 0);
 
-    const base = { categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], scheduledAt: "2026-09-06T10:00:00", intervalSeconds: 0, credentialsReady: true, credentialSourceSha256: "d".repeat(64) };
+    const base = { categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], scheduledAt: "2026-09-06T10:00:00", intervalMinSeconds: 0, intervalMaxSeconds: 1, credentialsReady: true, credentialSourceSha256: "d".repeat(64) };
     const ordinary = api.createPollingPlan(imported.state, base);
     assert(ordinary.ok, ordinary.errors?.join("; "));
     assertEqual(ordinary.plan.managementTasks.length, 0);
@@ -2182,6 +2182,35 @@
     assert(immediate.ok, immediate.errors?.join("; "));
     assertEqual(api.buildPollingPlanExport(immediate.state, immediate.plan.id).payload.intervalMinSeconds, 0);
     assertEqual(api.buildPollingPlanExport(immediate.state, immediate.plan.id).payload.intervalMaxSeconds, 0);
+    const multipleRows = [10, 20, 30].map((number) => srRow({ "Тип оборудования": "controller", "Тип модели": "Контроллер", "Производитель": "Extron", "Инвентарный номер": `INV-${number}`, "Серийный номер": `SER-${number}`, MAC: `02-00-00-00-00-${number}`, IP: `192.0.2.${number}` }));
+    const multiple = api.importSrRows(api.createDemoState(), { filename: "multiple.xlsx", headers: srHeaders(), rows: multipleRows });
+    const noPause = api.createPollingPlan(multiple.state, { ...input, intervalMinSeconds: "0", intervalMaxSeconds: "0" });
+    assert(noPause.ok, noPause.errors?.join("; "));
+    assertEqual(api.buildPollingPlanExport(noPause.state, noPause.plan.id).payload.intervalMaxSeconds, 0);
+    const repeated = api.createPollingPlan(multiple.state, { ...input, intervalMinSeconds: "5", intervalMaxSeconds: "5" });
+    assert(!repeated.ok);
+    assert(repeated.errors.some((error) => error.includes("соседние интервалы")));
+    assert(api.createPollingPlan(multiple.state, { ...input, intervalMinSeconds: "0", intervalMaxSeconds: "1" }).ok);
+  });
+
+  test("Режим 0–0 требует отдельного подтверждения перед запуском", () => {
+    const zero = { intervalMinSeconds: "0", intervalMaxSeconds: "0" };
+    assert(api.isZeroIntervalRange(zero));
+    assert(api.isZeroIntervalRange({ intervalMinSeconds: 0, intervalMaxSeconds: 0 }));
+    assert(!api.isZeroIntervalRange({ intervalMinSeconds: "", intervalMaxSeconds: "0" }));
+    assert(!api.isZeroIntervalRange({ intervalMinSeconds: "0", intervalMaxSeconds: "1" }));
+    assert(!api.pollingStartEnabled(zero, false, false));
+    assert(api.pollingStartEnabled(zero, true, false));
+    assert(api.pollingStartEnabled({ intervalMinSeconds: "0", intervalMaxSeconds: "1" }, false, false));
+    assert(!api.pollingStartEnabled(zero, true, true));
+    if (typeof require !== "function") return;
+    const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    assert(source.includes("При диапазоне 0–0 между опросами устройств не будет пауз"));
+    assert(source.includes("data-zero-interval-warning role=\"alert\""));
+    assert(source.includes("data-confirm-zero-interval"));
+    assert(source.includes("data-start-automatic-polling"));
+    assert(source.includes('formData.get("confirmNoInterval") === "on"'));
+    assert(source.includes('if (ui.pollingPlanSelection[event.target.name] !== value) ui.zeroIntervalAcknowledged = false'));
   });
 
   function dashboardFixture() {

@@ -965,6 +965,17 @@ th {
   margin-top: 0.15rem;
 }
 
+.polling-zero-warning {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.polling-zero-warning[hidden] { display: none; }
+.polling-zero-warning p { margin: 0; }
+.polling-zero-warning label { display: flex; align-items: flex-start; gap: 9px; font-weight: 700; }
+.polling-zero-warning input { margin-top: 3px; accent-color: var(--brand); }
+
 @media (max-width: 720px) {
   .output-folder-picker {
     align-items: stretch;

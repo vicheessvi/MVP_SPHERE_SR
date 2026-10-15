@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError, abortable_wait, plan_interval_bounds, probe_device, register_adapter, run_plan
+from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError, abortable_wait, choose_interval_seconds, plan_interval_bounds, probe_device, register_adapter, run_plan, validate_plan_interval
 
 
 SUPPORTED = {"category": "controller", "manufacturer": "Extron", "model": "IPCP Pro 250", "pollingSupported": True}
@@ -45,14 +45,38 @@ class PollingTests(unittest.TestCase):
             "wait": lambda duration, _event: waits.append(duration),
             "on_progress": progress.append,
         }
-        with patch("mvp_runtime.polling.secrets.randbelow", side_effect=[0, 5]) as draw:
+        with patch("mvp_runtime.polling.secrets.randbelow", side_effect=[0, 4]) as draw:
             results = run_plan(plan, options)
         self.assertEqual(len(results), 3)
         self.assertEqual(draw.call_args_list[0].args, (6,))
-        self.assertEqual(draw.call_args_list[1].args, (6,))
+        self.assertEqual(draw.call_args_list[1].args, (5,))
         self.assertEqual(draw.call_count, 2)
         self.assertEqual(waits, [5.0, 10.0])
         self.assertEqual([item["waitSeconds"] for item in progress if item["stage"] == "waiting"], [5, 10])
+
+    def test_consecutive_intervals_never_repeat_including_zero(self) -> None:
+        with patch("mvp_runtime.polling.secrets.randbelow", side_effect=[0, 0, 0, 0]) as draw:
+            selected = []
+            for _ in range(4):
+                selected.append(choose_interval_seconds(0, 1, selected[-1] if selected else None))
+        self.assertEqual(selected, [0, 1, 0, 1])
+        self.assertEqual([call.args[0] for call in draw.call_args_list], [2, 1, 1, 1])
+
+    def test_zero_range_polls_without_wait_and_positive_single_value_is_rejected(self) -> None:
+        two_devices = [{**SUPPORTED, "ip": f"192.0.2.{number}"} for number in (10, 20)]
+        self.assertEqual(validate_plan_interval({"intervalMinSeconds": 0, "intervalMaxSeconds": 0, "devices": two_devices}), (0, 0))
+        devices = [*two_devices, {**SUPPORTED, "ip": "192.0.2.30"}]
+        with patch("mvp_runtime.polling.secrets.randbelow") as draw:
+            results = run_plan({"intervalMinSeconds": 0, "intervalMaxSeconds": 0, "devices": devices}, {
+                "ping": lambda *_args: {"ok": True, "durationMs": 1},
+                "adapters": {"extron_web_dynamic_resources_v1": lambda *_args: {"ok": True}},
+                "wait": lambda *_args: self.fail("zero range must not wait"),
+            })
+        self.assertEqual(len(results), 3)
+        self.assertTrue(all(result["ok"] for result in results))
+        draw.assert_not_called()
+        with self.assertRaises(PollingError):
+            run_plan({"intervalMinSeconds": 5, "intervalMaxSeconds": 5, "devices": devices}, {"ping": lambda *_args: self.fail("network must not start")})
 
     def test_interval_bounds_reject_partial_reversed_and_noninteger_values(self) -> None:
         self.assertEqual(plan_interval_bounds({"intervalSeconds": 2}), (2, 2))
@@ -95,11 +119,12 @@ class PollingTests(unittest.TestCase):
             return {"ok": True, "capturedAt": "synthetic", "vendorPolling": {"status": "supported"}}
 
         result = run_plan(
-            {"devices": [{**device, "ip": f"192.0.2.{30 + index * 10}"} for index, device in enumerate(HUAWEI_MODELS)]},
+            {"intervalMinSeconds": 0, "intervalMaxSeconds": 1, "devices": [{**device, "ip": f"192.0.2.{30 + index * 10}"} for index, device in enumerate(HUAWEI_MODELS)]},
             {
                 "ping": lambda *_args: {"ok": True, "durationMs": 1},
                 "get_credentials": lambda *_args: [{"username": "u1", "password": "p1"}, {"username": "u2", "password": "p2"}],
                 "adapters": {"huawei_te_web_cgi_v1": huawei_adapter},
+                "wait": lambda *_args: None,
             },
         )
         self.assertTrue(all(item["ok"] for item in result))
@@ -115,6 +140,8 @@ class PollingTests(unittest.TestCase):
             return execute
 
         plan = {
+            "intervalMinSeconds": 0,
+            "intervalMaxSeconds": 1,
             "devices": [
                 {**HUAWEI_MODELS[1], "ip": "192.0.2.40"},
                 {**SUPPORTED, "ip": "192.0.2.41"},
@@ -128,6 +155,7 @@ class PollingTests(unittest.TestCase):
         results = run_plan(plan, {
             "ping": lambda *_args: {"ok": True, "durationMs": 1},
             "get_credentials": lambda *_args: [{"username": "u", "password": "p"}],
+            "wait": lambda *_args: None,
             "adapters": {
                 "huawei_te_web_cgi_v1": adapter("huawei"),
                 "huawei_te20_web_cgi_v1": adapter("huawei-te20"),
@@ -158,6 +186,8 @@ class PollingTests(unittest.TestCase):
                 "managementTasks": ["disable_insecure_management_services"],
                 "targetSource": "port_closure_list",
                 "targetSourceSha256": "a" * 64,
+                "intervalMinSeconds": 0,
+                "intervalMaxSeconds": 1,
                 "devices": [
                     {**HUAWEI_TE20, "ip": "192.0.2.20"},
                     *[

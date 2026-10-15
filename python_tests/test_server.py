@@ -175,6 +175,12 @@ class ServerTests(unittest.TestCase):
                 status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=json.dumps({"plan": plan}).encode())
                 self.assertEqual(status, 400)
                 self.assertEqual(json.loads(body)["error"], "plan_invalid")
+        digest = self._upload_credentials(cookie, csrf)
+        devices = [{"ip": f"192.0.2.{number}", "category": "controller", "manufacturer": "Extron", "model": "IPCP Pro 250"} for number in (10, 20, 30)]
+        plan = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": [], "intervalMinSeconds": 5, "intervalMaxSeconds": 5, "devices": devices}
+        status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=json.dumps({"plan": plan}).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "plan_invalid")
 
     def test_preparatory_parse_errors_clear_previous_credentials(self) -> None:
         cookie, csrf = self.harness.session()

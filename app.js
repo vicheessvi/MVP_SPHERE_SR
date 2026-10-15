@@ -2046,6 +2046,15 @@
     });
   }
 
+  function isZeroIntervalRange(input) {
+    return [input?.intervalMinSeconds, input?.intervalMaxSeconds].every((value) =>
+      value !== undefined && value !== null && String(value).trim() !== "" && Number(value) === 0);
+  }
+
+  function pollingStartEnabled(selection, zeroIntervalAcknowledged, busy) {
+    return !busy && (!isZeroIntervalRange(selection) || zeroIntervalAcknowledged === true);
+  }
+
   function createPollingPlan(currentState, input) {
     const projection = deriveAutomaticPollingPlan(currentState, input);
     const errors = [];
@@ -2080,6 +2089,8 @@
         !Number.isSafeInteger(intervalMinSeconds) || !Number.isSafeInteger(intervalMaxSeconds) ||
         intervalMinSeconds < 0 || intervalMaxSeconds < intervalMinSeconds) {
       errors.push("Укажите целые границы интервала в секундах: от 0 и не больше значения «До»");
+    } else if (intervalMinSeconds === intervalMaxSeconds && intervalMinSeconds !== 0 && projection.supportedDevices.length > 2) {
+      errors.push("Для трёх и более опрашиваемых устройств задайте разные значения «От» и «До»: соседние интервалы не должны совпадать");
     }
     if (!input.credentialsReady) errors.push("Введите учётные данные оборудования в модуле «Загрузка данных и опрос устройств»");
     if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить введённые учётные данные");
@@ -4870,6 +4881,8 @@
     createDemoState,
     buildPollingPlanExport,
     createPollingPlan,
+    isZeroIntervalRange,
+    pollingStartEnabled,
     deriveAutomaticPollingPlan,
     resolvePollingIpTarget,
     normalizePollingSelection,
@@ -5048,6 +5061,7 @@
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
+    zeroIntervalAcknowledged: false,
     pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false },
     credentialSummary: null,
     managementTargetListSummary: null,
@@ -5124,7 +5138,7 @@
   }
 
   function automaticPollingErrorMessage(code) {
-    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Введите учётные данные перед запуском опроса.", credential_file_invalid: "Учётные данные не приняты локальным исполнителем.", credential_sha_mismatch: "Учётные данные изменились после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить очередной JSON. Опрос остановлен.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
+    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Введите учётные данные перед запуском опроса.", credential_file_invalid: "Учётные данные не приняты локальным исполнителем.", credential_sha_mismatch: "Учётные данные изменились после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", zero_interval_confirmation_required: "Подтвердите запуск опроса без интервалов.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить очередной JSON. Опрос остановлен.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
   }
 
   async function monitorAutomaticPolling(jobId, monitorToken) {
@@ -5175,10 +5189,11 @@
 
   async function startAutomaticPolling(planId, allowInsecureTls) {
     if (launchMode.kind !== "local") throw Object.assign(new Error("runtime_required"), { safeCode: "runtime_required" });
-    if (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
-    if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
     const exported = buildPollingPlanExport(state, planId);
     if (!exported.ok) throw Object.assign(new Error("plan_invalid"), { safeCode: "plan_invalid" });
+    if (isZeroIntervalRange(exported.payload) && !ui.zeroIntervalAcknowledged) throw Object.assign(new Error("zero_interval_confirmation_required"), { safeCode: "zero_interval_confirmation_required" });
+    if (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
+    if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
     const started = await runtimeRequest("/api/polling/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId, plan: exported.payload, allowInsecureTls: allowInsecureTls === true }) });
     ui.automaticPolling = { jobId: started.jobId, status: started.status, total: exported.payload.devices.length, processed: 0, successful: 0, failed: 0, unsupported: 0, allowInsecureTls: allowInsecureTls === true };
     const monitorToken = Symbol("automatic-polling-monitor");
@@ -5920,6 +5935,7 @@
     const srPercent = ui.srProgress?.total ? Math.min(100, Math.round((ui.srProgress.processed / ui.srProgress.total) * 100)) : 0;
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
+    const zeroInterval = isZeroIntervalRange(ui.pollingPlanSelection);
     return `
       <header class="page-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "upload").title)}</h1></div></header>
       <div class="upload-grid section-gap">
@@ -5960,7 +5976,9 @@
             ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
             ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
           </div>` : `<div class="polling-ip-selector"><div class="field"><label for="polling-target-ip">IP-адрес</label><input id="polling-target-ip" name="ipAddress" data-polling-ip-input inputmode="decimal" autocomplete="off" placeholder="Например, 192.0.2.10" value="${escapeHtml(ui.pollingPlanSelection.ipAddress || "")}"></div><div data-polling-ip-result aria-live="polite">${renderPollingIpTarget(projection)}</div></div>`}
-          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><span class="field-label">Интервал между опросами устройств</span><div class="polling-interval-range"><label for="polling-interval-min">От, секунд<input id="polling-interval-min" name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMinSeconds ?? "0")}" required></label><label for="polling-interval-max">До, секунд<input id="polling-interval-max" name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMaxSeconds ?? "0")}" required></label></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Закрыть порты 80, 23 (http, telnet)</label>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Закрытие портов: доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Фильтры используют отдельный список устройств.</p>` : ""}<button class="button primary" type="submit"${automaticPollingMonitor ? " disabled" : ""}>Сформировать и запустить опрос</button></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><span class="field-label">Интервал между опросами устройств</span><div class="polling-interval-range"><label for="polling-interval-min">От, секунд<input id="polling-interval-min" name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMinSeconds ?? "0")}" required></label><label for="polling-interval-max">До, секунд<input id="polling-interval-max" name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMaxSeconds ?? "0")}" required></label></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Закрыть порты 80, 23 (http, telnet)</label>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Закрытие портов: доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Фильтры используют отдельный список устройств.</p>` : ""}</div>
+          <div class="warning-panel polling-zero-warning" data-zero-interval-warning role="alert"${zeroInterval ? "" : " hidden"}><strong>Опрос без интервалов</strong><p>При диапазоне 0–0 между опросами устройств не будет пауз. Следующий опрос начнётся сразу после сохранения результата предыдущего устройства.</p><label><input type="checkbox" name="confirmNoInterval" data-confirm-zero-interval${zeroInterval && ui.zeroIntervalAcknowledged ? " checked" : ""}> Подтверждаю запуск опроса без интервалов</label></div>
+          <button class="button primary" type="submit" data-start-automatic-polling${pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor)) ? "" : " disabled"}>Сформировать и запустить опрос</button>
         </form>
         <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div><div><dt>Закрытие портов доступно</dt><dd data-polling-count="management-eligible">${projection.managementEligibleDevices.length}</dd></div><div><dt>Закрытие портов будет пропущено</dt><dd data-polling-count="management-skipped">${projection.managementSkippedDevices.length}</dd></div></dl>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
@@ -6664,6 +6682,8 @@
       ui.pollingPlanSelection.intervalMaxSeconds = String(formData.get("intervalMaxSeconds") ?? "");
       ui.pollingPlanSelection.allowInsecureTls = formData.get("allowInsecureTls") === "on";
       ui.pollingPlanSelection.disableInsecureManagementServices = formData.get("disableInsecureManagementServices") === "on";
+      ui.zeroIntervalAcknowledged = isZeroIntervalRange(ui.pollingPlanSelection) && formData.get("confirmNoInterval") === "on";
+      if (isZeroIntervalRange(ui.pollingPlanSelection) && !ui.zeroIntervalAcknowledged) { setMessage("Подтвердите запуск опроса без интервалов между устройствами.", "warning"); render(); return; }
       if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
       if (!pollingOutputRootHandle) { setMessage("Сначала выберите общую папку для сохранения результатов.", "error"); render(); return; }
       const result = createPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [], managementTargetSourceSha256: managementTargetListSession?.sourceSha256 || "", credentialsReady: Boolean(credentialPoolSession?.sourceSha256), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
@@ -6673,8 +6693,11 @@
       if (!commitState(result.state, `План сформирован: ${result.plan.selectionSummary.implemented} устройств готовы для автоматического опроса.`)) return;
       try {
         await startAutomaticPolling(result.plan.id, ui.pollingPlanSelection.allowInsecureTls);
+        ui.zeroIntervalAcknowledged = false;
         setMessage("План сформирован и передан локальному исполнителю. Опрос запустится в указанное время.", "success");
+        render();
       } catch (error) {
+        ui.zeroIntervalAcknowledged = false;
         credentialPoolSession = null;
         ui.credentialSummary = null;
         setMessage(automaticPollingErrorMessage(error.safeCode || "local_runtime_error"), "error");
@@ -7051,8 +7074,23 @@
     render();
   }
 
+  function syncZeroIntervalConsent(form) {
+    const required = isZeroIntervalRange(ui.pollingPlanSelection);
+    const warning = form.querySelector("[data-zero-interval-warning]");
+    if (warning) warning.hidden = !required;
+    const checkbox = form.querySelector("[data-confirm-zero-interval]");
+    if (checkbox) checkbox.checked = required && ui.zeroIntervalAcknowledged;
+    const startButton = form.querySelector("[data-start-automatic-polling]");
+    if (startButton) startButton.disabled = !pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor));
+  }
+
   async function handleChange(event) {
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
+    if (pollingPlanForm && event.target.name === "confirmNoInterval") {
+      ui.zeroIntervalAcknowledged = event.target.checked === true && isZeroIntervalRange(ui.pollingPlanSelection);
+      syncZeroIntervalConsent(pollingPlanForm);
+      return;
+    }
     if (pollingPlanForm && event.target.name === "managementTargetListFile") {
       const file = event.target.files?.[0];
       if (!file || !/\.xlsx$/i.test(file.name)) {
@@ -7105,6 +7143,7 @@
     if (pollingPlanForm && ["scheduledAt", "intervalMinSeconds", "intervalMaxSeconds"].includes(event.target.name)) {
       ui.pollingPlanSelection[event.target.name] = String(event.target.value || "");
       ui.pollingPlanResult = null;
+      syncZeroIntervalConsent(pollingPlanForm);
       return;
     }
     if (pollingPlanForm && event.target.name === "allowInsecureTls") {
@@ -7155,7 +7194,16 @@
 
   function handleInput(event) {
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
-    if (!pollingPlanForm || !event.target.matches("[data-polling-ip-input]")) return;
+    if (!pollingPlanForm) return;
+    if (["intervalMinSeconds", "intervalMaxSeconds"].includes(event.target.name)) {
+      const value = String(event.target.value || "");
+      if (ui.pollingPlanSelection[event.target.name] !== value) ui.zeroIntervalAcknowledged = false;
+      ui.pollingPlanSelection[event.target.name] = value;
+      ui.pollingPlanResult = null;
+      syncZeroIntervalConsent(pollingPlanForm);
+      return;
+    }
+    if (!event.target.matches("[data-polling-ip-input]")) return;
     ui.pollingPlanSelection.ipAddress = String(event.target.value || "");
     ui.pollingPlanResult = null;
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });

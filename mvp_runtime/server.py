@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .catalog import CATALOG
 from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_pairs, parse_credential_workbook
-from .polling import PollingError, normalize_ipv4, plan_interval_bounds
+from .polling import PollingError, normalize_ipv4, validate_plan_interval
 from .polling_job import JobInputError, PollingJob, TERMINAL_STATUSES, create_polling_job
 from .redaction import PlanSecretError, assert_no_plan_secrets
 
@@ -329,7 +329,7 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
                     valid_ips.append(ip)
             if len(set(valid_ips)) != len(valid_ips):
                 raise ValueError("plan_invalid")
-            plan_interval_bounds(plan)
+            validate_plan_interval(plan)
         except (PlanSecretError, PollingError, ValueError, TypeError):
             with self.server.state.lock:
                 session.clear_credentials()

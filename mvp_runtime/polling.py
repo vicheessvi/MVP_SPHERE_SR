@@ -216,6 +216,25 @@ def plan_interval_bounds(plan: dict[str, Any]) -> tuple[int, int]:
     return minimum, maximum
 
 
+def validate_plan_interval(plan: dict[str, Any]) -> tuple[int, int]:
+    minimum, maximum = plan_interval_bounds(plan)
+    devices = plan.get("devices") or []
+    if minimum == maximum and minimum != 0 and sum(plan_device_supported(device) for device in devices if isinstance(device, dict)) > 2:
+        raise PollingError("At least two interval values are required for three or more supported devices")
+    return minimum, maximum
+
+
+def choose_interval_seconds(minimum: int, maximum: int, previous: int | None) -> int:
+    choices = maximum - minimum + 1
+    if previous is None:
+        return minimum + secrets.randbelow(choices)
+    if choices < 2:
+        raise PollingError("Consecutive polling intervals cannot be equal")
+    offset = secrets.randbelow(choices - 1)
+    previous_offset = previous - minimum
+    return minimum + offset + (offset >= previous_offset)
+
+
 def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     if not isinstance(plan, dict) or not isinstance(plan.get("devices"), list):
         raise PollingError("Polling plan must contain devices[]")
@@ -237,7 +256,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
     valid_ips = [ip for ip in ips if ip]
     if len(set(valid_ips)) != len(valid_ips):
         raise PollingError("Polling plan contains duplicate IP")
-    interval_min, interval_max = plan_interval_bounds(plan)
+    interval_min, interval_max = validate_plan_interval(plan)
     cancel_event = settings.get("cancel_event")
     if settings.get("honor_schedule") and plan.get("scheduledAt"):
         scheduled = str(plan["scheduledAt"]).replace("Z", "+00:00")
@@ -250,6 +269,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
             abortable_wait(delay, cancel_event, settings.get("wait"))
     allowed_ips = set(valid_ips)
     results: list[dict[str, Any]] = []
+    previous_interval: int | None = None
     for index, device in enumerate(devices):
         if cancel_event is not None and cancel_event.is_set():
             break
@@ -269,8 +289,9 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
         if settings.get("on_progress"):
             settings["on_progress"]({"stage": "processed", "index": index + 1, "total": len(devices), "result": result})
         has_next_supported = any(plan_device_supported(candidate) for candidate in devices[index + 1 :])
-        if result.get("networkAttempted") is not False and has_next_supported:
-            interval = interval_min + secrets.randbelow(interval_max - interval_min + 1)
+        if result.get("networkAttempted") is not False and has_next_supported and (interval_min != 0 or interval_max != 0):
+            interval = choose_interval_seconds(interval_min, interval_max, previous_interval)
+            previous_interval = interval
             if interval > 0:
                 if settings.get("on_progress"):
                     settings["on_progress"]({"stage": "waiting", "index": index + 1, "total": len(devices), "waitSeconds": interval})
