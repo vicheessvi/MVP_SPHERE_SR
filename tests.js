@@ -2124,6 +2124,10 @@
     assert(fs.readFileSync(require("path").join(__dirname, "index.html"), "utf8").includes('runtime/sphere.js'));
     assertEqual(typeof require("./runtime/sphere").mount, "function");
     ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Закрыть порты 80, 23 (http, telnet)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    assert(source.includes("Интервал между опросами устройств"));
+    assert(source.includes('intervalMinSeconds: "0", intervalMaxSeconds: "0"'));
+    assert(source.includes('name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0"'));
+    assert(source.includes('name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0"'));
     assert(source.includes("START_MVP_SPHERE_SR.py"));
     assert(!source.includes("start.ps1"));
     assert(!source.includes("START_MVP_SPHERE_SR.cmd"));
@@ -2174,6 +2178,10 @@
     assert(!api.createPollingPlan(sr.state, { ...input, intervalMinSeconds: "11" }).ok);
     assert(!api.createPollingPlan(sr.state, { ...input, intervalMaxSeconds: "" }).ok);
     assert(!api.createPollingPlan(sr.state, { ...input, intervalMinSeconds: "1.5" }).ok);
+    const immediate = api.createPollingPlan(sr.state, { ...input, intervalMinSeconds: "0", intervalMaxSeconds: "0" });
+    assert(immediate.ok, immediate.errors?.join("; "));
+    assertEqual(api.buildPollingPlanExport(immediate.state, immediate.plan.id).payload.intervalMinSeconds, 0);
+    assertEqual(api.buildPollingPlanExport(immediate.state, immediate.plan.id).payload.intervalMaxSeconds, 0);
   });
 
   function dashboardFixture() {
