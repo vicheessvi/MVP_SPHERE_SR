@@ -2,6 +2,10 @@
 
 Этот журнал фиксирует только значимые изменения проекта.
 
+## 2026-10-17 — Huawei 310: HTTP-only и отсутствие web-управления Telnet
+
+Администратор уточнил, что в web-интерфейсах Bar 310, Box 310 и Box 610 управление Telnet не предусмотрено, и подтвердил для двух Box безопасное backend-значение `enable_http=0`. В Bar action удалены Telnet config read и соответствующий bundle gate. Для каждой точной Box-модели создан отдельный provisional HTTP-only action поверх общего guarded core: exact pre/post model, stable identity, текущие config markers, read `{0,1}`, максимум один минимальный PUT и post-read `0`. Обычный Box polling остаётся read-only. `not_exposed` означает отсутствие web-управления Telnet, а не измеренное состояние TCP/23. Synthetic tests подтверждают логику и fail-closed; контролируемая реальная write-проверка отдельно для Box 310 и Box 610 ещё ожидается. Работа описана в feature 028 и ADR-0029. Проверены 71 Python-тест, 165 JavaScript-тестов, reference/syntax/compile, `git diff --check` и добавленные tracked/untracked файлы на секреты, приватные IP и runtime-артефакты; нарушений не выявлено.
+
 ## 2026-10-15 — Подтверждение массового опроса без пауз
 
 При выбранном диапазоне 0–0 в плане показывается предупреждение: между опросами устройств не будет пауз. Запуск заблокирован до отдельной отметки согласия; форма повторно проверяет его перед формированием плана и сетевым заданием. Подтверждение сбрасывается при изменении границ и после вызова запуска, в план и долговременное состояние не попадает.
@@ -958,6 +962,13 @@ Runtime registry, общий device catalog, frontend capability, Справоч
 Пользователь подтвердил успешное выполнение отдельных опросов Huawei Box 310 и Huawei Box 610 на рабочем компьютере. Оба exact-контракта независимо переведены из `provisional_user_validation` в `confirmed_user_validation`; подтверждение одной модели не использовалось как доказательство другой. Public transport и manifest остаются раздельными, cross-model pre-credential gate, post-auth identity, HTTPS/443, bounded read-only ресурсы и redaction не изменены.
 
 Границы поддержки не расширялись: варианты Box 310/610 с суффиксами, неизвестные модели и будущий firmware/schema drift остаются fail-closed; write-capability закрытия HTTP/Telnet не добавлялась. Реальные адреса, credentials, идентификаторы и файлы результатов в репозиторий не добавлялись. Commit и push выполняются только по отдельному указанию пользователя.
+## 2026-09-20 — Huawei Bar 310: подготовка закрытия HTTP/Telnet
+
+Создана feature 026 и проведено контролируемое read-only исследование exact Huawei CloudLink Bar 310. Текущий bundle подтвердил `POST/PUT /v1/om/config`, поля `enable_http`/`enabletelnet` и модельные значения `1 = enable`, `2 = disable`. Реальное устройство подтвердило exact модель, stable identity и читаемый HTTP. Telnet config field вернул точный firmware error отсутствующего параметра, при этом служба уже недоступна; во время исследования записей не выполнялось.
+
+Добавлен guarded Bar-only management contract: exact opt-in и identity/marker/schema gates, отдельные config reads, один минимальный PUT только `enable_http=0`, post-read verification и безопасное состояние Telnet `not_exposed`. Контролируемая проверка показала, что текущее `0` принимается idempotent-save и означает безопасное состояние, тогда как предположенное по display constants значение `2` отклоняется firmware; контракт и тесты исправлены до выпуска. Любой иной Telnet/schema drift блокирует запись. Box 310/610 остаются read-only, TE contracts не меняются. Credentials из XLSX, cookie и access token остаются в памяти и не входят в результаты или repository.
+
+Финальный запуск exact Bar 310 через новый action contract вернул `already_compliant`: HTTP подтверждён отключённым, Telnet — `not_exposed`, `writeAttempted=false`. Никакая другая настройка не изменялась. После фиксации модельного значения прошли 61 Python-тест, 157 JavaScript-тестов, compileall, JS syntax, reference validation, `git diff --check` и scans добавленных tracked/untracked данных; реальные credentials, приватные IP и runtime artifacts не обнаружены.
 
 ## 2026-09-23 — Переименование модуля анализа перезагрузок
 

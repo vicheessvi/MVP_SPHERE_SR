@@ -1,18 +1,33 @@
 # Карта контекста
 
+## Текущая feature 028 — HTTP-only Huawei 310
+
+- Спецификация, user-confirmed safe value, отдельные Box-контракты и задачи: `specs/028-huawei-310-http-only/`.
+- Общий guarded HTTP read/minimal-write/post-read: `mvp_runtime/adapters/huawei_bar310.py`; точные Box wrappers: `mvp_runtime/adapters/huawei_box310.py`, `mvp_runtime/adapters/huawei_box610.py`.
+- Opt-in action и UI: `runtime/device-catalog.json`, `app.js`, `product-catalog.js`.
+- Архитектурное решение: `docs/decisions/ADR-0029-huawei-310-http-only.md`.
+- Для Box 310/610 action provisional до отдельных контролируемых эксплуатационных проверок; `not_exposed` для Telnet означает отсутствие web-управления, не состояние TCP/23.
+
 ## Случайный интервал автоматического опроса
 
 - Парные поля диапазона и экспорт плана: `app.js`, `styles.css`.
 - Проверка границ и независимый выбор перед следующим устройством: `mvp_runtime/server.py`, `mvp_runtime/polling.py`.
 - Решение: `docs/decisions/ADR-0028-random-polling-interval.md`.
 
-## Текущая feature 027 — раскрываемая аналитика
+## Feature 027 — раскрываемая аналитика
 
 - Правила таблиц перезагрузок, истории версий и ошибок: `specs/027-analytics-drilldowns/`.
 - Производные selectors и renderers: `app.js`; названия и Справочник: `product-catalog.js`; оформление: `styles.css`.
 - Архитектурное решение: `docs/decisions/ADR-0027-analytics-drilldowns.md`.
 
-## Текущая feature 025
+## Текущая feature 026
+
+- Спецификация и exact Bar 310 management contract: `specs/026-huawei-bar310-port-closure/`.
+- Guarded HTTP read/minimal-write/post-read и безопасный Telnet `not_exposed`: `mvp_runtime/adapters/huawei_bar310.py`.
+- Capability routing: `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `app.js`.
+- Архитектурное решение: `docs/decisions/ADR-0026-huawei-bar310-port-closure.md`.
+
+## Feature 025
 
 - Спецификация, отдельные подтверждённые контракты Box 310/610 и задачи: `specs/025-huawei-box-polling/`.
 - Общий guarded core и подтверждённый Bar 310 contract: `mvp_runtime/adapters/huawei_bar310.py`.
@@ -123,8 +138,8 @@
 - `START_MVP_SPHERE_SR.py` — полный режим; прямой `index.html` — ручной режим.
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
-- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1 web-CGI contract Huawei TE20, общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60 и три отдельных read-only HTTPS contract Huawei Bar 310, Box 310 и Box 610. Все три `/v1`-модели подтверждены пользовательскими эксплуатационными опросами; варианты Box с суффиксами и остальные vendor/model adapters — `protocol_required`.
-- Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE20/TE30/TE40/TE50/TE60 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Реальная write-проверка выполнена на TE20 и TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. Достаточно подтверждённо изменить значения HTTP/Telnet в меню кодека; TCP listener не влияет на статус отчёта.
+- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1 web-CGI contract Huawei TE20, общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60 и три отдельных HTTPS contract Huawei Bar 310, Box 310 и Box 610. Обычный `/v1`-опрос всех трёх моделей подтверждён пользовательской эксплуатацией и остаётся read-only; отдельная opt-in HTTP-only задача Box 310/610 пока provisional. Варианты Box с суффиксами и остальные vendor/model adapters — `protocol_required`.
+- Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE20/TE30/TE40/TE50/TE60 и Bar 310 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Bar 310 изменяет только `enable_http=0`, а неподдерживаемый firmware-параметр Telnet не записывает и показывает `not_exposed`. Реальная write-проверка выполнена на TE20 и TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. Достаточно подтверждённо изменить значения в меню кодека; TCP listener не влияет на статус отчёта.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 
 ## История

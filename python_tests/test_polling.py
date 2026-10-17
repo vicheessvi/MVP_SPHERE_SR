@@ -171,7 +171,7 @@ class PollingTests(unittest.TestCase):
         self.assertFalse(results[6]["networkAttempted"])
         self.assertEqual(results[6]["vendorPolling"]["status"], "protocol_required")
 
-    def test_management_task_reaches_exact_te_models_through_their_own_transports(self) -> None:
+    def test_management_task_reaches_exact_te_bar_and_box_models_through_their_own_transports(self) -> None:
         observed = []
 
         def adapter(device, _credentials, options):
@@ -194,12 +194,22 @@ class PollingTests(unittest.TestCase):
                         {**device, "ip": f"192.0.2.{30 + index * 10}"}
                         for index, device in enumerate(HUAWEI_MODELS)
                     ],
+                    {**HUAWEI_BAR310, "ip": "192.0.2.80"},
+                    {**HUAWEI_BOX310, "ip": "192.0.2.81"},
+                    {**HUAWEI_BOX610, "ip": "192.0.2.82"},
                 ],
             },
             {
                 "ping": lambda *_args: {"ok": True, "durationMs": 1},
                 "get_credentials": lambda *_args: [{"username": "u", "password": "p"}],
-                "adapters": {"huawei_te20_web_cgi_v1": adapter, "huawei_te_web_cgi_v1": adapter},
+                "wait": lambda *_args: None,
+                "adapters": {
+                    "huawei_te20_web_cgi_v1": adapter,
+                    "huawei_te_web_cgi_v1": adapter,
+                    "huawei_bar310_rest_v1": adapter,
+                    "huawei_box310_rest_v1": adapter,
+                    "huawei_box610_rest_v1": adapter,
+                },
             },
         )
         self.assertEqual(observed, [
@@ -208,6 +218,9 @@ class PollingTests(unittest.TestCase):
             ("TE40", ["disable_insecure_management_services"]),
             ("TE50", ["disable_insecure_management_services"]),
             ("TE60", ["disable_insecure_management_services"]),
+            ("Bar 310", ["disable_insecure_management_services"]),
+            ("Box 310", ["disable_insecure_management_services"]),
+            ("Box 610", ["disable_insecure_management_services"]),
         ])
         self.assertTrue(all(item["managementActions"][0]["status"] == "applied" for item in results))
 

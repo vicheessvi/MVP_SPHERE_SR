@@ -4,11 +4,11 @@
   "managementActions": [
     {
       "id": "disable_insecure_management_services",
-      "label": "Закрыть порты 80, 23 (http, telnet)",
+      "label": "Отключить HTTP и Telnet по возможностям модели",
       "category": "vcs",
       "manufacturer": "huawei",
       "aliases": ["huawey"],
-      "models": ["TE20", "TE30", "TE40", "TE50", "TE60"],
+      "models": ["TE20", "TE30", "TE40", "TE50", "TE60", "Bar 310", "CloudLink Bar 310", "CloudLinc Bar 310", "Box 310", "CloudLink Box 310", "CloudLinc Box 310", "Box 610", "CloudLink Box 610", "CloudLinc Box 610"],
       "protocolStatus": "supported",
       "transport": "huawei_te_web_cgi_v1"
     }

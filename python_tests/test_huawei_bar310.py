@@ -7,6 +7,7 @@ import unittest
 from mvp_runtime.adapters.huawei_bar310 import (
     BAR310_RESOURCE_PATHS,
     Bar310TransportError,
+    DISABLE_INSECURE_SERVICES_ACTION,
     poll_huawei_bar310_device,
 )
 
@@ -18,6 +19,9 @@ MAIN_BUNDLE = " ".join([
     "/action.cgi?ActionID=WEB_ChangeSessionID",
     "X-Access-Token",
     *BAR310_RESOURCE_PATHS.values(),
+    'reqGetCfgUrl="/v1/om/config"',
+    'reqSaveCfgUrl="/v1/om/config"',
+    "enable_http",
 ])
 
 
@@ -83,9 +87,21 @@ def synthetic_resources(model="Bar 310", identity=True):
 
 
 class HuaweiBar310Tests(unittest.TestCase):
-    def success_request(self, calls, *, accepted_user="good-user", model="Bar 310", identity=True, overrides=None, logout_error=None):
+    def success_request(
+        self,
+        calls,
+        *,
+        accepted_user="good-user",
+        model="Bar 310",
+        identity=True,
+        overrides=None,
+        logout_error=None,
+        http_value=1,
+        verify_http_value=0,
+    ):
         resources = synthetic_resources(model, identity)
         overrides = overrides or {}
+        configuration = {"enable_http": http_value}
 
         def request(options):
             calls.append(options)
@@ -112,6 +128,16 @@ class HuaweiBar310Tests(unittest.TestCase):
                 return envelope({}, success=0, error_id=1001)
             if path == "/action.cgi?ActionID=WEB_ChangeSessionID":
                 return envelope({})
+            if path == "/v1/om/config" and options["method"] == "POST":
+                payload = json.loads(options["body"])
+                field = payload["CfgIDString"][0]
+                if field == "enable_http":
+                    return envelope({"enable_http": configuration["enable_http"]})
+                raise AssertionError("Only the HTTP configuration field may be read")
+            if path == "/v1/om/config" and options["method"] == "PUT":
+                payload = json.loads(options["body"])
+                configuration["enable_http"] = verify_http_value
+                return envelope({})
             if path == "/v1/login/session" and options["method"] == "DELETE":
                 if logout_error:
                     raise logout_error
@@ -119,6 +145,82 @@ class HuaweiBar310Tests(unittest.TestCase):
             return envelope(resources[path])
 
         return request
+
+    def test_bar_management_action_uses_one_minimal_http_write_and_post_read(self):
+        calls = []
+        result = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {
+                "request": self.success_request(calls, http_value=1),
+                "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION],
+                "management_settle": lambda: None,
+            },
+        )
+
+        self.assertTrue(result["ok"])
+        action = result["managementActions"][0]
+        self.assertEqual(action["status"], "applied")
+        self.assertTrue(action["changed"])
+        self.assertEqual(action["before"], {"httpPort80": "enabled", "telnetPort23": "not_exposed"})
+        self.assertEqual(action["after"], {"httpPort80": "disabled", "telnetPort23": "not_exposed"})
+        writes = [item for item in calls if item["path"] == "/v1/om/config" and item["method"] == "PUT"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(json.loads(writes[0]["body"]), {
+            "CfgItemInt": [{"CfgItemID": "enable_http", "CfgItemInfo": 0}],
+            "CfgItemString": [],
+        })
+        reads = [json.loads(item["body"])["CfgIDString"] for item in calls if item["path"] == "/v1/om/config" and item["method"] == "POST"]
+        self.assertEqual(reads, [["enable_http"], ["enable_http"]])
+        self.assertNotIn("GOOD-SYNTHETIC", json.dumps(result))
+
+    def test_bar_management_action_is_idempotent_and_requires_opt_in(self):
+        compliant_calls = []
+        compliant = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "CloudLink Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(compliant_calls, http_value=0), "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION]},
+        )
+        self.assertEqual(compliant["managementActions"][0]["status"], "already_compliant")
+        self.assertFalse(any(item["method"] == "PUT" for item in compliant_calls))
+
+        read_only_calls = []
+        read_only = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(read_only_calls)},
+        )
+        self.assertTrue(read_only["ok"])
+        self.assertNotIn("managementActions", read_only)
+        self.assertFalse(any(item["path"] == "/v1/om/config" for item in read_only_calls))
+
+    def test_bar_management_action_fails_closed_on_http_marker_schema_or_verification_drift(self):
+        cases = (
+            (MAIN_BUNDLE.replace("enable_http", "missing-http-marker"), 1, 0, "management_contract_unconfirmed"),
+            (MAIN_BUNDLE, 2, 0, "configuration_schema_unconfirmed"),
+            (MAIN_BUNDLE, 1, 1, "configuration_verification_failed"),
+        )
+        for bundle, initial, verified, expected in cases:
+            calls = []
+            result = poll_huawei_bar310_device(
+                {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+                [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+                {
+                    "request": self.success_request(
+                        calls,
+                        overrides={"/static/js/main.synthetic.chunk.js": {"status_code": 200, "headers": [], "body": bundle}},
+                        http_value=initial,
+                        verify_http_value=verified,
+                    ),
+                    "management_tasks": [DISABLE_INSECURE_SERVICES_ACTION],
+                    "management_settle": lambda: None,
+                },
+            )
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["failedStage"], "management_action")
+            self.assertEqual(result["safeError"], expected)
+            put_count = len([item for item in calls if item["method"] == "PUT"])
+            self.assertEqual(put_count, 1 if expected == "configuration_verification_failed" else 0)
 
     def test_browser_flow_order_headers_projection_and_redaction(self):
         calls = []

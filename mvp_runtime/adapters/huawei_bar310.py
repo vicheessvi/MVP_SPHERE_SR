@@ -24,6 +24,8 @@ BAR310_CONTRACT = {
     "plan_models": SUPPORTED_PLAN_MODELS,
     "evidence_status": "confirmed_user_validation",
     "evidence_label": "Huawei Bar 310 pre-auth model and v1 resource markers found",
+    "management_action": "disable_insecure_management_services",
+    "management_validation_status": "confirmed_local_validation",
 }
 MAIN_BUNDLE_PATTERN = re.compile(r"^/static/js/main\.[A-Za-z0-9._~-]{1,120}\.chunk\.js$")
 MAX_COOKIE_COUNT = 16
@@ -46,6 +48,16 @@ BUNDLE_MARKERS = (
     "X-Access-Token",
     *BAR310_RESOURCE_PATHS.values(),
 )
+
+DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
+HTTP_ONLY_MANAGEMENT_CONTRACT_IDS = frozenset({"huawei-bar310-rest-v1", "huawei-box310-rest-v1", "huawei-box610-rest-v1"})
+MANAGEMENT_BUNDLE_MARKERS = (
+    'reqGetCfgUrl="/v1/om/config"',
+    'reqSaveCfgUrl="/v1/om/config"',
+    "enable_http",
+)
+MANAGEMENT_CONFIG_PATH = "/v1/om/config"
+MANAGEMENT_HTTP_TARGET = 0
 
 RESOURCE_FIELDS: dict[str, dict[str, tuple[type, ...]]] = {
     "version": {
@@ -169,7 +181,7 @@ def native_https_request(options: dict[str, Any]) -> dict[str, Any]:
     ip = str(options["ip"])
     method = str(options.get("method") or "GET").upper()
     path = str(options.get("path") or "/")
-    if method not in {"GET", "POST", "DELETE"} or not path.startswith("/") or "\r" in path or "\n" in path:
+    if method not in {"GET", "POST", "PUT", "DELETE"} or not path.startswith("/") or "\r" in path or "\n" in path:
         raise Bar310TransportError("request_invalid")
     timeout = max(0.25, min(float(options.get("timeout_ms") or 8000) / 1000, 30.0))
     maximum = max(1, min(int(options.get("max_bytes") or 1024 * 1024), 8 * 1024 * 1024))
@@ -278,6 +290,93 @@ def _valid_mac(value: Any) -> str | None:
     return item if MAC_PATTERN.fullmatch(item) else None
 
 
+def _management_http_value(data: Any) -> int:
+    if not isinstance(data, dict):
+        raise Bar310ContractError("configuration_schema_unconfirmed")
+    value = data.get("enable_http")
+    if isinstance(value, int) and not isinstance(value, bool) and value in {0, 1}:
+        return value
+    collection = data.get("CfgItemInt")
+    if isinstance(collection, list):
+        for item in collection:
+            if not isinstance(item, dict) or item.get("CfgItemID") != "enable_http":
+                continue
+            value = item.get("CfgItemInfo")
+            if isinstance(value, int) and not isinstance(value, bool) and value in {0, 1}:
+                return value
+    raise Bar310ContractError("configuration_schema_unconfirmed")
+
+
+def _management_state(http_value: int | None) -> dict[str, str]:
+    return {
+        "httpPort80": "disabled" if http_value == MANAGEMENT_HTTP_TARGET else "enabled" if http_value == 1 else "unknown",
+        "telnetPort23": "not_exposed",
+    }
+
+
+def _disable_insecure_management_services(
+    bundle_text: str,
+    json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
+    settle: Callable[[], Any],
+    validation_status: str,
+) -> dict[str, Any]:
+    base = {
+        "id": DISABLE_INSECURE_SERVICES_ACTION,
+        "transport": "https/443",
+        "changed": False,
+        "writeAttempted": False,
+        "validationStatus": validation_status,
+    }
+    if not all(marker in bundle_text for marker in MANAGEMENT_BUNDLE_MARKERS):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+
+    def read_http() -> int:
+        outer, data = json_request("POST", MANAGEMENT_CONFIG_PATH, {"CfgIDString": ["enable_http"]}, True)
+        if outer.get("success") != 1:
+            raise Bar310ContractError("configuration_read_failed")
+        return _management_http_value(data)
+
+    before = None
+    after = None
+    write_attempted = False
+    try:
+        before_value = read_http()
+        before = _management_state(before_value)
+        if before_value == MANAGEMENT_HTTP_TARGET:
+            return {**base, "status": "already_compliant", "before": before, "after": before}
+        payload = {
+            "CfgItemInt": [{"CfgItemID": "enable_http", "CfgItemInfo": MANAGEMENT_HTTP_TARGET}],
+            "CfgItemString": [],
+        }
+        outer, _data = json_request("PUT", MANAGEMENT_CONFIG_PATH, payload, True)
+        write_attempted = True
+        if outer.get("success") != 1:
+            raise Bar310ContractError("configuration_write_failed")
+        settle()
+        after_value = read_http()
+        after = _management_state(after_value)
+        if after_value != MANAGEMENT_HTTP_TARGET:
+            raise Bar310ContractError("configuration_verification_failed")
+        return {
+            **base,
+            "status": "applied",
+            "changed": True,
+            "writeAttempted": True,
+            "before": before,
+            "after": after,
+        }
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        code = error.code if isinstance(error, Bar310ContractError) else _transport_code(error)
+        result = {**base, "status": "failed", "writeAttempted": write_attempted, "safeError": code}
+        if before is not None:
+            result["before"] = before
+        if after is not None:
+            result["after"] = after
+        return result
+
+
 def build_web_blocks(resources: dict[str, dict[str, Any]], ip: str) -> dict[str, Any]:
     version = resources.get("version") or {}
     specification = resources.get("specification") or {}
@@ -367,6 +466,8 @@ def poll_huawei_310_family_device(
     plan_models = frozenset(str(item) for item in contract.get("plan_models") or ())
     evidence_status = str(contract.get("evidence_status") or "provisional_user_validation")
     evidence_label = str(contract.get("evidence_label") or "Huawei 310-family guarded web contract found")
+    requested_management_tasks = [str(item) for item in settings.get("management_tasks", []) if str(item).strip()]
+    settle = settings.get("management_settle") or (lambda: time.sleep(1.0))
     base: dict[str, Any] = {
         "ip": ip,
         "capturedAt": captured_at,
@@ -548,7 +649,14 @@ def poll_huawei_310_family_device(
             "webInterface": interface,
             "diagnostics": diagnostics,
         })
-    return finalize({
+    management_actions = []
+    if (
+        contract_id in HTTP_ONLY_MANAGEMENT_CONTRACT_IDS
+        and contract.get("management_action") == DISABLE_INSECURE_SERVICES_ACTION
+        and DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks
+    ):
+        management_actions.append(_disable_insecure_management_services(bundle_text, json_request, settle, str(contract.get("management_validation_status") or "provisional_user_validation")))
+    result = {
         **base,
         "ok": True,
         "webInterface": interface,
@@ -556,7 +664,15 @@ def poll_huawei_310_family_device(
         "rawResources": sanitize_result(resources),
         "readMode": "targeted",
         "diagnostics": diagnostics,
-    })
+    }
+    if management_actions:
+        result["managementActions"] = management_actions
+        failed_action = next((item for item in management_actions if item.get("status") == "failed"), None)
+        if failed_action:
+            result["ok"] = False
+            result["failedStage"] = "management_action"
+            result["safeError"] = failed_action.get("safeError") or "management_action_failed"
+    return finalize(result)
 
 
 def poll_huawei_bar310_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None) -> dict[str, Any]:
