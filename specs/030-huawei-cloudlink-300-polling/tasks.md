@@ -38,7 +38,7 @@
 
 - [x] T012 Document provisional Box live-validation boundary in `docs/decisions/ADR-0031-huawei-cloudlink-300-polling.md`, `docs/architecture.md`, `docs/context-map.md`, `docs/implementation-log.md`, `README.md`, `AGENTS.md` and feature artifacts.
 - [x] T013 Run full Python/JavaScript/syntax/reference suites, `git diff --check` and secret/IP/artifact scan; remove temporary probe `scripts/_probe_cloudlink_300.py`.
-- [ ] T014 Validate exact Box 300 and Box 600 contracts on separate real devices when available; compare Site name with their interfaces and update provisional status in `docs/decisions/ADR-0031-huawei-cloudlink-300-polling.md`.
+- [x] T014 Record the administrator's independent successful Box 300/600 reports and Site name comparisons, and update validation status in `docs/decisions/ADR-0031-huawei-cloudlink-300-polling.md`.
 
 ## Dependencies
 

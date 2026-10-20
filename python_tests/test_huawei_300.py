@@ -103,7 +103,7 @@ class Huawei300Tests(unittest.TestCase):
                     {"request": fake_request(calls, model=model, code=code), "allow_insecure_tls": True})
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["vendorPolling"]["contract"], contract)
-                self.assertEqual(result["vendorPolling"]["validationStatus"], "provisional_user_validation")
+                self.assertEqual(result["vendorPolling"]["validationStatus"], "confirmed_user_validation")
                 self.assertEqual(result["siteName"]["value"], "Synthetic Site")
 
     def test_wrong_model_and_bundle_fail_before_credentials(self):

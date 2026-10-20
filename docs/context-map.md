@@ -4,13 +4,13 @@
 
 - Спецификация, доказательства Bar 300 и отдельные Box-gates: `specs/030-huawei-cloudlink-300-polling/`.
 - Общий guarded CGI core и точные wrappers: `mvp_runtime/adapters/huawei_300.py`; регистрация: `mvp_runtime/polling.py`, `runtime/device-catalog.json`, `app.js`.
-- Bar 300 проверен контролируемым read-only запросом; Box 300/600 provisional до отдельных реальных проверок.
+- Bar 300 проверен контролируемым read-only запросом; администратор подтвердил успешные отчёты и Site name на Box 300 и Box 600.
 - Решение: `docs/decisions/ADR-0031-huawei-cloudlink-300-polling.md`.
 
 ## История требований Huawei CloudLink Bar 300 / Box 300 / Box 600
 
 - Подтверждённый администратором путь к Site name и переход от требования к guarded-контракту: `docs/future-huawei-cloudlink-300-600.md`.
-- Актуальная реализация и provisional Box-статус описаны в feature 030 ниже.
+- Актуальная реализация и подтверждённый пользователем статус Box описаны в feature 030 выше.
 
 ## Feature 029 — продолжение опроса и Site Name
 

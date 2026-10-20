@@ -25,8 +25,8 @@ from .huawei_te40 import (
 
 MODEL_CONTRACTS: dict[str, dict[str, Any]] = {
     "bar300": {"label": "Bar 300", "code": 18, "marker": "UI_TERM_BAR300:18", "contract": "huawei-bar300-web-cgi-v1", "validation": "confirmed_live_bar300"},
-    "box300": {"label": "Box 300", "code": 19, "marker": "UI_TERM_BOX300:19", "contract": "huawei-box300-web-cgi-v1", "validation": "provisional_user_validation"},
-    "box600": {"label": "Box 600", "code": 22, "marker": "UI_TERM_BOX600:22", "contract": "huawei-box600-web-cgi-v1", "validation": "provisional_user_validation"},
+    "box300": {"label": "Box 300", "code": 19, "marker": "UI_TERM_BOX300:19", "contract": "huawei-box300-web-cgi-v1", "validation": "confirmed_user_validation"},
+    "box600": {"label": "Box 600", "code": 22, "marker": "UI_TERM_BOX600:22", "contract": "huawei-box600-web-cgi-v1", "validation": "confirmed_user_validation"},
 }
 
 LOGIN_MARKERS = ("WEB_GetLoginInfo", "Web_RequestSessionID", "Web_RequestCertificate", "WEB_ChangeSessionID")

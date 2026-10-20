@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/secure-local-runtime`
 **Created**: 2026-10-20
-**Status**: Implemented locally; Bar 300 live read confirmed, Box 300/600 live validation pending
+**Status**: Implemented; Bar 300 controlled read and Box 300/600 user validation confirmed
 **Input**: Prepare a full read-only poll for a connected Huawei CloudLink Bar 300, including Site name, and safely reuse the confirmed behavior for exact Box 300 and Box 600 models.
 
 ## User Scenarios & Testing
@@ -44,7 +44,7 @@ The new models participate in the existing automatic plan and chosen-folder JSON
 
 - A browser bundle or firmware differs from the observed Bar 300: refuse unsupported requests.
 - Site name is absent or unreadable: record an explicit unknown status; never substitute the SR location.
-- Box 300/600 are not currently connected for live validation: distinguish synthetic compatibility from real-device confirmation.
+- The administrator independently confirmed successful Box 300/600 reports and Site name equality with each device menu; future firmware drift must still fail closed.
 - A timeout, TLS or authorization failure does not produce a false successful device result.
 
 ## Requirements
@@ -67,10 +67,10 @@ The new models participate in the existing automatic plan and chosen-folder JSON
 
 - **SC-001**: A controlled Bar 300 poll yields one JSON whose identity and Site name match the live device interface.
 - **SC-002**: Every tested model mismatch is rejected before credentials or marked unsuccessful after login without cross-model assignment.
-- **SC-003**: Box 300/600 synthetic contract tests pass, while live validation status remains explicit until those devices are tested.
+- **SC-003**: Box 300/600 synthetic contract tests pass and the administrator confirms successful reports and Site name equality separately for both exact models.
 - **SC-004**: Existing Python and JavaScript regression suites pass without credential data in outputs.
 
 ## Assumptions
 
-- Only the Bar 300 is available for live investigation now. Box 300/600 may share a transport, but compatibility is provisional until each is tested.
+- The Bar 300 was available for controlled live investigation. Box 300/600 were later validated independently by the administrator on their working PC; no raw reports or credentials were transferred into the repository.
 - The administrator-confirmed Site name menu path identifies the field, not by itself a network API.

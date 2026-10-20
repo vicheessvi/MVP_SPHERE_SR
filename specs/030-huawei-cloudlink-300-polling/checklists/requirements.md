@@ -31,4 +31,4 @@
 
 ## Notes
 
-Only Bar 300 is currently connected; separate real-device Box 300/600 confirmation remains a release gate.
+Bar 300 was checked directly; the administrator later confirmed successful Box 300 and Box 600 reports and Site name equality separately.

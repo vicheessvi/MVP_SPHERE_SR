@@ -25,7 +25,7 @@ Add three exact-model transports backed by one guarded legacy web-CGI core. The 
 - Incomplete data: PASS; missing Site name is explicit unknown, never SR fallback.
 - Local security: PASS; HTTPS to exact selected IP, transient credentials, no third-party dependency, no non-loopback bind.
 - Write boundary: PASS; action allowlist contains only login/session and read-only resources.
-- Box 300/600 validation: provisional until real-device controlled polling; the catalog allows only guarded exact-model attempts.
+- Box 300/600 validation: `confirmed_user_validation` after independent administrator reports, including Site name equality; the catalog still permits only guarded exact-model attempts.
 
 ## Project Structure
 
@@ -41,7 +41,7 @@ docs/decisions/ADR-0031-huawei-300.md   evidence and safety boundary
 
 ## Design
 
-The adapter reads the current main bundle and requires exact CGI and model-code markers before credentials. `WEB_GetLoginInfo` must report the expected model code, no active session and the observed legacy shape. Authentication follows the verified browser session/certificate flow. After login, version model plus serial or MAC is mandatory. Six fixed resource actions produce the existing Huawei-shaped JSON. A separate fixed `WEB_GetCfgParamAPI` read with only `CfgIDString=[sitename]` provides Site name. Response fields are whitelisted and redacted; failures are safe codes. Box 300/600 share code but not model identity or validation status.
+The adapter reads the current main bundle and requires exact CGI and model-code markers before credentials. `WEB_GetLoginInfo` must report the expected model code, no active session and the observed legacy shape. Authentication follows the verified browser session/certificate flow. After login, version model plus serial or MAC is mandatory. Six fixed resource actions produce the existing Huawei-shaped JSON. A separate fixed `WEB_GetCfgParamAPI` read with only `CfgIDString=[sitename]` provides Site name. Response fields are whitelisted and redacted; failures are safe codes. Box 300/600 share code but retain independent model identity and user-validation evidence.
 
 ## Post-design Constitution Check
 

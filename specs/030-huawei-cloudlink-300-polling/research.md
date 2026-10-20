@@ -14,6 +14,8 @@
 
 **Alternative**: Treating all Box variants as Bar 300 is not acceptable. Keeping them unsupported would not meet the user's requested testable rollout, but exact guarded attempts are safe.
 
+**Validation update (2026-10-20)**: The administrator independently reported successful JSON reports for exact Box 300 and Box 600 and confirmed that `siteName.value` matches the Site name shown in each device menu. The two model contracts now use `confirmed_user_validation`; the original pre-/post-auth gates and firmware drift behavior remain unchanged. No raw results were copied into Git.
+
 ## Site name and result
 
 **Decision**: Read the configuration field directly through the model's current bundle-confirmed `WEB_GetCfgParamAPI`, and include it in `siteName.value` plus Device Info when valid.
