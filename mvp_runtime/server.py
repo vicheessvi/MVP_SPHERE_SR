@@ -35,6 +35,7 @@ PUBLIC_FILES = {
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/vendor/xlsx.full.min.js": ("vendor/xlsx.full.min.js", "text/javascript; charset=utf-8"),
     "/runtime/credential-pool.js": ("runtime/credential-pool.js", "text/javascript; charset=utf-8"),
+    "/runtime/polling-recovery.js": ("runtime/polling-recovery.js", "text/javascript; charset=utf-8"),
     "/runtime/sphere.js": ("runtime/sphere.js", "text/javascript; charset=utf-8"),
 }
 JOB_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)$")
@@ -385,6 +386,12 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.ACCEPTED, {"ok": True, "jobId": job.id, "status": job.status()["status"]})
 
     def _polling_job_routes(self, path: str, session: RuntimeSession) -> bool:
+        if path == "/api/polling/jobs/active" and self.command == "GET":
+            with self.server.state.lock:
+                job_id = session.active_job_id
+                job = self.server.state.jobs.get(job_id) if job_id else None
+            self._json(HTTPStatus.OK, {"ok": True, "activeJobId": job.id if job else None})
+            return True
         if path == "/api/polling/jobs" and self.command == "POST":
             self._create_job(session)
             return True

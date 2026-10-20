@@ -130,6 +130,24 @@ class PollingTests(unittest.TestCase):
         self.assertTrue(all(item["ok"] for item in result))
         self.assertEqual(observed, [("192.0.2.30", 2), ("192.0.2.40", 2), ("192.0.2.50", 2), ("192.0.2.60", 2)])
 
+    def test_huawei_300_family_routes_three_exact_read_only_transports(self) -> None:
+        seen = []
+        transports = {
+            "huawei_bar300_web_cgi_v1": lambda *_args: seen.append("bar300") or {"ok": True},
+            "huawei_box300_web_cgi_v1": lambda *_args: seen.append("box300") or {"ok": True},
+            "huawei_box600_web_cgi_v1": lambda *_args: seen.append("box600") or {"ok": True},
+        }
+        plan = {"intervalMinSeconds": 0, "intervalMaxSeconds": 0, "devices": [
+            {"category": "vcs", "manufacturer": "Huawei", "model": model, "ip": f"192.0.2.{number}"}
+            for number, model in enumerate(("CloudLink Bar 300", "CloudLink Box 300", "CloudLink Box 600"), 31)
+        ]}
+        results = run_plan(plan, {"ping": lambda *_args: {"ok": True, "durationMs": 1},
+            "get_credentials": lambda *_args: [{"username": "synthetic", "password": "synthetic"}],
+            "adapters": transports})
+        self.assertEqual(seen, ["bar300", "box300", "box600"])
+        self.assertTrue(all(item["ok"] for item in results))
+        self.assertNotIn("disable_insecure_management_services", str(results))
+
     def test_mixed_huawei_extron_plan_keeps_adapters_separate_and_other_huawei_offline(self) -> None:
         calls = []
 

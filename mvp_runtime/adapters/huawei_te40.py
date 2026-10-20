@@ -14,6 +14,7 @@ from http.cookies import SimpleCookie
 from typing import Any, Callable
 
 from mvp_runtime.redaction import sanitize_result
+from mvp_runtime.adapters.huawei_site_name import read_site_name
 
 
 LOGIN_MARKERS = (
@@ -561,6 +562,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
         }
     management_actions = []
+    site_name = read_site_name(bundle_text, lambda name, payload: action(name, {**(payload or {}), "acCSRFToken": csrf_token}))
     if DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks:
         management_actions.append(_disable_insecure_management_services(planned_model, bundle_text, csrf_token, action, settle))
     safe_resources = sanitize_result(resources)
@@ -569,10 +571,13 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         "ok": True,
         "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized, "tlsProfile": tls_profile or "system_default"},
         "webBlocks": build_web_blocks(resources, ip),
+        "siteName": site_name,
         "rawResources": safe_resources,
         "readMode": "targeted",
         "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
     }
+    if site_name["status"] == "read":
+        result["webBlocks"]["Device Info"]["Site Name"] = site_name["value"]
     if management_actions:
         result["managementActions"] = management_actions
         failed_action = next((item for item in management_actions if item.get("status") == "failed"), None)

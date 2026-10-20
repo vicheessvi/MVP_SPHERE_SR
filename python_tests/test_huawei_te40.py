@@ -107,9 +107,59 @@ class HuaweiTe40Tests(unittest.TestCase):
             )
             self.assertTrue(result["ok"], model)
             self.assertEqual(result["webBlocks"]["Device Info"]["Model"], model)
+            self.assertEqual(result["siteName"]["status"], "protocol_required")
             self.assertEqual(result["vendorPolling"]["contract"], "huawei-te-web-cgi-v1")
             self.assertEqual(len([item for item in calls if "Web_RequestCertificate" in item["path"]]), 1)
             self.assertTrue(all(item["tls_profile"] is None for item in calls))
+
+    def test_te40_reads_site_name_only_with_current_mailbox_markers(self):
+        calls = []
+        bundle = RESOURCE_MARKERS + " WEB_SubscribeMailboxDataAPI WEB_GetMailboxDataAPI"
+        original = self.success_request(calls, overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
+
+        def request(options):
+            if "ActionID=WEB_SubscribeMailboxDataAPI" in options["path"]:
+                calls.append(options)
+                self.assertEqual(json.loads(options["body"])["aszMailboxItems"], ["sitename"])
+                return envelope({})
+            if "ActionID=WEB_GetMailboxDataAPI" in options["path"]:
+                calls.append(options)
+                return envelope({"state": {"sitename": "Synthetic Site"}})
+            return original(options)
+
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": request},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["siteName"]["value"], "Synthetic Site")
+        self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic Site")
+
+    def test_te20_reads_site_name_only_when_legacy_bundle_exposes_mailbox(self):
+        calls = []
+        bundle = RESOURCE_MARKERS + " WEB_SubscribeMailboxDataAPI WEB_GetMailboxDataAPI"
+        original = self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True,
+            overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
+
+        def request(options):
+            if "ActionID=WEB_SubscribeMailboxDataAPI" in options["path"]:
+                calls.append(options)
+                return envelope({})
+            if "ActionID=WEB_GetMailboxDataAPI" in options["path"]:
+                calls.append(options)
+                return envelope({"state": {"sitename": "Synthetic TE20 Site"}})
+            return original(options)
+
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": request},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["siteName"]["value"], "Synthetic TE20 Site")
+        self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic TE20 Site")
+        self.assertTrue(all(item["tls_profile"] == TE20_TLS_PROFILE for item in calls))
 
     def test_te20_uses_exact_tls11_legacy_preauth_and_guarded_management_action(self):
         calls = []
@@ -121,6 +171,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["vendorPolling"]["contract"], "huawei-te20-web-cgi-v1")
         self.assertEqual(result["webBlocks"]["Device Info"]["Model"], "Huawei TE20")
+        self.assertEqual(result["siteName"], {"status": "protocol_required", "value": None})
         self.assertTrue(all(item["tls_profile"] == TE20_TLS_PROFILE for item in calls))
         self.assertEqual(result["managementActions"][0]["status"], "applied")
         self.assertEqual(result["managementActions"][0]["after"], {"httpPort80": "disabled", "telnetPort23": "disabled"})

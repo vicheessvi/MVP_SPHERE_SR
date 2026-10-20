@@ -80,6 +80,32 @@ class HuaweiBoxContractTests(unittest.TestCase):
         (poll_huawei_box610_device, "Box 610", "huawei-box610-rest-v1"),
     )
 
+    def test_box310_and_box610_read_site_name_when_bundle_confirms_mailbox(self):
+        for poll, model, _contract_id in self.MANAGEMENT_CASES:
+            with self.subTest(model=model):
+                calls = []
+                original = family_request(calls, model,
+                    bundle_override=MAIN_BUNDLE + " WEB_SubscribeMailboxDataAPI WEB_GetMailboxDataAPI")
+
+                def request(options):
+                    if options["path"] == "/action.cgi?ActionID=WEB_SubscribeMailboxDataAPI":
+                        calls.append(options)
+                        return envelope({})
+                    if options["path"] == "/action.cgi?ActionID=WEB_GetMailboxDataAPI":
+                        calls.append(options)
+                        return envelope({"state": {"sitename": "Synthetic Box Site"}})
+                    return original(options)
+
+                result = poll(
+                    {"ip": "192.0.2.31", "model": model, "allowInsecureTls": True},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+                    {"request": request},
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["siteName"]["value"], "Synthetic Box Site")
+                self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic Box Site")
+                self.assertFalse(any(call["method"] == "PUT" for call in calls))
+
     def test_box_http_only_action_writes_once_and_verifies_without_telnet(self):
         for poll, model, contract_id in self.MANAGEMENT_CASES:
             with self.subTest(model=model):
@@ -150,6 +176,7 @@ class HuaweiBoxContractTests(unittest.TestCase):
             self.assertEqual(result["vendorPolling"]["model"], device_model)
             self.assertEqual(result["vendorPolling"]["evidenceStatus"], "confirmed_user_validation")
             self.assertEqual(result["webBlocks"]["Device Info"]["Model"], device_model)
+            self.assertEqual(result["siteName"], {"status": "protocol_required", "value": None})
             encoded = json.dumps(result)
             self.assertNotIn("SYNTHETIC-PASSWORD", encoded)
             self.assertNotIn("SYNTHETIC-TOKEN", encoded)

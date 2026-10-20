@@ -1,0 +1,9 @@
+# ADR-0031: guarded polling Huawei CloudLink 300-family
+
+Дата: 2026-10-20. Статус: Bar 300 read-only проверен на подключённом устройстве; Box 300/600 — provisional до отдельных контролируемых опросов.
+
+Пользователь запросил опрос точного CloudLink Bar 300 с параметром Site name и объединение алгоритма для Box 300/600. Контролируемое исследование Bar 300 подтвердило HTTPS/443, текущий `static/js/main.chunk.js`, legacy CGI login/session/certificate flow, pre-auth `ucTerType=18`, post-auth exact модель, serial/MAC, шесть ограниченных ресурсов и read-only `WEB_GetCfgParamAPI` с единственным `CfgIDString=["sitename"]`. Site name вернулся строкой; реальный адрес, учётные данные и значения ответов не помещались в repository, fixtures или логи. Новый адаптер на том же устройстве вернул успешный результат с Site name.
+
+Текущий bundle сопоставляет `UI_TERM_BAR300:18`, `UI_TERM_BOX300:19`, `UI_TERM_BOX600:22`. Huawei также относит модели к одной программной ветке, но это не доказывает совместимость конкретной прошивки Box. Поэтому три transport регистрируются отдельно; общий core проверяет собственный bundle и pre-auth код каждой модели до credentials, post-auth модель плюс serial/MAC до принятия результата. Любой дрейф даёт безопасную ошибку. Box 300/600 обозначаются `provisional_user_validation` и требуют отдельной эксплуатации; модельные варианты с суффиксом не принимаются.
+
+Контракт read-only: фиксированные CGI действия входа, шесть ресурсов, точный `sitename` и logout; нет HTTP fallback, SET/SAVE/PUT, переноса management-action или REST-алгоритма серии 310. Результат сохраняет совместимую Huawei JSON-схему и редактируется общим redaction-контуром. Источники: локальное контролируемое чтение устройства, [Huawei web UI Site name](https://support.huaweicloud.com/intl/en-us/usermanual-meeting/web_box.html), [рекомендации по общей программной ветке](https://support.huaweicloud.com/intl/en-us/meeting_faq/equip_ver.html).

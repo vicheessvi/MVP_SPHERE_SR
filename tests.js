@@ -19,10 +19,41 @@
 
   const api = global.MvpSphereSR;
   const runtimeModelCatalog = typeof require === "function" ? require("./runtime/model-catalog") : null;
+  const pollingRecovery = typeof require === "function" ? require("./runtime/polling-recovery") : global.MVP_POLLING_RECOVERY;
   const fixtures = global.MvpSphereSRFixtures;
   const timelineExpected = global.MvpSphereSRTimelineExpectations;
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
   const tests = [];
+
+  test("Журнал восстановления не содержит credential hash и исключает сохранённые устройства", () => {
+    const plan = { schemaVersion: 3, authenticationInputSha256: "a".repeat(64), managementTasks: [], devices: [{ ip: "192.0.2.1" }, { ip: "192.0.2.2" }] };
+    const manifest = pollingRecovery.create(plan, true, "2026-01-01T00:00:00Z");
+    assert(!JSON.stringify(manifest).includes("a".repeat(64)));
+    pollingRecovery.record(manifest, 0, true);
+    pollingRecovery.record(manifest, 1, false);
+    const pending = pollingRecovery.remaining(manifest, [0]);
+    assert(JSON.stringify(pending.originalIndices) === JSON.stringify([1]));
+    assert(pending.plan.devices[0].ip === "192.0.2.2");
+  });
+
+  test("Восстановление не повторяет неясную write-операцию", () => {
+    const plan = { schemaVersion: 3, managementTasks: ["disable_insecure_management_services"], devices: [{ ip: "192.0.2.1" }, { ip: "192.0.2.2" }, { ip: "192.0.2.3" }] };
+    const manifest = pollingRecovery.create(plan, true);
+    pollingRecovery.record(manifest, 0, true);
+    const pending = pollingRecovery.remaining(manifest, [0]);
+    assert(JSON.stringify(pending.skippedForReview) === JSON.stringify([1]));
+    assert(JSON.stringify(pending.originalIndices) === JSON.stringify([2]));
+    let rejected = false;
+    try { pollingRecovery.create({ schemaVersion: 3, devices: [{ ip: "192.0.2.1", password: "x" }] }, true); } catch { rejected = true; }
+    assert(rejected);
+  });
+
+  test("Интерфейс предоставляет ручное продолжение и не импортирует журнал как устройство", () => {
+    const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    assert(source.includes('data-resume-automatic-polling'));
+    assert(source.includes('file.name === "polling-recovery.json"'));
+    assert(source.includes('recoveryTargetsMatchCurrentSource'));
+  });
 
   class MemoryStorage {
     constructor(initial) {
@@ -343,6 +374,27 @@
     const fileMode = api.resolveLaunchMode({ protocol: "file:", fileMarker: true });
     assertEqual(fileMode.kind, "file");
     assertEqual(fileMode.credentialsAvailable, false);
+  });
+
+  test("CloudLink Bar 300, Box 300 и Box 600 маршрутизируются раздельно без write-задачи", () => {
+    const models = [
+      ["Bar 300", "huawei_bar300_web_cgi_v1"],
+      ["Box 300", "huawei_box300_web_cgi_v1"],
+      ["Box 600", "huawei_box600_web_cgi_v1"]
+    ];
+    models.forEach(([model, transport]) => {
+      [model, `CloudLink ${model}`, `CloudLinc ${model}`, `Huawei ${model}`, `Huawei CloudLink ${model}`].forEach((modelRaw) => {
+        const capability = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw });
+        assertEqual(capability.support, "implemented");
+        assertEqual(capability.transport, transport);
+        assertEqual((capability.managementTasks || []).length, 0);
+        if (runtimeModelCatalog) {
+          const manifest = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model: modelRaw });
+          assertEqual(manifest.transport, transport);
+          assert(!runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: modelRaw }, "disable_insecure_management_services").supported);
+        }
+      });
+    });
   });
 
   test("Runtime catalog выбирает TE20, TE-family, Bar 310 и Box-контракты раньше fallback", () => {

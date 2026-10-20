@@ -1,5 +1,25 @@
 # Карта контекста
 
+## Feature 030 — Huawei CloudLink Bar 300 / Box 300 / Box 600
+
+- Спецификация, доказательства Bar 300 и отдельные Box-gates: `specs/030-huawei-cloudlink-300-polling/`.
+- Общий guarded CGI core и точные wrappers: `mvp_runtime/adapters/huawei_300.py`; регистрация: `mvp_runtime/polling.py`, `runtime/device-catalog.json`, `app.js`.
+- Bar 300 проверен контролируемым read-only запросом; Box 300/600 provisional до отдельных реальных проверок.
+- Решение: `docs/decisions/ADR-0031-huawei-cloudlink-300-polling.md`.
+
+## История требований Huawei CloudLink Bar 300 / Box 300 / Box 600
+
+- Подтверждённый администратором путь к Site name и переход от требования к guarded-контракту: `docs/future-huawei-cloudlink-300-600.md`.
+- Актуальная реализация и provisional Box-статус описаны в feature 030 ниже.
+
+## Feature 029 — продолжение опроса и Site Name
+
+- Требования и контракты: `specs/029-resumable-polling-site-name/`.
+- Отказ записи отдельного JSON, счётчики и ACK timeout: `mvp_runtime/polling_job.py`.
+- Выбранная папка, видимый несекретный журнал и кнопка продолжения: `app.js`, `runtime/polling-recovery.js`.
+- Опциональный Site Name Huawei: `mvp_runtime/adapters/huawei_site_name.py`, `huawei_te40.py`, `huawei_bar310.py`.
+- Решение: `docs/decisions/ADR-0030-resumable-polling-site-name.md`.
+
 ## Текущая feature 028 — HTTP-only Huawei 310
 
 - Спецификация, user-confirmed safe value, отдельные Box-контракты и задачи: `specs/028-huawei-310-http-only/`.

@@ -13,6 +13,7 @@ from http.cookies import SimpleCookie
 from typing import Any, Callable
 
 from mvp_runtime.redaction import sanitize_result
+from mvp_runtime.adapters.huawei_site_name import read_site_name
 
 
 CONTRACT_MODEL = "Bar 310"
@@ -650,6 +651,10 @@ def poll_huawei_310_family_device(
             "diagnostics": diagnostics,
         })
     management_actions = []
+    site_name = read_site_name(
+        bundle_text,
+        lambda name, payload: json_request("POST", f"/action.cgi?ActionID={name}", payload, token=True),
+    )
     if (
         contract_id in HTTP_ONLY_MANAGEMENT_CONTRACT_IDS
         and contract.get("management_action") == DISABLE_INSECURE_SERVICES_ACTION
@@ -661,10 +666,13 @@ def poll_huawei_310_family_device(
         "ok": True,
         "webInterface": interface,
         "webBlocks": build_web_blocks(resources, ip),
+        "siteName": site_name,
         "rawResources": sanitize_result(resources),
         "readMode": "targeted",
         "diagnostics": diagnostics,
     }
+    if site_name["status"] == "read":
+        result["webBlocks"]["Device Info"]["Site Name"] = site_name["value"]
     if management_actions:
         result["managementActions"] = management_actions
         failed_action = next((item for item in management_actions if item.get("status") == "failed"), None)

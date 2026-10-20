@@ -63,9 +63,26 @@ class CatalogTests(unittest.TestCase):
             self.assertTrue(action["supported"])
             self.assertEqual(action["transport"], "huawei_bar310_rest_v1")
 
-        fallback = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "CloudLinc Bar 300"})
+        fallback = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "CloudLinc Bar 310-X"})
         self.assertEqual(fallback["key"], "vcs/huawei")
         self.assertEqual(fallback["protocolStatus"], "protocol_required")
+
+    def test_huawei_300_family_has_exact_read_only_transports(self) -> None:
+        families = (
+            ("Bar 300", "vcs/huawei/bar300", "huawei_bar300_web_cgi_v1"),
+            ("Box 300", "vcs/huawei/box300", "huawei_box300_web_cgi_v1"),
+            ("Box 600", "vcs/huawei/box600", "huawei_box600_web_cgi_v1"),
+        )
+        for model, key, transport in families:
+            for alias in (model, f"CloudLink {model}", f"CloudLinc {model}", f"Huawei {model}", f"Huawei CloudLink {model}"):
+                with self.subTest(alias=alias):
+                    manifest = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": alias})
+                    self.assertEqual(manifest["key"], key)
+                    self.assertEqual(manifest["transport"], transport)
+                    self.assertEqual(manifest["protocolStatus"], "supported")
+                    self.assertFalse(resolve_management_action({"category": "vcs", "manufacturer": "Huawei", "model": alias}, "disable_insecure_management_services")["supported"])
+        variant = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "Box 300-C"})
+        self.assertEqual(variant["protocolStatus"], "protocol_required")
 
     def test_huawei_box_models_have_separate_exact_http_only_actions(self) -> None:
         families = (

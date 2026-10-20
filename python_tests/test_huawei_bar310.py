@@ -146,6 +146,23 @@ class HuaweiBar310Tests(unittest.TestCase):
 
         return request
 
+    def test_bar310_reads_site_name_from_guarded_mailbox(self):
+        calls = []
+        overrides = {
+            "/static/js/main.synthetic.chunk.js": {"status_code": 200, "headers": [], "body": MAIN_BUNDLE + " WEB_SubscribeMailboxDataAPI WEB_GetMailboxDataAPI"},
+            "/action.cgi?ActionID=WEB_SubscribeMailboxDataAPI": envelope({}),
+            "/action.cgi?ActionID=WEB_GetMailboxDataAPI": envelope({"state": {"sitename": "Synthetic Bar Site"}}),
+        }
+        result = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(calls, overrides=overrides)},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["siteName"]["value"], "Synthetic Bar Site")
+        self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic Bar Site")
+        self.assertFalse(any(call["method"] == "PUT" for call in calls))
+
     def test_bar_management_action_uses_one_minimal_http_write_and_post_read(self):
         calls = []
         result = poll_huawei_bar310_device(
@@ -243,6 +260,7 @@ class HuaweiBar310Tests(unittest.TestCase):
         self.assertTrue(all(item["headers"].get("Cookie") == "BarSession=synthetic-cookie" for item in calls[4:]))
         self.assertTrue(all(item["reject_unauthorized"] is False for item in calls))
         self.assertEqual(result["webBlocks"]["Device Info"]["Model"], "Bar 310")
+        self.assertEqual(result["siteName"], {"status": "protocol_required", "value": None})
         self.assertEqual(result["webBlocks"]["Device Status"]["Uptime Seconds"], 188100)
         self.assertEqual(result["webBlocks"]["LAN Settings"]["MAC Address"], "00:00:00:00:00:31")
         encoded = json.dumps(result)

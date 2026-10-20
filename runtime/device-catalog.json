@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_bar310_rest_v1", "huawei_box310_rest_v1", "huawei_box610_rest_v1"],
+  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1", "huawei_bar310_rest_v1", "huawei_box310_rest_v1", "huawei_box610_rest_v1"],
   "managementActions": [
     {
       "id": "disable_insecure_management_services",
@@ -32,6 +32,36 @@
       "models": ["TE30", "TE40", "TE50", "TE60"],
       "protocolStatus": "supported",
       "transport": "huawei_te_web_cgi_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
+    {
+      "key": "vcs/huawei/bar300",
+      "category": "vcs",
+      "manufacturer": "huawei",
+      "aliases": ["huawey"],
+      "models": ["Bar 300", "CloudLink Bar 300", "CloudLinc Bar 300", "Huawei Bar 300", "Huawei CloudLink Bar 300"],
+      "protocolStatus": "supported",
+      "transport": "huawei_bar300_web_cgi_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
+    {
+      "key": "vcs/huawei/box300",
+      "category": "vcs",
+      "manufacturer": "huawei",
+      "aliases": ["huawey"],
+      "models": ["Box 300", "CloudLink Box 300", "CloudLinc Box 300", "Huawei Box 300", "Huawei CloudLink Box 300"],
+      "protocolStatus": "supported",
+      "transport": "huawei_box300_web_cgi_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
+    {
+      "key": "vcs/huawei/box600",
+      "category": "vcs",
+      "manufacturer": "huawei",
+      "aliases": ["huawey"],
+      "models": ["Box 600", "CloudLink Box 600", "CloudLinc Box 600", "Huawei Box 600", "Huawei CloudLink Box 600"],
+      "protocolStatus": "supported",
+      "transport": "huawei_box600_web_cgi_v1",
       "credentialMode": "memory_xlsx_pool"
     },
     {
@@ -69,7 +99,7 @@
       "category": "vcs",
       "manufacturer": "huawei",
       "aliases": ["huawey"],
-      "models": ["TX50", "CloudLinc Bar 300", "CloudLinc Box 300", "CloudLinc Box 600", "Box 310-C", "Box 310-S", "Box 310-K", "Box 610-C", "Box 610-S", "Box 610-K"],
+      "models": ["TX50", "Box 300-C", "Box 600-C", "Bar 300-C", "Box 310-C", "Box 310-S", "Box 310-K", "Box 610-C", "Box 610-S", "Box 610-K"],
       "protocolStatus": "protocol_required",
       "transport": null,
       "credentialMode": "not_configured"

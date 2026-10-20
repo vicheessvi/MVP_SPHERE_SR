@@ -40,7 +40,7 @@ class PollingJobTests(unittest.TestCase):
         self.assertEqual(status["successful"], 1)
         self.assertEqual(len(terminal), 1)
 
-    def test_nack_fails_and_cancel_unblocks_pending_result(self) -> None:
+    def test_nack_records_failure_and_cancel_unblocks_pending_result(self) -> None:
         plan = {"devices": [{"ip": "192.0.2.20"}]}
 
         def runner(_plan, options):
@@ -49,11 +49,39 @@ class PollingJobTests(unittest.TestCase):
         first = create_polling_job({"plan": plan, "credentials": [{"username": "u", "password": "p"}], "run_plan": runner})
         pending = wait_until(first.result)
         self.assertTrue(first.acknowledge(pending["resultId"], False))
-        self.assertEqual(first.join(2)["safeError"], "result_save_failed")
+        finished = first.join(2)
+        self.assertEqual(finished["status"], "completed")
+        self.assertEqual(finished["saveFailed"], 1)
+        self.assertEqual(finished["saved"], 0)
+        self.assertEqual(finished["saveFailureEvents"][0], {"index": 0, "code": "result_save_failed"})
         second = create_polling_job({"plan": plan, "credentials": [{"username": "u", "password": "p"}], "run_plan": runner})
         wait_until(second.result)
         second.cancel()
         self.assertEqual(second.join(2)["status"], "cancelled")
+
+    def test_nack_does_not_block_next_device(self) -> None:
+        devices = [{"ip": "192.0.2.21"}, {"ip": "192.0.2.22"}]
+
+        def runner(_plan, options):
+            for index, device in enumerate(devices):
+                result = {"ip": device["ip"], "ok": True}
+                options["on_result"](result, {"index": index, "total": 2, "device": device})
+                options["on_progress"]({"stage": "processed", "result": result})
+
+        job = create_polling_job({"plan": {"devices": devices}, "credentials": [{"username": "u", "password": "p"}], "run_plan": runner})
+        first = wait_until(job.result)
+        self.assertTrue(job.acknowledge(first["resultId"], False))
+        second = wait_until(lambda: (value if (value := job.result()) and value["resultId"] != first["resultId"] else None))
+        self.assertTrue(job.acknowledge(second["resultId"], True))
+        status = job.join(2)
+        self.assertEqual((status["processed"], status["saved"], status["saveFailed"]), (2, 1, 1))
+
+    def test_unacknowledged_result_times_out_and_clears_credentials(self) -> None:
+        credentials = [{"username": "u", "password": "p"}]
+        def runner(_plan, options):
+            options["on_result"]({"ip": "192.0.2.30", "ok": True}, {"index": 0, "total": 1, "device": _plan["devices"][0]})
+        job = create_polling_job({"plan": {"devices": [{"ip": "192.0.2.30"}]}, "credentials": credentials, "run_plan": runner, "save_ack_timeout_seconds": 1})
+        self.assertEqual(job.join(2)["safeError"], "result_save_timeout")
 
     def test_invalid_input_and_safe_helpers(self) -> None:
         with self.assertRaises(JobInputError):

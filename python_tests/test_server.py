@@ -84,12 +84,15 @@ class ServerTests(unittest.TestCase):
 
     def test_static_allowlist_runtime_marker_and_removed_storage(self) -> None:
         cookie, csrf = self.harness.session()
-        for path, expected in (("/", b"<!doctype html"), ("/app.js", b"MvpSphereSR"), ("/runtime/sphere.js", b"MVP_SPHERE_BRAND"), ("/runtime-config.js", b"__MVP_CSRF__")):
+        for path, expected in (("/", b"<!doctype html"), ("/app.js", b"MvpSphereSR"), ("/runtime/sphere.js", b"MVP_SPHERE_BRAND"), ("/runtime/polling-recovery.js", b"MVP_POLLING_RECOVERY"), ("/runtime-config.js", b"__MVP_CSRF__")):
             status, headers, body = self.harness.request("GET", path, headers={"Cookie": cookie})
             self.assertEqual(status, 200)
             self.assertIn(expected, body)
             self.assertEqual(headers["x-frame-options"], "DENY")
             self.assertEqual(headers["cache-control"], "no-store, max-age=0")
+        status, _, body = self.harness.request("GET", "/api/polling/jobs/active", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertIsNone(json.loads(body)["activeJobId"])
         status, _, body = self.harness.request("PUT", "/api/storage/state", headers={"Cookie": cookie, "Origin": f"http://{self.harness.host}", "X-MVP-CSRF": csrf, "Content-Length": "2"}, body=b"{}")
         self.assertEqual(status, 404)
         self.assertEqual(json.loads(body)["error"], "not_found")
@@ -139,6 +142,8 @@ class ServerTests(unittest.TestCase):
         self.assertIsNotNone(pending)
         self.assertEqual(pending["filename"], "192.0.2.20.json")
         self.assertNotIn("SYNTHETIC-SERVER-SECRET", json.dumps(pending))
+        status, _, body = self.harness.request("GET", "/api/polling/jobs/active", headers={"Cookie": cookie})
+        self.assertEqual(json.loads(body)["activeJobId"], job_id)
         status, _, body = self.harness.request("POST", f"/api/polling/jobs/{job_id}/result/{pending['resultId']}/ack", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=b'{"saved":true}')
         self.assertEqual(status, 200, body)
         final = None
@@ -150,6 +155,12 @@ class ServerTests(unittest.TestCase):
             time.sleep(0.005)
         self.assertEqual(final["processed"], 1)
         self.assertEqual(final["unsupported"], 1)
+        for _ in range(200):
+            status, _, body = self.harness.request("GET", "/api/polling/jobs/active", headers={"Cookie": cookie})
+            if json.loads(body)["activeJobId"] is None:
+                break
+            time.sleep(0.005)
+        self.assertIsNone(json.loads(body)["activeJobId"])
         status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=json.dumps({"plan": plan}).encode())
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"], "credentials_required")

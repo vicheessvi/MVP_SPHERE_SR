@@ -248,6 +248,18 @@
       credentialMode: "memory_xlsx_pool",
       managementTasks: Object.freeze(["disable_insecure_management_services"])
     })),
+    ...["bar 300", "cloudlink bar 300", "cloudlinc bar 300", "huawei bar 300", "huawei cloudlink bar 300"].map((modelNormalized) => Object.freeze({
+      key: "vcs/huawei/bar300", category: "vcs", manufacturerNormalized: "huawei", modelNormalized,
+      support: "implemented", transport: "huawei_bar300_web_cgi_v1", normalizerKey: "huawei-bar300-json-v1", credentialMode: "memory_xlsx_pool"
+    })),
+    ...["box 300", "cloudlink box 300", "cloudlinc box 300", "huawei box 300", "huawei cloudlink box 300"].map((modelNormalized) => Object.freeze({
+      key: "vcs/huawei/box300", category: "vcs", manufacturerNormalized: "huawei", modelNormalized,
+      support: "implemented", transport: "huawei_box300_web_cgi_v1", normalizerKey: "huawei-box300-json-v1", credentialMode: "memory_xlsx_pool"
+    })),
+    ...["box 600", "cloudlink box 600", "cloudlinc box 600", "huawei box 600", "huawei cloudlink box 600"].map((modelNormalized) => Object.freeze({
+      key: "vcs/huawei/box600", category: "vcs", manufacturerNormalized: "huawei", modelNormalized,
+      support: "implemented", transport: "huawei_box600_web_cgi_v1", normalizerKey: "huawei-box600-json-v1", credentialMode: "memory_xlsx_pool"
+    })),
     ...["bar 310", "cloudlink bar 310", "cloudlinc bar 310"].map((modelNormalized) => Object.freeze({
       key: "vcs/huawei/bar310",
       category: "vcs",
@@ -1071,6 +1083,10 @@
       const name = String(inputFile?.name || "");
       const relativePath = normalizePollingRelativePath(inputFile?.relativePath || inputFile?.webkitRelativePath || name);
       const file = { ...inputFile, name: name || relativePath.split("/").pop() || "unknown", relativePath };
+      if (file.name === "polling-recovery.json") {
+        ignored.push({ ...file, reason: "Журнал восстановления опроса не является результатом устройства" });
+        continue;
+      }
       if (!/\.json$/i.test(file.name)) {
         ignored.push({ ...file, reason: "Файл не является JSON" });
         continue;
@@ -2108,7 +2124,7 @@
       intervalMinSeconds, intervalMaxSeconds, ...(legacyInterval ? { intervalSeconds: intervalMinSeconds } : {}),
       authenticationInputSha256: String(input.credentialSourceSha256).toLowerCase(), selection: deepClone(projection.selection),
       targetSource: projection.targetSource,
-      targetSourceSha256: usesManagementTargetList ? String(input.managementTargetSourceSha256).toLowerCase() : null,
+      targetSourceSha256: usesManagementTargetList ? String(input.managementTargetSourceSha256).toLowerCase() : (currentState.srImports.at(-1)?.rawSha256 || null),
       deviceIds: usesManagementTargetList ? [] : projection.selectedDevices.map((device) => device.id),
       targetDevices: usesManagementTargetList ? projection.selectedDevices.map(pollingRuntimeDevice) : [],
       managementTasks,
@@ -5045,6 +5061,8 @@
   let managementTargetListSession = null;
   let pollingOutputRootHandle = null;
   let automaticPollingMonitor = null;
+  let selectedPollingRecovery = null;
+  const POLLING_RECOVERY = global.MVP_POLLING_RECOVERY || (typeof module === "object" && module.exports ? require("./runtime/polling-recovery") : null);
   const ui = {
     route: initialNavigationState.route,
     message: startupMessage,
@@ -5070,6 +5088,7 @@
     managementTargetListSummary: null,
     pollingOutputFolderName: null,
     automaticPolling: null,
+    pollingRecoverySummary: null,
     inventoryBusy: false,
     equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
@@ -5136,44 +5155,117 @@
     }
   }
 
+  async function pendingResultAlreadyWritten(runDirectory, pending) {
+    try {
+      const file = await (await runDirectory.handle.getFileHandle(String(pending.filename))).getFile();
+      if (file.size > 32 * 1024 * 1024) return false;
+      const existing = JSON.parse(await file.text());
+      return existing.ip === pending.payload?.ip && existing.capturedAt === pending.payload?.capturedAt && existing.adapterKey === pending.payload?.adapterKey;
+    } catch { return false; }
+  }
+
+  async function writePollingRecovery(runDirectory, manifest) {
+    POLLING_RECOVERY.validate(manifest);
+    const fileHandle = await runDirectory.handle.getFileHandle(POLLING_RECOVERY.FILE, { create: true });
+    const writable = await fileHandle.createWritable({ keepExistingData: false });
+    try {
+      await writable.write(JSON.stringify(manifest, null, 2));
+      await writable.close();
+    } catch (error) {
+      try { await writable.abort(); } catch { /* best effort */ }
+      throw error;
+    }
+  }
+
+  async function findPollingRecovery(rootHandle) {
+    const found = [];
+    for await (const [name, child] of rootHandle.entries()) {
+      if (child.kind !== "directory" || !/^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(?:-\d+)?$/.test(name)) continue;
+      try {
+        const fileHandle = await child.getFileHandle(POLLING_RECOVERY.FILE);
+        const file = await fileHandle.getFile();
+        if (file.size > 16 * 1024 * 1024) continue;
+        const manifest = POLLING_RECOVERY.validate(JSON.parse(await file.text()));
+        if (manifest.status !== "completed") found.push({ manifest, runDirectory: { name, handle: child } });
+      } catch { /* unrelated or incomplete folder */ }
+    }
+    found.sort((left, right) => String(right.manifest.createdAt).localeCompare(String(left.manifest.createdAt)));
+    return found[0] || null;
+  }
+
+  async function verifySavedResults(recovery) {
+    const verified = [];
+    for (let index = 0; index < recovery.manifest.plan.devices.length; index += 1) {
+      const ip = String(recovery.manifest.plan.devices[index].ipNormalized || recovery.manifest.plan.devices[index].ip || "");
+      if (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip)) continue;
+      try {
+        const handle = await recovery.runDirectory.handle.getFileHandle(`${ip}.json`);
+        const file = await handle.getFile();
+        if (file.size > 32 * 1024 * 1024) continue;
+        const content = JSON.parse(await file.text());
+        if (content.ip === ip && typeof content.capturedAt === "string") verified.push(index);
+      } catch { /* missing/invalid result must not count as saved */ }
+    }
+    return verified;
+  }
+
+  function recoveryTargetsMatchCurrentSource(manifest) {
+    const dedicated = manifest.plan.targetSource === "port_closure_list";
+    if (dedicated && (!managementTargetListSession?.sourceSha256 || managementTargetListSession.sourceSha256 !== manifest.plan.targetSourceSha256)) return false;
+    if (!dedicated && (!manifest.plan.targetSourceSha256 || !state.srImports.some((item) => item.rawSha256 === manifest.plan.targetSourceSha256))) return false;
+    const source = dedicated ? managementTargetListSession.devices : state.inventoryDevices;
+    if (!Array.isArray(source) || !source.length) return false;
+    const currentByIp = new Map(source.map((device) => {
+      const projected = pollingRuntimeDevice(device);
+      return [normalizeIpv4(projected.ip), projected];
+    }));
+    return manifest.plan.devices.every((device) => {
+      const ip = normalizeIpv4(device.ipNormalized || device.ip);
+      const current = currentByIp.get(ip);
+      return ip && current && String(current.manufacturer || "").trim().toLowerCase() === String(device.manufacturer || "").trim().toLowerCase() && String(current.model || "").trim().toLowerCase() === String(device.model || "").trim().toLowerCase();
+    });
+  }
+
   function automaticPollingStatusLabel(status) {
     return ({ scheduled: "Ожидание времени запуска", running: "Опрос устройства", waiting_for_save: "Сохранение результата", waiting_interval: "Ожидание интервала", completed: "Завершено", cancelled: "Отменено", failed: "Ошибка" })[status] || "Подготовка";
   }
 
   function automaticPollingErrorMessage(code) {
-    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Введите учётные данные перед запуском опроса.", credential_file_invalid: "Учётные данные не приняты локальным исполнителем.", credential_sha_mismatch: "Учётные данные изменились после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", zero_interval_confirmation_required: "Подтвердите запуск опроса без интервалов.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить очередной JSON. Опрос остановлен.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
+    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Введите учётные данные перед запуском опроса.", credential_file_invalid: "Учётные данные не приняты локальным исполнителем.", credential_sha_mismatch: "Учётные данные изменились после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", zero_interval_confirmation_required: "Подтвердите запуск опроса без интервалов.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить JSON результата; событие записано, опрос других устройств продолжается.", result_save_timeout: "Вкладка перестала подтверждать запись результатов. Опрос остановлен; продолжите его из выбранной папки после повторного ввода учётных данных.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
   }
 
-  async function monitorAutomaticPolling(jobId, monitorToken) {
-    let runDirectory = null;
+  async function monitorAutomaticPolling(jobId, monitorToken, recovery) {
+    const runDirectory = recovery.runDirectory;
     try {
       while (automaticPollingMonitor === monitorToken) {
         const status = await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}`);
-        ui.automaticPolling = { ...status, runFolderName: runDirectory?.name || null };
-        if (status.startedAt && !runDirectory) {
-          if (!await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
-          runDirectory = await createPollingRunDirectory(pollingOutputRootHandle, status.startedAt);
-          ui.automaticPolling.runFolderName = runDirectory.name;
-        }
+        ui.automaticPolling = { ...status, runFolderName: runDirectory.name };
         if (status.pendingResult) {
           const pending = await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/result`);
           if (pending) {
             let saved = false;
             try {
-              if (!runDirectory) runDirectory = await createPollingRunDirectory(pollingOutputRootHandle, status.startedAt || new Date().toISOString());
-              await writePollingResultFile(runDirectory, pending);
+              if (!await pendingResultAlreadyWritten(runDirectory, pending)) await writePollingResultFile(runDirectory, pending);
               saved = true;
-            } finally {
-              await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/result/${encodeURIComponent(pending.resultId)}/ack`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ saved }) });
+            } catch {
+              setMessage(`Не удалось сохранить JSON для устройства ${escapeHtml(String(pending.payload?.ip || "без IP"))}. Опрос остальных устройств продолжается.`, "warning");
             }
+            const originalIndex = recovery.originalIndices[pending.index];
+            POLLING_RECOVERY.record(recovery.manifest, originalIndex, saved);
+            await writePollingRecovery(runDirectory, recovery.manifest);
+            await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/result/${encodeURIComponent(pending.resultId)}/ack`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ saved }) });
           }
         }
         render();
         if (["completed", "cancelled", "failed"].includes(status.status)) {
+          recovery.manifest.status = status.status === "completed" ? (recovery.manifest.saveFailures.length ? "completed_with_errors" : "completed") : "interrupted";
+          await writePollingRecovery(runDirectory, recovery.manifest);
+          selectedPollingRecovery = recovery.manifest.status === "completed" ? null : recovery;
+          ui.pollingRecoverySummary = selectedPollingRecovery ? { folder: runDirectory.name, remaining: recovery.manifest.plan.devices.length - recovery.manifest.savedIndices.length, requiresReview: recovery.manifest.requiresReview?.length || 0 } : null;
           const message = status.status === "completed"
-            ? `Автоматический опрос завершён. Результаты сохранены в папку ${runDirectory?.name || "запуска"}.`
+            ? `Автоматический опрос завершён. Папка ${runDirectory.name}. ${status.saveFailed ? `Не сохранено JSON: ${status.saveFailed}; доступно продолжение.` : ""}`
             : automaticPollingErrorMessage(status.safeError || (status.status === "cancelled" ? "polling_cancelled" : "local_runtime_error"));
-          setMessage(message, status.status === "completed" ? "success" : status.status === "cancelled" ? "warning" : "error");
+          setMessage(message, status.status === "completed" ? (status.saveFailed ? "warning" : "success") : status.status === "cancelled" ? "warning" : "error");
           render();
           break;
         }
@@ -5181,6 +5273,8 @@
       }
     } catch (error) {
       try { await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch { /* runtime may already be gone */ }
+      selectedPollingRecovery = recovery;
+      ui.pollingRecoverySummary = { folder: recovery.runDirectory.name, remaining: recovery.manifest.plan.devices.length - recovery.manifest.savedIndices.length, requiresReview: recovery.manifest.requiresReview?.length || 0 };
       setMessage(automaticPollingErrorMessage(error.safeCode || "result_save_failed"), "error");
       render();
     } finally {
@@ -5197,12 +5291,63 @@
     if (isZeroIntervalRange(exported.payload) && !ui.zeroIntervalAcknowledged) throw Object.assign(new Error("zero_interval_confirmation_required"), { safeCode: "zero_interval_confirmation_required" });
     if (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
     if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
+    const runDirectory = await createPollingRunDirectory(pollingOutputRootHandle, new Date().toISOString());
+    const manifest = POLLING_RECOVERY.create(exported.payload, allowInsecureTls);
+    const recovery = { manifest, runDirectory, originalIndices: exported.payload.devices.map((_, index) => index) };
+    await writePollingRecovery(runDirectory, manifest);
     const started = await runtimeRequest("/api/polling/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId, plan: exported.payload, allowInsecureTls: allowInsecureTls === true }) });
+    manifest.status = "running";
+    manifest.jobId = started.jobId;
+    try { await writePollingRecovery(runDirectory, manifest); }
+    catch (error) {
+      try { await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(started.jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch { /* runtime may be unavailable */ }
+      throw error;
+    }
     ui.automaticPolling = { jobId: started.jobId, status: started.status, total: exported.payload.devices.length, processed: 0, successful: 0, failed: 0, unsupported: 0, allowInsecureTls: allowInsecureTls === true };
     const monitorToken = Symbol("automatic-polling-monitor");
     automaticPollingMonitor = monitorToken;
     render();
-    void monitorAutomaticPolling(started.jobId, monitorToken);
+    void monitorAutomaticPolling(started.jobId, monitorToken, recovery);
+  }
+
+  async function resumeAutomaticPolling() {
+    if (launchMode.kind !== "local" || automaticPollingMonitor || !selectedPollingRecovery) throw Object.assign(new Error("recovery_unavailable"), { safeCode: "recovery_unavailable" });
+    if (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
+    if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
+    const recovery = selectedPollingRecovery;
+    if (!recoveryTargetsMatchCurrentSource(recovery.manifest)) throw Object.assign(new Error("recovery_source_required"), { safeCode: "recovery_source_required" });
+    const verifiedSaved = await verifySavedResults(recovery);
+    recovery.manifest.savedIndices = verifiedSaved;
+    const remaining = POLLING_RECOVERY.remaining(recovery.manifest, verifiedSaved);
+    if (remaining.skippedForReview.length) {
+      recovery.manifest.requiresReview = remaining.skippedForReview;
+      await writePollingRecovery(recovery.runDirectory, recovery.manifest);
+    }
+    if (!remaining.originalIndices.length) {
+      throw Object.assign(new Error("recovery_nothing_to_poll"), { safeCode: "recovery_nothing_to_poll" });
+    }
+    const writeTask = remaining.plan.managementTasks?.length > 0;
+    const warning = writeTask
+      ? `Продолжить опрос ${remaining.originalIndices.length} устройств из папки ${recovery.runDirectory.name}? ${remaining.skippedForReview.length} устройств с неизвестным исходом операции управления будут пропущены и требуют отдельной проверки. Подтвердите повторное разрешение задачи отключения портов.`
+      : `Продолжить опрос ${remaining.originalIndices.length} устройств из папки ${recovery.runDirectory.name}? Сохранённые JSON повторно опрашиваться не будут.`;
+    if (!global.confirm(warning)) return;
+    if (Number(remaining.plan.intervalMinSeconds) === 0 && Number(remaining.plan.intervalMaxSeconds) === 0 && !global.confirm("Опрос будет продолжен без интервалов между устройствами. Подтвердить?")) return;
+    remaining.plan.authenticationInputSha256 = credentialPoolSession.sourceSha256;
+    const started = await runtimeRequest("/api/polling/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan: remaining.plan, allowInsecureTls: recovery.manifest.allowInsecureTls }) });
+    recovery.manifest.status = "running";
+    recovery.manifest.jobId = started.jobId;
+    recovery.manifest.activeOriginalIndices = remaining.originalIndices;
+    try { await writePollingRecovery(recovery.runDirectory, recovery.manifest); }
+    catch (error) {
+      try { await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(started.jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch { /* best effort */ }
+      throw error;
+    }
+    recovery.originalIndices = remaining.originalIndices;
+    ui.automaticPolling = { jobId: started.jobId, status: started.status, total: remaining.originalIndices.length, processed: 0, saved: 0, saveFailed: 0, allowInsecureTls: recovery.manifest.allowInsecureTls, runFolderName: recovery.runDirectory.name };
+    const monitorToken = Symbol("automatic-polling-resume");
+    automaticPollingMonitor = monitorToken;
+    render();
+    void monitorAutomaticPolling(started.jobId, monitorToken, recovery);
   }
 
   function commitState(nextState, successMessage) {
@@ -5950,6 +6095,7 @@
         <section class="card upload-card upload-folder-card"><h2>2. Общая папка результатов опросов</h2>
           <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files" class="sr-only">Выберите общую папку результатов</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
           <div class="output-folder-picker section-gap"><div><strong>Папка для новых автоматических опросов</strong><p class="muted">${launchMode.kind === "local" ? (ui.pollingOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.pollingOutputFolderName)}` : "Выберите общую папку до формирования плана.") : "Автоматический опрос доступен после запуска START_MVP_SPHERE_SR.py."}</p></div><button class="button secondary" type="button" data-select-polling-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку</button></div>
+          ${ui.pollingRecoverySummary ? `<div class="warning-panel section-gap" role="status"><strong>Незавершённый опрос: ${escapeHtml(ui.pollingRecoverySummary.folder)}</strong><p>Не подтверждено сохранение для ${ui.pollingRecoverySummary.remaining} устройств. Для продолжения повторно загрузите исходную SR или список целей и введите учётные данные.${ui.pollingRecoverySummary.requiresReview ? ` Неясный исход изменения настроек: ${ui.pollingRecoverySummary.requiresReview} устройств требуют отдельной проверки.` : ""}</p><button class="button primary" type="button" data-resume-automatic-polling${automaticPollingMonitor || !credentialPoolSession?.sourceSha256 ? " disabled" : ""}>Продолжить опрос</button></div>` : ""}
           ${pollingProgress && ui.inventoryBusy ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="true">
             <div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(pollingProgress.stage)}</span><strong>${pollingProgress.processed} из ${pollingProgress.total} JSON</strong></div><strong>${pollingPercent}%</strong></div>
             <div class="polling-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pollingPercent}"><span style="width:${pollingPercent}%"></span></div>
@@ -5985,7 +6131,7 @@
         </form>
         <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div><div><dt>Закрытие портов доступно</dt><dd data-polling-count="management-eligible">${projection.managementEligibleDevices.length}</dd></div><div><dt>Закрытие портов будет пропущено</dt><dd data-polling-count="management-skipped">${projection.managementSkippedDevices.length}</dd></div></dl>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
-        ${automatic ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(automaticPollingStatusLabel(automatic.status))}</span><strong>${automatic.processed || 0} из ${automatic.total || 0} устройств</strong></div><strong>${automaticPercent}%</strong></div><progress max="100" value="${automaticPercent}">${automaticPercent}%</progress><dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${automatic.successful || 0}</dd></div><div><dt>Ошибки</dt><dd>${automatic.failed || 0}</dd></div><div><dt>Не поддерживается</dt><dd>${automatic.unsupported || 0}</dd></div><div><dt>Папка запуска</dt><dd class="mono">${escapeHtml(automatic.runFolderName || "будет создана при старте")}</dd></div></dl>${automatic.allowInsecureTls ? `<p class="muted">Для этого запуска разрешён самоподписанный HTTPS-сертификат. Обычный HTTP не используется.</p>` : ""}${!["completed", "cancelled", "failed"].includes(automatic.status) ? `<button class="button danger" type="button" data-cancel-automatic-polling>Отменить опрос</button>` : ""}</section>` : ""}
+        ${automatic ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(automaticPollingStatusLabel(automatic.status))}</span><strong>${automatic.processed || 0} из ${automatic.total || 0} устройств</strong></div><strong>${automaticPercent}%</strong></div><progress max="100" value="${automaticPercent}">${automaticPercent}%</progress><dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${automatic.successful || 0}</dd></div><div><dt>Ошибки опроса</dt><dd>${automatic.failed || 0}</dd></div><div><dt>Ошибки сохранения</dt><dd>${automatic.saveFailed || 0}</dd></div><div><dt>Не поддерживается</dt><dd>${automatic.unsupported || 0}</dd></div><div><dt>Папка запуска</dt><dd class="mono">${escapeHtml(automatic.runFolderName || "будет создана при старте")}</dd></div></dl>${automatic.allowInsecureTls ? `<p class="muted">Для этого запуска разрешён самоподписанный HTTPS-сертификат. Обычный HTTP не используется.</p>` : ""}${!["completed", "cancelled", "failed"].includes(automatic.status) ? `<button class="button danger" type="button" data-cancel-automatic-polling>Отменить опрос</button>` : ""}</section>` : ""}
       </section>
       `;
   }
@@ -6291,7 +6437,18 @@
         if (!await ensurePollingOutputPermission(handle)) throw new Error("permission_denied");
         pollingOutputRootHandle = handle;
         ui.pollingOutputFolderName = handle.name || "выбранная папка";
-        setMessage(`Общая папка результатов выбрана: ${ui.pollingOutputFolderName}.`, "success");
+        selectedPollingRecovery = await findPollingRecovery(handle);
+        ui.pollingRecoverySummary = selectedPollingRecovery ? { folder: selectedPollingRecovery.runDirectory.name, remaining: selectedPollingRecovery.manifest.plan.devices.length - selectedPollingRecovery.manifest.savedIndices.length, requiresReview: selectedPollingRecovery.manifest.requiresReview?.length || 0 } : null;
+        if (selectedPollingRecovery?.manifest.jobId && !automaticPollingMonitor) {
+          const active = await runtimeRequest("/api/polling/jobs/active");
+          if (active.activeJobId === selectedPollingRecovery.manifest.jobId) {
+            selectedPollingRecovery.originalIndices = selectedPollingRecovery.manifest.activeOriginalIndices || selectedPollingRecovery.manifest.plan.devices.map((_, index) => index);
+            const monitorToken = Symbol("automatic-polling-reattach");
+            automaticPollingMonitor = monitorToken;
+            void monitorAutomaticPolling(active.activeJobId, monitorToken, selectedPollingRecovery);
+          }
+        }
+        setMessage(selectedPollingRecovery ? `Найден незавершённый опрос в папке ${selectedPollingRecovery.runDirectory.name}. Введите учётные данные и нажмите «Продолжить опрос».` : `Общая папка результатов выбрана: ${ui.pollingOutputFolderName}.`, selectedPollingRecovery ? "warning" : "success");
       } catch (error) {
         if (error?.name !== "AbortError") setMessage("Папка не выбрана или запись в неё не разрешена.", "error");
       }
@@ -6305,6 +6462,14 @@
           await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
           setMessage("Запрошена отмена автоматического опроса.", "warning");
         } catch { setMessage("Не удалось передать отмену локальному исполнителю.", "error"); }
+        render();
+      }
+      return;
+    }
+    if (event.target.closest("[data-resume-automatic-polling]")) {
+      try { await resumeAutomaticPolling(); }
+      catch (error) {
+        setMessage(({ recovery_unavailable: "Незавершённый опрос не найден в выбранной папке.", recovery_source_required: "Перед продолжением повторно загрузите исходную выгрузку SR или тот же отдельный список закрытия портов: IP, модель и производитель должны совпасть с журналом.", recovery_nothing_to_poll: "Повторный опрос не требуется. Для устройств с неизвестным исходом задачи управления проверьте состояние вручную." })[error.safeCode] || automaticPollingErrorMessage(error.safeCode || "local_runtime_error"), "warning");
         render();
       }
       return;

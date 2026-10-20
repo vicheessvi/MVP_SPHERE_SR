@@ -26,6 +26,10 @@ class ResultSaveFailed(RuntimeError):
     code = "RESULT_SAVE_FAILED"
 
 
+class ResultSaveTimeout(RuntimeError):
+    code = "RESULT_SAVE_TIMEOUT"
+
+
 def _iso(value: datetime | None = None) -> str:
     current = value or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -45,6 +49,8 @@ def safe_job_error(error: BaseException) -> str:
         return "polling_cancelled"
     if code == "RESULT_SAVE_FAILED":
         return "result_save_failed"
+    if code == "RESULT_SAVE_TIMEOUT":
+        return "result_save_timeout"
     if code == "CREDENTIAL_SHA_MISMATCH":
         return "credential_sha_mismatch"
     return "local_runtime_error"
@@ -95,6 +101,9 @@ class PollingJob:
             "successful": 0,
             "failed": 0,
             "unsupported": 0,
+            "saved": 0,
+            "saveFailed": 0,
+            "saveFailureEvents": [],
             "currentDevice": None,
             "safeError": None,
         }
@@ -166,15 +175,26 @@ class PollingJob:
             self._ack_decision = None
             self._state["status"] = "waiting_for_save"
             self._condition.notify_all()
+            deadline = time.monotonic() + max(1, float(self._settings.get("save_ack_timeout_seconds", 300)))
             while self._ack_decision is None and not self._cancel_event.is_set():
-                self._condition.wait()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
             decision = self._ack_decision
             self._pending = None
             self._ack_decision = None
             if self._cancel_event.is_set():
                 raise PollingCancelled("Polling cancelled")
-            if decision is not True:
-                raise ResultSaveFailed("result_save_failed")
+            if decision is None:
+                raise ResultSaveTimeout("result_save_timeout")
+            if decision:
+                self._state["saved"] += 1
+            else:
+                self._state["saveFailed"] += 1
+                if len(self._state["saveFailureEvents"]) < 100:
+                    self._state["saveFailureEvents"].append({"index": int(context["index"]), "code": "result_save_failed"})
+            self._state["status"] = "running"
 
     def _on_progress(self, progress: dict[str, Any]) -> None:
         with self._condition:
