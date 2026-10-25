@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1", "huawei_bar310_rest_v1", "huawei_box310_rest_v1", "huawei_box610_rest_v1"],
+  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1", "huawei_bar310_rest_v1", "huawei_box310_rest_v1", "huawei_box610_rest_v1", "polycom_group310_web_v1", "polycom_group300_web_v1", "polycom_group500_web_v1", "polycom_group700_web_v1"],
   "managementActions": [
     {
       "id": "disable_insecure_management_services",
@@ -105,11 +105,51 @@
       "credentialMode": "not_configured"
     },
     {
+      "key": "vcs/polycom/group310",
+      "category": "vcs",
+      "manufacturer": "polycom",
+      "aliases": ["poly"],
+      "models": ["RealPresence Group 310", "Polycom RealPresence Group 310"],
+      "protocolStatus": "supported",
+      "transport": "polycom_group310_web_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
+    {
+      "key": "vcs/polycom/group300",
+      "category": "vcs",
+      "manufacturer": "polycom",
+      "aliases": ["poly"],
+      "models": ["RealPresence Group 300", "Polycom RealPresence Group 300"],
+      "protocolStatus": "supported",
+      "transport": "polycom_group300_web_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
+    {
+      "key": "vcs/polycom/group500",
+      "category": "vcs",
+      "manufacturer": "polycom",
+      "aliases": ["poly"],
+      "models": ["RealPresence Group 500", "Polycom RealPresence Group 500"],
+      "protocolStatus": "supported",
+      "transport": "polycom_group500_web_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
+    {
+      "key": "vcs/polycom/group700",
+      "category": "vcs",
+      "manufacturer": "polycom",
+      "aliases": ["poly"],
+      "models": ["RealPresence Group 700", "Polycom RealPresence Group 700"],
+      "protocolStatus": "supported",
+      "transport": "polycom_group700_web_v1",
+      "credentialMode": "memory_xlsx_pool"
+    },
+    {
       "key": "vcs/polycom",
       "category": "vcs",
       "manufacturer": "polycom",
-      "aliases": [],
-      "models": ["RealPresence Group 310", "HDX 7000", "RealPresence Group 500", "HDX 4002", "HDX 6000", "HDX 8000", "HDX 9000", "RealPresence Group 700", "RealPresence Group 300", "HDX 4500"],
+      "aliases": ["poly"],
+      "models": ["HDX 7000", "HDX 4002", "HDX 6000", "HDX 8000", "HDX 9000", "HDX 4500"],
       "protocolStatus": "protocol_required",
       "transport": null,
       "credentialMode": "not_configured"

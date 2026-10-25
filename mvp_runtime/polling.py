@@ -125,6 +125,30 @@ def _default_huawei_box610(device: dict[str, Any], credential: Any, options: dic
     return poll_huawei_box610_device(device, credential, options)
 
 
+def _default_polycom_group310(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
+    from .adapters.polycom_group import poll_polycom_group310_device
+
+    return poll_polycom_group310_device(device, credential, options)
+
+
+def _default_polycom_group300(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
+    from .adapters.polycom_group import poll_polycom_group300_device
+
+    return poll_polycom_group300_device(device, credential, options)
+
+
+def _default_polycom_group500(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
+    from .adapters.polycom_group import poll_polycom_group500_device
+
+    return poll_polycom_group500_device(device, credential, options)
+
+
+def _default_polycom_group700(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
+    from .adapters.polycom_group import poll_polycom_group700_device
+
+    return poll_polycom_group700_device(device, credential, options)
+
+
 register_adapter("extron_web_dynamic_resources_v1", _default_extron)
 register_adapter("huawei_te_web_cgi_v1", _default_huawei_te)
 register_adapter("huawei_te20_web_cgi_v1", _default_huawei_te20)
@@ -134,6 +158,10 @@ register_adapter("huawei_box600_web_cgi_v1", _default_huawei_box600)
 register_adapter("huawei_bar310_rest_v1", _default_huawei_bar310)
 register_adapter("huawei_box310_rest_v1", _default_huawei_box310)
 register_adapter("huawei_box610_rest_v1", _default_huawei_box610)
+register_adapter("polycom_group310_web_v1", _default_polycom_group310)
+register_adapter("polycom_group300_web_v1", _default_polycom_group300)
+register_adapter("polycom_group500_web_v1", _default_polycom_group500)
+register_adapter("polycom_group700_web_v1", _default_polycom_group700)
 
 
 def plan_device_supported(device: dict[str, Any]) -> bool:

@@ -292,7 +292,19 @@
       normalizerKey: "huawei-box610-json-v1",
       credentialMode: "memory_xlsx_pool",
       managementTasks: Object.freeze(["disable_insecure_management_services"])
-    }))
+    })),
+    ...[300, 310, 500, 700].flatMap((number) => [
+      `realpresence group ${number}`, `polycom realpresence group ${number}`
+    ].map((modelNormalized) => Object.freeze({
+      key: `vcs/polycom/group${number}`,
+      category: "vcs",
+      manufacturerNormalized: "polycom",
+      modelNormalized,
+      support: "implemented",
+      transport: `polycom_group${number}_web_v1`,
+      normalizerKey: `polycom-group${number}-json-v1`,
+      credentialMode: "memory_xlsx_pool"
+    })))
   ]);
 
   const SR_CANONICAL_HEADERS = Object.freeze([
@@ -996,6 +1008,7 @@
   function normalizeManufacturer(value) {
     const normalized = normalizeText(value);
     if (normalized === "huawey") return "huawei";
+    if (normalized === "poly") return "polycom";
     return normalized;
   }
 

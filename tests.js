@@ -397,6 +397,29 @@
     });
   });
 
+  test("Polycom Group 300, 310, 500 и 700 имеют отдельные guarded read-only маршруты", () => {
+    [300, 310, 500, 700].forEach((number) => {
+      [`RealPresence Group ${number}`, `Polycom RealPresence Group ${number}`].forEach((modelRaw) => {
+        const capability = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Polycom", modelRaw });
+        assertEqual(capability.support, "implemented");
+        assertEqual(capability.transport, `polycom_group${number}_web_v1`);
+        assertEqual((capability.managementTasks || []).length, 0);
+        if (runtimeModelCatalog) {
+          const manifest = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Polycom", model: modelRaw });
+          assertEqual(manifest.transport, `polycom_group${number}_web_v1`);
+          assert(!runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Polycom", model: modelRaw }, "disable_insecure_management_services").supported);
+        }
+      });
+    });
+    const variant = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Polycom", modelRaw: "RealPresence Group 310-C" });
+    assertEqual(variant.support, "not_implemented");
+    assertEqual(variant.transport, null);
+    const hdx = runtimeModelCatalog && runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Polycom", model: "HDX 7000" });
+    if (hdx) assertEqual(hdx.protocolStatus, "protocol_required");
+    const polyAlias = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Poly", modelRaw: "RealPresence Group 310" });
+    assertEqual(polyAlias.transport, "polycom_group310_web_v1");
+  });
+
   test("Runtime catalog выбирает TE20, TE-family, Bar 310 и Box-контракты раньше fallback", () => {
     if (!runtimeModelCatalog) return;
     const supported = ["TE30", "TE40", "TE50", "TE60"].map((model) => runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Huawei", model }));

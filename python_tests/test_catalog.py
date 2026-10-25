@@ -84,6 +84,23 @@ class CatalogTests(unittest.TestCase):
         variant = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "Box 300-C"})
         self.assertEqual(variant["protocolStatus"], "protocol_required")
 
+    def test_polycom_group_models_route_exactly_and_hdx_remains_unconfigured(self) -> None:
+        for number in (300, 310, 500, 700):
+            model = f"RealPresence Group {number}"
+            for alias in (model, f"Polycom {model}"):
+                with self.subTest(alias=alias):
+                    manifest = resolve_manifest({"category": "vcs", "manufacturer": "Polycom", "model": alias})
+                    self.assertEqual(manifest["key"], f"vcs/polycom/group{number}")
+                    self.assertEqual(manifest["transport"], f"polycom_group{number}_web_v1")
+                    self.assertEqual(manifest["protocolStatus"], "supported")
+                    self.assertTrue(manifest["knownModel"])
+                    self.assertFalse(resolve_management_action({"category": "vcs", "manufacturer": "Polycom", "model": alias}, "disable_insecure_management_services")["supported"])
+        for model in ("RealPresence Group 310-C", "HDX 7000"):
+            fallback = resolve_manifest({"category": "vcs", "manufacturer": "Polycom", "model": model})
+            self.assertEqual(fallback["key"], "vcs/polycom")
+            self.assertEqual(fallback["protocolStatus"], "protocol_required")
+            self.assertIsNone(fallback["transport"])
+
     def test_huawei_box_models_have_separate_exact_http_only_actions(self) -> None:
         families = (
             (("Box 310", "CloudLink Box 310", "CloudLinc Box 310"), "vcs/huawei/box310", "huawei_box310_rest_v1"),

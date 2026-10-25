@@ -148,6 +148,27 @@ class PollingTests(unittest.TestCase):
         self.assertTrue(all(item["ok"] for item in results))
         self.assertNotIn("disable_insecure_management_services", str(results))
 
+    def test_polycom_group_plan_uses_four_exact_routes_and_leaves_hdx_unsupported(self) -> None:
+        seen = []
+        adapters = {
+            f"polycom_group{number}_web_v1": (lambda device, _credentials, _options, n=number: seen.append((n, device["model"])) or {"ok": True})
+            for number in (300, 310, 500, 700)
+        }
+        devices = [
+            {"category": "vcs", "manufacturer": "Polycom", "model": f"RealPresence Group {number}", "ip": f"192.0.2.{index}"}
+            for index, number in enumerate((300, 310, 500, 700), 31)
+        ]
+        devices.append({"category": "vcs", "manufacturer": "Polycom", "model": "HDX 7000", "ip": "192.0.2.35"})
+        results = run_plan({"intervalMinSeconds": 0, "intervalMaxSeconds": 0, "devices": devices}, {
+            "ping": lambda *_args: {"ok": True, "durationMs": 1},
+            "get_credentials": lambda *_args: [{"username": "synthetic", "password": "synthetic"}],
+            "adapters": adapters,
+        })
+        self.assertEqual(seen, [(number, f"RealPresence Group {number}") for number in (300, 310, 500, 700)])
+        self.assertTrue(all(item["ok"] for item in results[:4]))
+        self.assertFalse(results[4]["networkAttempted"])
+        self.assertEqual(results[4]["vendorPolling"]["status"], "protocol_required")
+
     def test_mixed_huawei_extron_plan_keeps_adapters_separate_and_other_huawei_offline(self) -> None:
         calls = []
 

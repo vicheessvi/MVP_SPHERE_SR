@@ -13,6 +13,8 @@ Thumbs.db
 mvp-sphere-sr-backup-*.json
 
 # Local SR inventory and polling data
+scripts/_probe_*.py
+/.scratch-polycom-tests/
 *.xlsx
 *.xls
 sr-imports/
