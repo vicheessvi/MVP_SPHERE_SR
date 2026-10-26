@@ -170,7 +170,7 @@ class PolycomGroupTests(unittest.TestCase):
                 result, _ = self.run_poll(model=model)
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["webBlocks"]["Device Info"]["Model"], model)
-                expected = "confirmed_user_validation" if model.endswith("700") else "provisional_user_validation"
+                expected = "provisional_user_validation" if model.endswith("300") else "confirmed_user_validation"
                 self.assertEqual(result["vendorPolling"]["evidenceStatus"], expected)
 
     def test_suffix_and_cross_model_are_rejected(self):

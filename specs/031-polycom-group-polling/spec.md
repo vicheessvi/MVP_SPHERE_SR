@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/secure-local-runtime`
 **Created**: 2026-10-25
-**Status**: Implemented; Group 310 and 700 user validation confirmed, Group 300/500 pending
+**Status**: Implemented; Group 310, 500 and 700 user validation confirmed, Group 300 pending
 **Input**: Prepare an automatic device poll for Polycom RealPresence Group 310, 300, 500 and 700; test the connected Group 310 and determine whether the models can share an algorithm.
 
 ## User Scenarios & Testing
@@ -24,7 +24,7 @@ The administrator selects a Group 310 from the device plan and receives a JSON s
 
 The administrator can plan a poll for each exact Group model without treating the models as interchangeable. Shared behavior is used only while each device confirms its own model and compatible interface.
 
-**Why this priority**: The user needs one family of polls. At initial implementation only Group 310 was available; Group 700 was validated later by the administrator.
+**Why this priority**: The user needs one family of polls. At initial implementation only Group 310 was available; Group 500 and 700 were validated later by the administrator.
 
 **Independent Test**: Exercise each exact model with synthetic responses and a mismatched response; preserve separate live-validation status for each model.
 
@@ -51,7 +51,8 @@ The new polls use the existing plan, manually entered credentials, chosen result
 - Device unavailable, authentication rejected, expired session, unexpected TLS certificate or unsupported firmware: report a safe failure without raw server content.
 - A model mismatch before or after login: do not classify the response as the planned model.
 - Missing MAC, serial, uptime or status: mark that field unavailable; do not substitute SR or guessed values.
-- Group 300/500 may share the Group 310/700 family interface but have not been tested live; success on one model does not confirm another.
+- Group 300 may share the Group 310/500/700 family interface but has not been validated live; success on one model does not confirm another. An earlier Group 500 model mismatch has no established cause and does not justify weakening exact identity checks.
+- Group 300 software 4.1.5-180072 failed during HTTPS validation before credentials although browser HTTP access worked. Software 5.0+ is a candidate for testing, not a guaranteed working range or a reason to send credentials via HTTP.
 - Device reports sensitive configuration fields: do not include them merely because they are returned by a broad endpoint.
 
 ## Requirements
@@ -63,7 +64,7 @@ The new polls use the existing plan, manually entered credentials, chosen result
 - **FR-003**: The tool MUST confirm the observed model and stable device identity before accepting a successful result.
 - **FR-004**: A successful result MUST include available model, serial number, software version, system name, MAC address, device status, device time and uptime, with provenance or explicit unavailable status for optional fields.
 - **FR-005**: The tool MUST send credentials only to the administrator-selected IP after recognizing the expected Polycom login interface, and MUST NOT include credentials, session material or raw server errors in output. Exact model confirmation occurs after login because this firmware does not reveal it before authentication.
-- **FR-006**: Untested Group 300 and 500 MUST retain a provisional validation status until checked on real devices; confirmed Group 310/700 statuses MUST remain separate, and suffix variants MUST remain unsupported.
+- **FR-006**: Untested Group 300 MUST retain a provisional validation status until checked on a real device; confirmed Group 310/500/700 statuses MUST remain separate, and suffix variants MUST remain unsupported.
 - **FR-007**: Existing manual import and other vendor polls MUST remain functional.
 
 ### Key Entities
@@ -83,6 +84,6 @@ The new polls use the existing plan, manually entered credentials, chosen result
 
 ## Assumptions
 
-- Group 310 was available for controlled local validation. The administrator later confirmed successful operational polls of Group 310 and Group 700 separately. Group 300/500 remain provisional; no raw reports or credentials were transferred into the repository.
+- Group 310 was available for controlled local validation. The administrator later confirmed successful operational polls of Group 310, Group 500 and Group 700 separately. Group 300 remains provisional; no raw reports or credentials were transferred into the repository.
 - The administrator consents to a local management login using the credentials supplied for this test. Credentials remain transient and are not copied to project files.
 - Only read-only inventory/status collection is in scope. Calls, configuration changes and insecure Telnet polling are out of scope.

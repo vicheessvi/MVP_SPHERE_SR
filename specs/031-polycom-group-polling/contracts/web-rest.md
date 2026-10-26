@@ -28,5 +28,6 @@ The exact model cannot be read pre-auth on observed firmware: `GET /rest/system`
 
 - Never include username, password, cookie, session id, full login/config body, arbitrary status fields or raw exception text.
 - Model mismatch, missing stable identity, unknown login/bundle scheme or malformed core system response: unsuccessful result with safe error code.
-- Exact Group 310/700: `confirmed_user_validation` after separate administrator confirmations. Exact 300/500: `provisional_user_validation` until independent validation.
+- Exact Group 310/500/700: `confirmed_user_validation` after separate administrator confirmations. Exact Group 300: `provisional_user_validation` until independent validation. A prior 500 `target_model_mismatch` remains unexplained and does not relax the exact model gate.
+- Group 300 software `4.1.5-180072` failed at `validation/transport_error` before credentials while browser HTTP access worked. Software 5.0+ is only a candidate range for a controlled HTTPS test, not a supported-version guarantee; the current web markers, schema, TLS and identity gates still apply.
 - Suffix variants and HDX models remain `protocol_required`.

@@ -42,7 +42,7 @@ SESSION_PATH = "/rest/session"
 CONTRACTS = {
     310: {"id": "polycom-group310-web-v1", "model": "RealPresence Group 310", "evidence": "confirmed_user_validation"},
     300: {"id": "polycom-group300-web-v1", "model": "RealPresence Group 300", "evidence": "provisional_user_validation"},
-    500: {"id": "polycom-group500-web-v1", "model": "RealPresence Group 500", "evidence": "provisional_user_validation"},
+    500: {"id": "polycom-group500-web-v1", "model": "RealPresence Group 500", "evidence": "confirmed_user_validation"},
     700: {"id": "polycom-group700-web-v1", "model": "RealPresence Group 700", "evidence": "confirmed_user_validation"},
 }
 

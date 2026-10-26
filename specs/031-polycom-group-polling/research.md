@@ -20,13 +20,17 @@ The implemented guarded adapter was then run in memory against the connected 310
 
 ## Decision 3 — Four-model safety boundary
 
-**Decision**: Four exact model descriptors may share the transport. Following separate administrator confirmations, 310/700 have `confirmed_user_validation`; 300/500 remain `provisional_user_validation` pending real-device checks. Fail closed on login marker, model, identity, response schema or allowed resource drift. Other Polycom models remain `protocol_required`.
+**Decision**: Four exact model descriptors may share the transport. Following separate administrator confirmations, 310/500/700 have `confirmed_user_validation`; 300 remains `provisional_user_validation` pending a real-device check. Fail closed on login marker, model, identity, response schema or allowed resource drift. Other Polycom models remain `protocol_required`.
 
 **Rationale**: The official guide covers all four Group models, but current live web evidence covers only the 310. Model number alone cannot prove firmware compatibility.
 
 **Alternatives considered**: Claiming all four tested rejected; keeping the other three permanently unsupported would not prepare them for the administrator's requested trials.
 
-On 2026-10-26 the administrator confirmed successful polling of Group 310 and Group 700 independently. This is user operational evidence, not a new discovery of HTTP methods or permission to weaken model gates. Group 300/500 remain unverified.
+On 2026-10-26 the administrator confirmed successful polling of Group 310 and Group 700 independently. This is user operational evidence, not a new discovery of HTTP methods or permission to weaken model gates. At that stage Group 300/500 remained unverified.
+
+Later on 2026-10-26 the administrator also confirmed a successful Group 500 poll without errors. This followed an earlier `target_model_mismatch` report whose cause was not established. Only the 500 validation status changed; Group 300 remains unverified and the exact model gate stays intact.
+
+Group 300 firmware boundary: the administrator observed `validation/transport_error` on software `4.1.5-180072` while its web UI was accessible via HTTP but not HTTPS. Poly's [5.0.0 release notes](https://downloads.poly.com/release-notes/group-series/group-series-rel-notes-v5-0-0.pdf) list TLS 1.2 support for the Web Server. Administrator-approved interpretation: 5.0+ is the earliest candidate family for controlled testing of this HTTPS adapter, not proof that its login bundle, REST resources or output schema match. Keep Group 300 provisional, retain HTTPS-only transport, and require a successful real poll before confirmation.
 
 ## Decision 4 — Sensitive data boundary
 
