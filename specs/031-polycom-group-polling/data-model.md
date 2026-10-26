@@ -10,7 +10,7 @@
 
 - `model`: exact expected device response `RealPresence Group N`.
 - `transport`: one shared HTTPS web core with four distinct registry keys.
-- `validationStatus`: confirmed for locally tested 310; provisional for untested 300/500/700.
+- `validationStatus`: `confirmed_user_validation` for administrator-confirmed 310/700; `provisional_user_validation` for untested 300/500.
 - `bundleMarkers`: login and information-resource markers observed in the current device web code.
 
 ## Polling snapshot

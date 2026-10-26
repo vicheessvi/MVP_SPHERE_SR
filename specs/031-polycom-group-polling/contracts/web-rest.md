@@ -28,5 +28,5 @@ The exact model cannot be read pre-auth on observed firmware: `GET /rest/system`
 
 - Never include username, password, cookie, session id, full login/config body, arbitrary status fields or raw exception text.
 - Model mismatch, missing stable identity, unknown login/bundle scheme or malformed core system response: unsuccessful result with safe error code.
-- Exact Group 310: `confirmed_local_validation`. Exact 300/500/700: `provisional_user_validation` until independent controlled validation.
+- Exact Group 310/700: `confirmed_user_validation` after separate administrator confirmations. Exact 300/500: `provisional_user_validation` until independent validation.
 - Suffix variants and HDX models remain `protocol_required`.

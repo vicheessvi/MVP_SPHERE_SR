@@ -20,11 +20,13 @@ The implemented guarded adapter was then run in memory against the connected 310
 
 ## Decision 3 — Four-model safety boundary
 
-**Decision**: Four exact model descriptors may share the transport, but only the 310 is `confirmed_local_validation`; 300/500/700 are `provisional_user_validation` pending real-device checks. Fail closed on login marker, model, identity, response schema or allowed resource drift. Other Polycom models remain `protocol_required`.
+**Decision**: Four exact model descriptors may share the transport. Following separate administrator confirmations, 310/700 have `confirmed_user_validation`; 300/500 remain `provisional_user_validation` pending real-device checks. Fail closed on login marker, model, identity, response schema or allowed resource drift. Other Polycom models remain `protocol_required`.
 
 **Rationale**: The official guide covers all four Group models, but current live web evidence covers only the 310. Model number alone cannot prove firmware compatibility.
 
 **Alternatives considered**: Claiming all four tested rejected; keeping the other three permanently unsupported would not prepare them for the administrator's requested trials.
+
+On 2026-10-26 the administrator confirmed successful polling of Group 310 and Group 700 independently. This is user operational evidence, not a new discovery of HTTP methods or permission to weaken model gates. Group 300/500 remain unverified.
 
 ## Decision 4 — Sensitive data boundary
 

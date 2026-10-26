@@ -100,7 +100,7 @@ class PolycomGroupTests(unittest.TestCase):
         self.assertEqual(result["webBlocks"]["Device Info"]["Serial Number"], "SYNTHETIC-SERIAL")
         self.assertEqual(result["webBlocks"]["Device Info"]["MAC Address"], "02:00:00:00:00:31")
         self.assertEqual(result["webBlocks"]["Firmware"]["Version"], "release - SYNTHETIC-BUILD")
-        self.assertEqual(result["vendorPolling"]["evidenceStatus"], "confirmed_local_validation")
+        self.assertEqual(result["vendorPolling"]["evidenceStatus"], "confirmed_user_validation")
         self.assertEqual(result["rawResources"]["status"], [{"name": "Network", "state": ["OK"]}])
         self.assertEqual(calls[-1]["path"], "/rest/session")
         self.assertEqual(json.loads(calls[-1]["body"]), {"action": "Logout"})
@@ -170,7 +170,8 @@ class PolycomGroupTests(unittest.TestCase):
                 result, _ = self.run_poll(model=model)
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["webBlocks"]["Device Info"]["Model"], model)
-                self.assertEqual(result["vendorPolling"]["evidenceStatus"], "provisional_user_validation")
+                expected = "confirmed_user_validation" if model.endswith("700") else "provisional_user_validation"
+                self.assertEqual(result["vendorPolling"]["evidenceStatus"], expected)
 
     def test_suffix_and_cross_model_are_rejected(self):
         result, calls = self.run_poll(model="RealPresence Group 310", observed="RealPresence Group 310-C")

@@ -4,7 +4,7 @@
 
 ## Summary
 
-Add one bounded HTTPS web-session core with four exact-model contracts for RealPresence Group 310, 300, 500 and 700. The connected 310 provides live evidence; the other three use the same guarded contract provisionally pending separate user validation. Reuse the existing plan, ephemeral credentials, adapter registry and JSON output.
+Add one bounded HTTPS web-session core with four exact-model contracts for RealPresence Group 310, 300, 500 and 700. Group 310 was validated locally and subsequently confirmed by the administrator; Group 700 was confirmed by a separate successful administrator poll. Group 300/500 remain provisional. Reuse the existing plan, ephemeral credentials, adapter registry and JSON output.
 
 ## Technical Context
 
@@ -16,13 +16,13 @@ Add one bounded HTTPS web-session core with four exact-model contracts for RealP
 **Project Type**: Local browser UI plus Python polling runtime
 **Performance Goals**: At most one bounded sequential session per device; existing plan interval unchanged
 **Constraints**: HTTPS/443 only; explicit target IP; no generic REST crawling; no configuration writes; bounded response and decompression; session cookie in memory; certificate verification by default with existing per-run insecure-TLS opt-in
-**Scale/Scope**: Four exact Group models; current controlled live validation only on Group 310
+**Scale/Scope**: Four exact Group models; controlled local validation on 310, user operational confirmation on 310/700, pending on 300/500
 
 ## Constitution Check
 
 **Pre-research gate**: PASS. The planned result is source-backed and read-only, never stored internally, uses only Python stdlib and existing loopback workflow, separates planned from observed identity, and represents missing fields as unknown. No write action or external service is required.
 
-**Post-design gate**: PASS. Each model has an exact post-login gate and distinct validation status. The pre-login interface cannot disclose exact model (`/rest/system` returns 403 without login), so credentials are sent only to the administrator-selected exact IP after the current Polycom login interface and method markers match; this residual risk is disclosed and mitigated by default certificate verification and explicit insecure-TLS consent. An exact model mismatch never yields a successful result.
+**Post-design gate**: PASS. Each model has an exact post-login gate and distinct validation status; user confirmations of 310/700 do not relax these gates. The pre-login interface cannot disclose exact model on the checked 310 (`/rest/system` returns 403 without login), so credentials are sent only to the administrator-selected exact IP after the current Polycom login interface and method markers match; this residual risk is disclosed and mitigated by default certificate verification and explicit insecure-TLS consent. An exact model mismatch never yields a successful result.
 
 ## Project Structure
 
@@ -60,4 +60,4 @@ docs/implementation-log.md
 
 ## Complexity Tracking
 
-No constitution violations. The provisional three-model route is deliberately labeled; it is not a claim of real-device validation.
+No constitution violations. Group 300/500 remain deliberately provisional; successful tests of 310/700 are not claimed as evidence for them.
