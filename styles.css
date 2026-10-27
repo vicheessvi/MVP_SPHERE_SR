@@ -1402,6 +1402,15 @@ details summary {
   align-items: end;
 }
 
+.inventory-view-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
 table .mono {
   white-space: nowrap;
 }

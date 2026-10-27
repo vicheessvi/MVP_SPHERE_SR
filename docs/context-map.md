@@ -1,5 +1,11 @@
 # Карта контекста
 
+## Feature 032 — таблица Site name терминалов ВКС
+
+- Требования и критерии: `specs/032-vcs-site-name-report/spec.md`.
+- Фильтруемый selector, переключатель и локальный XLSX: `app.js`; тесты: `tests.js`; оформление: `styles.css`.
+- Справочник: `product-catalog.js`; решение: `docs/decisions/ADR-0033-vcs-site-name-report.md`.
+
 ## Feature 031 — Polycom RealPresence Group 300/310/500/700
 
 - Спецификация, evidence review, контракт и проверки: `specs/031-polycom-group-polling/`.

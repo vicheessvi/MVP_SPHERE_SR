@@ -2675,6 +2675,66 @@
     assert(panel);
   });
 
+  test("Таблица Site name использует фильтры и только последнее актуальное чтение устройства", () => {
+    const candidate = api.createDemoState();
+    candidate.locations = [
+      { id: "site-location-a", name: "Локация А", address: "Адрес А", vip: false },
+      { id: "site-location-b", name: "Локация Б", address: "Адрес Б", vip: false }
+    ];
+    candidate.inventoryDevices = [
+      { id: "site-vcs-a", category: "vcs", nameRaw: "Кодек А", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE40", ipNormalized: "192.0.2.11", macNormalized: "00:11:22:33:44:11", locationId: "site-location-a", domain: "Домен А", inCurrentSr: true },
+      { id: "site-vcs-b", category: "vcs", nameRaw: "Кодек Б", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE40", ipNormalized: "192.0.2.12", macNormalized: "00:11:22:33:44:12", locationId: "site-location-a", domain: "Домен А", inCurrentSr: true },
+      { id: "site-vcs-c", category: "vcs", nameRaw: "Кодек В", manufacturerRaw: "Polycom", manufacturerNormalized: "polycom", modelRaw: "RealPresence Group 500", ipNormalized: "192.0.2.13", locationId: "site-location-b", domain: "Домен Б", inCurrentSr: false },
+      { id: "site-controller", category: "controller", nameRaw: "Контроллер", manufacturerRaw: "Extron", manufacturerNormalized: "extron", modelRaw: "IPCP Pro 250", ipNormalized: "192.0.2.14", locationId: "site-location-a", inCurrentSr: true }
+    ];
+    candidate.pollingResults = [
+      { id: "site-old-a", deviceId: "site-vcs-a", capturedAt: "2026-09-01T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, siteName: { status: "read", value: "Старое имя" } }) },
+      { id: "site-new-a", deviceId: "site-vcs-a", capturedAt: "2026-10-01T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, siteName: { status: "read", value: "Новое имя" } }) },
+      { id: "site-old-b", deviceId: "site-vcs-b", capturedAt: "2026-09-01T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, siteName: { status: "read", value: "Не подставлять" } }) },
+      { id: "site-new-b", deviceId: "site-vcs-b", capturedAt: "2026-10-02T10:00:00Z", parseStatus: "parsed", operationalStatus: "processing_error", normalizedData: {} },
+      { id: "site-new-c", deviceId: "site-vcs-c", capturedAt: "2026-10-03T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, webBlocks: { "Device Info": { "Site Name": "Значение из блока" } } }) }
+    ];
+    const currentRows = api.buildVcsSiteNameRows(candidate, { current: "yes" });
+    assertEqual(currentRows.length, 2);
+    assertEqual(currentRows[0].siteName, "Новое имя");
+    assertEqual(currentRows[0].deviceName, "Кодек А");
+    assertEqual(currentRows[0].address, "Адрес А");
+    assertEqual(currentRows[0].domain, "Домен А");
+    assertEqual(currentRows[1].siteName, null);
+    candidate.pollingResults.push({ id: "site-unavailable-b", deviceId: "site-vcs-b", capturedAt: "2026-10-04T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, siteName: { status: "unavailable", value: null }, webBlocks: { "Device Info": { "Site Name": "Не подставлять" } } }) });
+    assertEqual(api.buildVcsSiteNameRows(candidate, { current: "yes" })[1].siteName, null);
+    const filtered = api.buildVcsSiteNameRows(candidate, { current: "all", manufacturer: "Polycom", model: "RealPresence Group 500", locationId: "site-location-b" });
+    assertEqual(filtered.length, 1);
+    assertEqual(filtered[0].siteName, "Значение из блока");
+    assertEqual(api.buildVcsSiteNameRows(candidate, { current: "yes", manufacturer: "Polycom" }).length, 0);
+  });
+
+  test("Site name XLSX содержит семь нужных столбцов и буквальный текст, не формулу", () => {
+    const formulaText = '=HYPERLINK("https://example.invalid", "test")';
+    const created = api.buildVcsSiteNameXlsx([{ deviceName: "Кодек", siteName: formulaText, ip: "192.0.2.10", mac: "00:11:22:33:44:55", address: "Адрес", locationName: "Локация", domain: "Домен" }]);
+    assert(created.ok, created.errors?.join("; "));
+    const workbook = global.XLSX.read(created.bytes, { type: "array" });
+    assertEqual(workbook.SheetNames.length, 1);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const matrix = global.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    assertEqual(JSON.stringify(matrix[0]), JSON.stringify(["Наименование устройства", "Site name", "IP", "MAC", "Адрес", "Наименование локации", "Домен"]));
+    assertEqual(matrix[1][1], formulaText);
+    assertEqual(sheet.B2.t, "s");
+    assert(!sheet.B2.f);
+    assertEqual(sheet.C2.t, "s");
+    assertEqual(sheet.D2.t, "s");
+  });
+
+  test("Экран Терминалов ВКС переключает таблицу Site name и предлагает локальное скачивание", () => {
+    if (typeof require !== "function") return;
+    const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    assert(source.includes('data-vcs-table-view="siteName"'));
+    assert(source.includes('data-download-site-name'));
+    assert(source.includes('buildVcsSiteNameRows(state, ui.inventoryFilters, devices)'));
+    assert(source.includes('downloadBlob(file.bytes'));
+    assert(!source.includes('fetch("/api/site-name'));
+  });
+
   test("Пользовательский словарь закрепляет обязательные названия категорий", () => {
     assertEqual(api.UI_TERMS.categories.vcs, "Терминалы ВКС");
     assertEqual(api.UI_TERMS.categories.controller, "Контроллеры");

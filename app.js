@@ -15,6 +15,7 @@
   const DEFAULT_MAX_RAW_INPUT_BYTES = Number.MAX_SAFE_INTEGER;
   const DASHBOARD_LIST_LIMIT = 8;
   const DEFAULT_INVENTORY_FILTERS = Object.freeze({ current: "yes" });
+  const VCS_SITE_NAME_HEADERS = Object.freeze(["Наименование устройства", "Site name", "IP", "MAC", "Адрес", "Наименование локации", "Домен"]);
 
   const COMMON_ACTIONS = Object.freeze([
     "view",
@@ -1351,7 +1352,31 @@
       webInterface: getCaseInsensitive(payload, "webInterface") ?? null,
       webBlocks: getCaseInsensitive(payload, "webBlocks") ?? null
     };
+    const siteName = getCaseInsensitive(payload, "siteName");
+    if (siteName !== undefined) {
+      const read = isPlainObject(siteName) && normalizeText(getCaseInsensitive(siteName, "status")) === "read";
+      const value = read ? normalizedSiteName(getCaseInsensitive(siteName, "value")) : null;
+      projected.siteName = { status: read && value ? "read" : "unavailable", value };
+    }
     return stableJsonValue(projected);
+  }
+
+  function normalizedSiteName(value) {
+    if (typeof value !== "string") return null;
+    const name = value.trim();
+    return name && name.length <= 1024 && !/[\u0000-\u001f]/.test(name) ? name : null;
+  }
+
+  function siteNameFromPollingData(normalizedData) {
+    if (!isPlainObject(normalizedData)) return null;
+    const direct = getCaseInsensitive(normalizedData, "siteName");
+    if (direct !== undefined) {
+      return isPlainObject(direct) && normalizeText(getCaseInsensitive(direct, "status")) === "read"
+        ? normalizedSiteName(getCaseInsensitive(direct, "value")) : null;
+    }
+    const blocks = getCaseInsensitive(normalizedData, "webBlocks");
+    const deviceInfo = getCaseInsensitive(blocks, "Device Info");
+    return normalizedSiteName(getCaseInsensitive(deviceInfo, "Site Name"));
   }
 
   function flattenPollingChanges(before, after, path, ignoredPaths, output) {
@@ -2819,6 +2844,54 @@
         && (!filters.model || normalizeText(device.modelRaw) === normalizeText(filters.model))
         && (!filters.locationId || device.locationId === filters.locationId);
     });
+  }
+
+  function buildVcsSiteNameRows(candidateState, inputFilters, prefilteredDevices) {
+    const devices = prefilteredDevices || filterInventoryDevices(candidateState, "vcs", inputFilters);
+    const deviceIds = new Set(devices.map((device) => device.id));
+    const latestByDevice = new Map();
+    for (const result of candidateState.pollingResults) {
+      if (!deviceIds.has(result.deviceId)) continue;
+      const previous = latestByDevice.get(result.deviceId);
+      if (!previous || comparePollingResultsNewest(result, previous) < 0) latestByDevice.set(result.deviceId, result);
+    }
+    const locations = new Map(candidateState.locations.map((location) => [location.id, location]));
+    return devices.map((device) => {
+      const latest = latestByDevice.get(device.id);
+      const hasCurrentReading = latest?.parseStatus === "parsed" && (latest.operationalStatus || latest.pollStatus) === "success";
+      const location = locations.get(device.locationId);
+      return {
+        deviceName: device.nameRaw || null,
+        siteName: hasCurrentReading ? siteNameFromPollingData(latest.normalizedData) : null,
+        ip: device.ipNormalized || device.ipRaw || null,
+        mac: device.macNormalized || device.macRaw || null,
+        address: location?.address || null,
+        locationName: location?.name || null,
+        domain: device.domain || null
+      };
+    });
+  }
+
+  function buildVcsSiteNameXlsx(rows) {
+    if (!global.XLSX) return { ok: false, errors: ["Локальная библиотека XLSX не загружена"] };
+    try {
+      const columns = ["deviceName", "siteName", "ip", "mac", "address", "locationName", "domain"];
+      const matrix = [VCS_SITE_NAME_HEADERS, ...rows.map((row) => columns.map((column) => row[column] == null ? "" : String(row[column])))];
+      const sheet = global.XLSX.utils.aoa_to_sheet(matrix);
+      for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+        for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+          const cell = sheet[global.XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })];
+          if (cell) { cell.t = "s"; delete cell.f; }
+        }
+      }
+      sheet["!cols"] = [32, 32, 19, 20, 34, 30, 24].map((wch) => ({ wch }));
+      sheet["!autofilter"] = { ref: `A1:G${matrix.length}` };
+      const workbook = global.XLSX.utils.book_new();
+      global.XLSX.utils.book_append_sheet(workbook, sheet, "Site name");
+      return { ok: true, bytes: global.XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true }), errors: [] };
+    } catch (_error) {
+      return { ok: false, errors: ["Не удалось сформировать XLSX с Site name"] };
+    }
   }
 
   function diagnoseSrCategoryPipeline(rows, candidateState) {
@@ -4883,6 +4956,7 @@
     DEFAULT_MAX_RAW_INPUT_BYTES,
     DASHBOARD_LIST_LIMIT,
     DEFAULT_INVENTORY_FILTERS,
+    VCS_SITE_NAME_HEADERS,
     PRODUCT_CATALOG,
     MODULE_CATALOG,
     UI_TERMS,
@@ -4941,6 +5015,8 @@
     formatRunStatus,
     formatImportOutcome,
     filterInventoryDevices,
+    buildVcsSiteNameRows,
+    buildVcsSiteNameXlsx,
     getActivePreviousChangeSets,
     getActiveBaselineAssignment,
     getBaselineDrift,
@@ -5088,6 +5164,7 @@
     selectedInventoryDeviceId: null,
     eventFilters: {},
     inventoryFilters: { ...DEFAULT_INVENTORY_FILTERS },
+    vcsTableView: "devices",
     srImportResults: [],
     srProgress: null,
     pollingImportResults: [],
@@ -5837,6 +5914,8 @@
     const categoryLocationIds = new Set(state.inventoryDevices.filter((item) => item.category === config.category).map((item) => item.locationId).filter(Boolean));
     const categoryLocations = state.locations.filter((item) => categoryLocationIds.has(item.id)).sort((a, b) => String(a.name).localeCompare(String(b.name), "ru"));
     const analytics = getInventoryAnalytics(state, config.category);
+    const siteNameView = config.category === "vcs" && ui.vcsTableView === "siteName";
+    const siteNameRows = siteNameView ? buildVcsSiteNameRows(state, ui.inventoryFilters, devices) : [];
     return `<header class="page-header"><div><h1>${config.title}</h1></div><div class="button-row"><span class="badge info">${devices.length}</span><button class="button secondary" type="button" data-help-topic="${config.help}">О модуле</button></div></header>
       <section class="stats-grid">${statCard("Всего", analytics.total)}${statCard("Опрошено / не опрашивалось", `${analytics.polled} / ${analytics.unpolled}`)}${statCard("Успешно / ошибки", `${analytics.success} / ${analytics.errors}`)}${statCard("Устройства с изменениями / обнаруженные изменения", `${analytics.changedDevices} / ${analytics.changes}`)}</section>
       <section class="card"><form class="filter-grid inventory-filter-grid" data-inventory-filters>
@@ -5852,7 +5931,13 @@
         <div class="field"><label>VIP</label><select name="vip"><option value="">Все</option><option value="true"${ui.inventoryFilters.vip === "true" ? " selected" : ""}>Да</option><option value="false"${ui.inventoryFilters.vip === "false" ? " selected" : ""}>Нет</option></select></div>
         <div class="button-row"><button class="button primary" type="submit">Применить фильтры</button><button class="button secondary" type="button" data-clear-inventory-filters>Сбросить фильтры</button></div>
       </form></section>
-      <section class="card section-gap">${renderInventoryTable(devices)}</section>`;
+      <section class="card section-gap">${config.category === "vcs" ? `<div class="inventory-view-toolbar"><div class="button-row" role="group" aria-label="Вид таблицы"><button class="button ${siteNameView ? "secondary" : "primary"}" type="button" data-vcs-table-view="devices" aria-pressed="${!siteNameView}">Устройства</button><button class="button ${siteNameView ? "primary" : "secondary"}" type="button" data-vcs-table-view="siteName" aria-pressed="${siteNameView}">Site name</button></div>${siteNameView ? `<button class="button secondary" type="button" data-download-site-name${siteNameRows.length ? "" : " disabled"}>Скачать Site name</button>` : ""}</div>` : ""}${siteNameView ? renderVcsSiteNameTable(siteNameRows) : renderInventoryTable(devices)}</section>`;
+  }
+
+  function renderVcsSiteNameTable(rows) {
+    if (!rows.length) return `<div class="empty-state compact"><p>Терминалы ВКС по выбранным фильтрам не найдены.</p></div>`;
+    const cell = (value) => value == null || value === "" ? `<span class="muted">—</span>` : escapeHtml(value);
+    return `<div class="table-wrap"><table><thead><tr>${VCS_SITE_NAME_HEADERS.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr><td>${cell(row.deviceName)}</td><td>${cell(row.siteName)}</td><td class="mono">${cell(row.ip)}</td><td class="mono">${cell(row.mac)}</td><td>${cell(row.address)}</td><td>${cell(row.locationName)}</td><td>${cell(row.domain)}</td></tr>`).join("")}</tbody></table></div>`;
   }
 
   function renderInventoryTable(devices) {
@@ -6602,6 +6687,27 @@
       ui.selectedEventId = null;
       ui.selectedInventoryDeviceId = null;
       setMessage(null);
+      render();
+      return;
+    }
+
+    const vcsTableViewButton = event.target.closest("[data-vcs-table-view]");
+    if (vcsTableViewButton) {
+      ui.vcsTableView = vcsTableViewButton.dataset.vcsTableView === "siteName" ? "siteName" : "devices";
+      setMessage(null);
+      render();
+      return;
+    }
+
+    if (event.target.closest("[data-download-site-name]")) {
+      const rows = buildVcsSiteNameRows(state, ui.inventoryFilters);
+      if (!rows.length) { setMessage("Нет терминалов ВКС для выгрузки по выбранным фильтрам.", "error"); render(); return; }
+      const file = buildVcsSiteNameXlsx(rows);
+      if (!file.ok || !downloadBlob(file.bytes, `site-name-${nowIso().slice(0, 10)}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
+        setMessage(file.errors?.[0] || "Не удалось скачать таблицу Site name.", "error");
+      } else {
+        setMessage("Таблица Site name скачана.", "success");
+      }
       render();
       return;
     }
