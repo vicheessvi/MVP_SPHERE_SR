@@ -1367,7 +1367,7 @@
     return name && name.length <= 1024 && !/[\u0000-\u001f]/.test(name) ? name : null;
   }
 
-  function siteNameFromPollingData(normalizedData) {
+  function siteNameFromPollingData(normalizedData, device) {
     if (!isPlainObject(normalizedData)) return null;
     const direct = getCaseInsensitive(normalizedData, "siteName");
     if (direct !== undefined) {
@@ -1376,7 +1376,15 @@
     }
     const blocks = getCaseInsensitive(normalizedData, "webBlocks");
     const deviceInfo = getCaseInsensitive(blocks, "Device Info");
-    return normalizedSiteName(getCaseInsensitive(deviceInfo, "Site Name"));
+    const explicit = normalizedSiteName(getCaseInsensitive(deviceInfo, "Site Name"));
+    if (explicit) return explicit;
+    if (normalizeManufacturer(device?.manufacturerNormalized || device?.manufacturerRaw) !== "polycom") return null;
+    const planned = normalizeText(device?.modelNormalized || device?.modelRaw || "");
+    const match = planned.match(/^(?:polycom )?realpresence group (300|310|500|700)$/);
+    if (!match) return null;
+    const observed = normalizeText(getCaseInsensitive(deviceInfo, "Model")).replace(/^polycom /, "");
+    return observed === `realpresence group ${match[1]}`
+      ? normalizedSiteName(getCaseInsensitive(deviceInfo, "System Name")) : null;
   }
 
   function flattenPollingChanges(before, after, path, ignoredPaths, output) {
@@ -2862,7 +2870,7 @@
       const location = locations.get(device.locationId);
       return {
         deviceName: device.nameRaw || null,
-        siteName: hasCurrentReading ? siteNameFromPollingData(latest.normalizedData) : null,
+        siteName: hasCurrentReading ? siteNameFromPollingData(latest.normalizedData, device) : null,
         ip: device.ipNormalized || device.ipRaw || null,
         mac: device.macNormalized || device.macRaw || null,
         address: location?.address || null,

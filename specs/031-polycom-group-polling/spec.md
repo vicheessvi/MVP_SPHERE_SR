@@ -54,6 +54,7 @@ The new polls use the existing plan, manually entered credentials, chosen result
 - Group 300 may share the Group 310/500/700 family interface but has not been validated live; success on one model does not confirm another. An earlier Group 500 model mismatch has no established cause and does not justify weakening exact identity checks.
 - Group 300 software 4.1.5-180072 failed during HTTPS validation before credentials although browser HTTP access worked. Software 5.0+ is a candidate for testing, not a guaranteed working range or a reason to send credentials via HTTP.
 - Device reports sensitive configuration fields: do not include them merely because they are returned by a broad endpoint.
+- System Name is missing or the observed model differs from the exact planned Group model: do not invent Site name.
 
 ## Requirements
 
@@ -66,12 +67,14 @@ The new polls use the existing plan, manually entered credentials, chosen result
 - **FR-005**: The tool MUST send credentials only to the administrator-selected IP after recognizing the expected Polycom login interface, and MUST NOT include credentials, session material or raw server errors in output. Exact model confirmation occurs after login because this firmware does not reveal it before authentication.
 - **FR-006**: Untested Group 300 MUST retain a provisional validation status until checked on a real device; confirmed Group 310/500/700 statuses MUST remain separate, and suffix variants MUST remain unsupported.
 - **FR-007**: Existing manual import and other vendor polls MUST remain functional.
+- **FR-008**: For exact Group 300/310/500/700, the tool MUST expose the already read System Name as Site name with explicit source provenance, only after model and stable identity checks; missing System Name MUST remain unavailable.
 
 ### Key Entities
 
 - **Planned Group target**: exact expected model, selected IP and existing local credential choice.
 - **Observed device identity**: model, serial number and MAC address from the device.
 - **Polling snapshot**: time-stamped read-only result with bounded source-backed fields, per-field availability and validation status.
+- **Site name**: administrator-approved presentation alias of System Name for the four exact Group models, preserving the original System Name.
 
 ## Success Criteria
 
@@ -81,9 +84,11 @@ The new polls use the existing plan, manually entered credentials, chosen result
 - **SC-002**: All four exact models pass synthetic contract tests for matching identity, mismatched identity, authentication failure and malformed responses.
 - **SC-003**: Every captured result is free of credentials, cookies and tokens, including failure cases.
 - **SC-004**: Existing Python, interface and reference checks pass; no established vendor model changes routing.
+- **SC-005**: All four exact-model synthetic success results have equal System Name and Site name values, while missing-name and wrong-model cases do not invent a value.
 
 ## Assumptions
 
 - Group 310 was available for controlled local validation. The administrator later confirmed successful operational polls of Group 310, Group 500 and Group 700 separately. Group 300 remains provisional; no raw reports or credentials were transferred into the repository.
 - The administrator consents to a local management login using the credentials supplied for this test. Credentials remain transient and are not copied to project files.
 - Only read-only inventory/status collection is in scope. Calls, configuration changes and insecure Telnet polling are out of scope.
+- The administrator confirmed that System Name may be treated as Site name for the four exact Group models; this semantic rule does not apply to HDX or other manufacturers.

@@ -24,6 +24,8 @@ The exact model cannot be read pre-auth on observed firmware: `GET /rest/system`
 5. `POST /rest/config` with exactly `{"names":["system.network.wired.ethernet.macaddress"]}`; response must contain exactly the requested name and a valid MAC or field is unavailable. `vars` write payloads are forbidden.
 6. `POST /rest/session` with only `action=Logout` in all authenticated terminal paths.
 
+After exact model and stable identity validation, the already read `systemName` is also projected as `siteName.value` with `source=polycom_system_name` for these four exact Group models, as confirmed by the administrator. If missing, Site name is `unavailable`. Do not transfer the equivalence to HDX or other manufacturers.
+
 ## Output and failure
 
 - Never include username, password, cookie, session id, full login/config body, arbitrary status fields or raw exception text.

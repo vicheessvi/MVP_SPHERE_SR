@@ -389,10 +389,12 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
             "macAddress": mac,
         }
         safe_system = {key: value for key, value in safe_system.items() if value is not None}
+        system_name = safe_system.get("systemName")
+        site_name = {"status": "read" if system_name else "unavailable", "value": system_name, "source": "polycom_system_name"}
         web_blocks = {
             "Device Info": {key: value for key, value in {
                 "Model": contract["model"], "Serial Number": serial, "MAC Address": mac,
-                "System Name": safe_system.get("systemName"),
+                "System Name": system_name, "Site Name": system_name,
             }.items() if value is not None},
             "Firmware": {key: value for key, value in {
                 "Version": firmware, "Build": safe_system.get("build"), "Hardware Version": safe_system.get("hardwareVersion"),
@@ -407,6 +409,7 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
             "ok": True,
             "webInterface": {"ok": True, "evidence": "Polycom Group web REST read-only", "insecureTls": not reject_unauthorized, "tlsProfile": "system_default"},
             "webBlocks": web_blocks,
+            "siteName": site_name,
             "rawResources": sanitize_result({"system": safe_system, "status": status_rows, "systemTime": device_time, "uptime": uptime}),
             "readMode": "targeted",
             "diagnostics": {"attemptedResourceKeys": ["system", "mac", "status", "systemTime", "uptime"], "resourceErrors": resource_errors},

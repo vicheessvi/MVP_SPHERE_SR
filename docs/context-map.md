@@ -5,6 +5,7 @@
 - Требования и критерии: `specs/032-vcs-site-name-report/spec.md`.
 - Фильтруемый selector, переключатель и локальный XLSX: `app.js`; тесты: `tests.js`; оформление: `styles.css`.
 - Справочник: `product-catalog.js`; решение: `docs/decisions/ADR-0033-vcs-site-name-report.md`.
+- Подтверждённое администратором сопоставление Polycom Group `System Name → Site name`: новый JSON в `mvp_runtime/adapters/polycom_group.py`, исторические файлы в `app.js`; только exact Group 300/310/500/700.
 
 ## Feature 031 — Polycom RealPresence Group 300/310/500/700
 

@@ -2692,7 +2692,7 @@
       { id: "site-new-a", deviceId: "site-vcs-a", capturedAt: "2026-10-01T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, siteName: { status: "read", value: "Новое имя" } }) },
       { id: "site-old-b", deviceId: "site-vcs-b", capturedAt: "2026-09-01T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, siteName: { status: "read", value: "Не подставлять" } }) },
       { id: "site-new-b", deviceId: "site-vcs-b", capturedAt: "2026-10-02T10:00:00Z", parseStatus: "parsed", operationalStatus: "processing_error", normalizedData: {} },
-      { id: "site-new-c", deviceId: "site-vcs-c", capturedAt: "2026-10-03T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, webBlocks: { "Device Info": { "Site Name": "Значение из блока" } } }) }
+      { id: "site-new-c", deviceId: "site-vcs-c", capturedAt: "2026-10-03T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, webBlocks: { "Device Info": { Model: "RealPresence Group 500", "System Name": "Polycom имя системы" } } }) }
     ];
     const currentRows = api.buildVcsSiteNameRows(candidate, { current: "yes" });
     assertEqual(currentRows.length, 2);
@@ -2705,7 +2705,17 @@
     assertEqual(api.buildVcsSiteNameRows(candidate, { current: "yes" })[1].siteName, null);
     const filtered = api.buildVcsSiteNameRows(candidate, { current: "all", manufacturer: "Polycom", model: "RealPresence Group 500", locationId: "site-location-b" });
     assertEqual(filtered.length, 1);
-    assertEqual(filtered[0].siteName, "Значение из блока");
+    assertEqual(filtered[0].siteName, "Polycom имя системы");
+    const exported = api.buildVcsSiteNameXlsx(filtered);
+    assert(exported.ok);
+    const exportedSheet = global.XLSX.read(exported.bytes, { type: "array" }).Sheets["Site name"];
+    assertEqual(global.XLSX.utils.sheet_to_json(exportedSheet, { header: 1 })[1][1], "Polycom имя системы");
+    candidate.inventoryDevices[2].modelRaw = "Polycom RealPresence Group 500";
+    assertEqual(api.buildVcsSiteNameRows(candidate, { current: "all", manufacturer: "Polycom" })[0].siteName, "Polycom имя системы");
+    candidate.pollingResults[4].normalizedData.webBlocks["Device Info"].Model = "RealPresence Group 700";
+    assertEqual(api.buildVcsSiteNameRows(candidate, { current: "all", manufacturer: "Polycom" })[0].siteName, null);
+    candidate.pollingResults.push({ id: "site-huawei-system-name", deviceId: "site-vcs-b", capturedAt: "2026-10-05T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, webBlocks: { "Device Info": { Model: "TE40", "System Name": "Не приравнивать" } } }) });
+    assertEqual(api.buildVcsSiteNameRows(candidate, { current: "yes" })[1].siteName, null);
     assertEqual(api.buildVcsSiteNameRows(candidate, { current: "yes", manufacturer: "Polycom" }).length, 0);
   });
 

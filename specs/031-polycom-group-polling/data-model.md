@@ -18,6 +18,7 @@
 - Existing fields: `ip`, `capturedAt`, `ok`, `failedStage`, `safeError`, redacted attempt count, `vendorPolling`.
 - Whitelisted identity: model, serial number and optional wired MAC. Stable identity requires serial or valid MAC, plus exact model.
 - Whitelisted information: software version/build, hardware version, system name, state, bounded service statuses, device time and uptime. The numeric REST time/uptime units are not assumed until independently verified; output labels them as raw values.
+- For exact Group 300/310/500/700, administrator-approved `Site name` is a derived presentation value equal to the read `System Name`, with source `polycom_system_name`. An absent System Name remains unavailable; no new network request or SR substitution occurs.
 - Presentation: `webBlocks.Device Info.Model`, `webBlocks.Device Info.Serial Number`, `webBlocks.Device Info.MAC Address`, `webBlocks.Firmware.Version` and bounded status/time block.
 - Optional values absent or invalid become unavailable; no SR value is substituted.
 - `rawResources` contains only selected safe fields; no unfiltered web response is persisted.

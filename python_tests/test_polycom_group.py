@@ -38,7 +38,7 @@ def response(body, status=200, headers=None):
 
 
 class PolycomGroupTests(unittest.TestCase):
-    def fake_request(self, calls, *, model="RealPresence Group 310", bundle=MAIN_BUNDLE, accept=True, accepted_username="synthetic-user", fail_path=None, serial="SYNTHETIC-SERIAL", mac="02:00:00:00:00:31"):
+    def fake_request(self, calls, *, model="RealPresence Group 310", bundle=MAIN_BUNDLE, accept=True, accepted_username="synthetic-user", fail_path=None, serial="SYNTHETIC-SERIAL", mac="02:00:00:00:00:31", system_name="Synthetic Room"):
         def request(options):
             calls.append(options)
             path, method = options["path"], options["method"]
@@ -64,7 +64,7 @@ class PolycomGroupTests(unittest.TestCase):
                     "softwareVersion": "release - SYNTHETIC-BUILD",
                     "build": "123456",
                     "hardwareVersion": "synthetic-hardware",
-                    "systemName": "Synthetic Room",
+                    "systemName": system_name,
                     "state": "Ready",
                     "systemTime": 1760000000000,
                     "uptime": 8000,
@@ -99,6 +99,8 @@ class PolycomGroupTests(unittest.TestCase):
         self.assertEqual(result["webBlocks"]["Device Info"]["Model"], "RealPresence Group 310")
         self.assertEqual(result["webBlocks"]["Device Info"]["Serial Number"], "SYNTHETIC-SERIAL")
         self.assertEqual(result["webBlocks"]["Device Info"]["MAC Address"], "02:00:00:00:00:31")
+        self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic Room")
+        self.assertEqual(result["siteName"], {"status": "read", "value": "Synthetic Room", "source": "polycom_system_name"})
         self.assertEqual(result["webBlocks"]["Firmware"]["Version"], "release - SYNTHETIC-BUILD")
         self.assertEqual(result["vendorPolling"]["evidenceStatus"], "confirmed_user_validation")
         self.assertEqual(result["rawResources"]["status"], [{"name": "Network", "state": ["OK"]}])
@@ -170,8 +172,15 @@ class PolycomGroupTests(unittest.TestCase):
                 result, _ = self.run_poll(model=model)
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["webBlocks"]["Device Info"]["Model"], model)
+                self.assertEqual(result["siteName"]["value"], result["webBlocks"]["Device Info"]["System Name"])
                 expected = "provisional_user_validation" if model.endswith("300") else "confirmed_user_validation"
                 self.assertEqual(result["vendorPolling"]["evidenceStatus"], expected)
+
+    def test_missing_system_name_is_not_invented_as_site_name(self):
+        result, _ = self.run_poll(system_name=None)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["siteName"], {"status": "unavailable", "value": None, "source": "polycom_system_name"})
+        self.assertNotIn("Site Name", result["webBlocks"]["Device Info"])
 
     def test_suffix_and_cross_model_are_rejected(self):
         result, calls = self.run_poll(model="RealPresence Group 310", observed="RealPresence Group 310-C")
