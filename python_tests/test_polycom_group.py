@@ -101,6 +101,8 @@ class PolycomGroupTests(unittest.TestCase):
         self.assertEqual(result["webBlocks"]["Device Info"]["MAC Address"], "02:00:00:00:00:31")
         self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic Room")
         self.assertEqual(result["siteName"], {"status": "read", "value": "Synthetic Room", "source": "polycom_system_name"})
+        self.assertEqual(result["deviceSettings"]["fields"]["wifi"]["status"], "not_exposed")
+        self.assertEqual(result["deviceSettings"]["fields"]["ssh"]["status"], "protocol_required")
         self.assertEqual(result["webBlocks"]["Firmware"]["Version"], "release - SYNTHETIC-BUILD")
         self.assertEqual(result["vendorPolling"]["evidenceStatus"], "confirmed_user_validation")
         self.assertEqual(result["rawResources"]["status"], [{"name": "Network", "state": ["OK"]}])

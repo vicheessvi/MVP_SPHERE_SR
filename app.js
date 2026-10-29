@@ -1347,6 +1347,7 @@
     if (!isPlainObject(payload)) return {};
     const projected = {
       ok: getCaseInsensitive(payload, "ok") ?? null,
+      adapterKey: typeof getCaseInsensitive(payload, "adapterKey") === "string" ? getCaseInsensitive(payload, "adapterKey").slice(0, 128) : null,
       failedStage: getCaseInsensitive(payload, "failedStage") ?? null,
       ping: getCaseInsensitive(payload, "ping") ?? null,
       webInterface: getCaseInsensitive(payload, "webInterface") ?? null,
@@ -1358,6 +1359,36 @@
       const value = read ? normalizedSiteName(getCaseInsensitive(siteName, "value")) : null;
       projected.siteName = { status: read && value ? "read" : "unavailable", value };
     }
+    const settingKeys = ["telnet", "http", "snmpV2", "autoUpdate", "autoAnswer", "ntp", "wifi", "ssh", "powerManagement"];
+    const suppliedSettings = getCaseInsensitive(payload, "deviceSettings");
+    const suppliedFields = getCaseInsensitive(suppliedSettings, "fields");
+    const projectedFields = {};
+    const approvedReadSources = {
+      telnet: new Set(["WEB_GetCfgParamAPI:enabletelnet", "managementActions.after.telnetPort23"]),
+      http: new Set(["WEB_GetCfgParamAPI:enable_http", "POST /v1/om/config:enable_http", "managementActions.after.httpPort80"])
+    };
+    for (const key of settingKeys) {
+      const supplied = getCaseInsensitive(suppliedFields, key);
+      const status = normalizeText(getCaseInsensitive(supplied, "status"));
+      const value = getCaseInsensitive(supplied, "value");
+      const source = String(getCaseInsensitive(supplied, "source") || "");
+      if (status === "read" && approvedReadSources[key]?.has(source) && ["enabled", "disabled"].includes(value)) {
+        projectedFields[key] = { status: "read", value, source };
+      } else if (["protocol_required", "unavailable", "not_exposed"].includes(status)) {
+        projectedFields[key] = { status, value: null };
+      }
+    }
+    if (getCaseInsensitive(payload, "ok") === true) {
+      const actions = getCaseInsensitive(payload, "managementActions");
+      const verified = Array.isArray(actions) ? actions.find((item) => getCaseInsensitive(item, "id") === "disable_insecure_management_services" && ["applied", "already_compliant"].includes(normalizeText(getCaseInsensitive(item, "status")))) : null;
+      const after = getCaseInsensitive(verified, "after");
+      for (const [key, legacyKey] of [["telnet", "telnetPort23"], ["http", "httpPort80"]]) {
+        if (projectedFields[key]?.status === "read") continue;
+        const legacyValue = normalizeText(getCaseInsensitive(after, legacyKey));
+        if (["enabled", "disabled"].includes(legacyValue)) projectedFields[key] = { status: "read", value: legacyValue, source: `managementActions.after.${legacyKey}` };
+      }
+    }
+    if (Object.keys(projectedFields).length) projected.deviceSettings = { fields: projectedFields };
     return stableJsonValue(projected);
   }
 
@@ -1926,6 +1957,8 @@
   function parseManagementTargetRows(input) {
     const rows = Array.isArray(input?.rows) ? input.rows : [];
     const headers = input?.headers || Object.keys(rows[0] || {});
+    const secretHeaders = headers.filter((header) => /(?:пароль|password|passwd|secret|token|api[_ -]?key|логин)/iu.test(normalizeSrHeader(header)));
+    if (secretHeaders.length) return { ok: false, devices: [], errors: ["Список устройств не должен содержать столбцы с учётными данными"] };
     const missingHeaders = missingSrRequiredHeaders(headers);
     if (missingHeaders.length) return { ok: false, devices: [], errors: [`Отсутствуют обязательные колонки: ${missingHeaders.join(", ")}`] };
     const devices = [];
@@ -1965,7 +1998,7 @@
     if (!parsed.ok) return { ok: false, devices: [], errors: parsed.errors };
     const normalized = parseManagementTargetRows(parsed);
     if (!normalized.ok) return normalized;
-    return { ...normalized, sheetName: parsed.sheetName, sourceSha256: await sha256Bytes(input.arrayBuffer) };
+    return { ...normalized, sheetName: parsed.sheetName, headers: parsed.headers, rows: parsed.rows, sourceSha256: await sha256Bytes(input.arrayBuffer) };
   }
 
   function ensurePollingRun(next, input, capturedAt) {
@@ -2899,6 +2932,108 @@
       return { ok: true, bytes: global.XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true }), errors: [] };
     } catch (_error) {
       return { ok: false, errors: ["Не удалось сформировать XLSX с Site name"] };
+    }
+  }
+
+  function auditModelToken(value) {
+    const model = (normalizeText(value) || "").replace(/\b(?:huawei|polycom|cloudlink|cloudlinc)\b/g, " ").replace(/\s+/g, " ").trim();
+    const te = model.match(/\bte\s*(20|30|40|50|60)\b/);
+    if (te) return `te${te[1]}`;
+    const cloud = model.match(/\b(bar|box)\s*(300|310|600|610)\b/);
+    if (cloud) return `${cloud[1]}${cloud[2]}`;
+    const group = model.match(/\brealpresence\s+group\s*(300|310|500|700)\b/);
+    return group ? `group${group[1]}` : null;
+  }
+
+  function auditFact(field, result) {
+    if (!result) return "Нет данных";
+    const setting = getCaseInsensitive(getCaseInsensitive(result.normalizedData, "deviceSettings")?.fields, field);
+    const status = normalizeText(getCaseInsensitive(setting, "status"));
+    if (status === "not_exposed") return "Не предоставлено интерфейсом";
+    if (status !== "read") return "Нет данных";
+    const value = getCaseInsensitive(setting, "value");
+    if (value === "enabled") return "Включено";
+    if (value === "disabled") return "Отключено";
+    return typeof value === "string" && value.trim() ? value.trim() : "Нет данных";
+  }
+
+  function buildDeviceSettingsAuditRows(targetList, candidateState) {
+    const headers = Array.isArray(targetList?.headers) ? targetList.headers : [];
+    const originalRows = Array.isArray(targetList?.rows) ? targetList.rows : [];
+    const devices = Array.isArray(targetList?.devices) ? targetList.devices : [];
+    if (!headers.length || originalRows.length !== devices.length) return { ok: false, errors: ["Список устройств нужно загрузить заново"] };
+    const factByHeader = new Map([
+      ["snmp v2", [["SNMP v2, факт", "snmpV2"]]],
+      ["автообновление", [["Автообновление, факт", "autoUpdate"]]],
+      ["автодозвон", [["Автодозвон, факт", "autoAnswer"]]],
+      ["ntp", [["NTP, факт", "ntp"]]],
+      ["wi-fi", [["Wi-Fi, факт", "wifi"]]],
+      ["wifi", [["Wi-Fi, факт", "wifi"]]]
+    ]);
+    const outputHeaders = [];
+    const outputKeys = [];
+    const seenFacts = new Set();
+    for (const header of headers) {
+      outputHeaders.push(header);
+      outputKeys.push({ source: header });
+      const key = normalizeSrHeader(header).replace(/\s*\/\s*/g, "/");
+      const facts = ["telnet/http", "http/telnet"].includes(key)
+        ? [["Telnet, факт", "telnet"], ["HTTP, факт", "http"]]
+        : key === "telnet" ? [["Telnet, факт", "telnet"]]
+          : key === "http" ? [["HTTP, факт", "http"]] : factByHeader.get(key) || [];
+      for (const [label, field] of facts) {
+        if (seenFacts.has(label)) continue;
+        seenFacts.add(label);
+        outputHeaders.push(label);
+        outputKeys.push({ field });
+      }
+    }
+    if (!seenFacts.size) return { ok: false, errors: ["В списке не найдены колонки настроек Telnet/HTTP, SNMP v2, Автообновление, Автодозвон, NTP или Wi-Fi"] };
+    outputHeaders.push("Статус сверки", "Файл опроса", "Дата опроса");
+    const indexed = new Map();
+    for (const result of candidateState?.pollingResults || []) {
+      if (!result?.filenameIp) continue;
+      if (!indexed.has(result.filenameIp)) indexed.set(result.filenameIp, []);
+      indexed.get(result.filenameIp).push(result);
+    }
+    let withFacts = 0;
+    const matrixRows = originalRows.map((sourceRow, index) => {
+      const target = devices[index];
+      const candidates = (indexed.get(target.ipNormalized) || []).sort(comparePollingResultsNewest);
+      const latest = candidates[0] || null;
+      const observedModel = getCaseInsensitive(getCaseInsensitive(latest?.normalizedData?.webBlocks, "Device Info"), "Model");
+      const exactIp = latest && latest.internalIp === target.ipNormalized && !["ip_conflict", "ambiguous", "category_conflict"].includes(latest.matchStatus);
+      const modelMatches = auditModelToken(target.modelRaw || target.modelNormalized) && auditModelToken(target.modelRaw || target.modelNormalized) === auditModelToken(observedModel);
+      const adapterMatches = latest?.normalizedData?.adapterKey === target.pollingCapability?.key;
+      const valid = exactIp && modelMatches && adapterMatches && latest.parseStatus === "parsed" && (latest.operationalStatus || latest.pollStatus) === "success";
+      const usable = valid ? latest : null;
+      if (outputKeys.some((key) => key.field && !["Нет данных", "Не предоставлено интерфейсом"].includes(auditFact(key.field, usable)))) withFacts += 1;
+      const status = !latest ? "Нет файла опроса" : !exactIp ? "IP не подтверждён" : !modelMatches ? "Модель не совпадает" : !adapterMatches ? "Контракт опроса не подтверждён" : !valid ? "Опрос неуспешен" : "Сопоставлено";
+      return [...outputKeys.map((key) => key.source !== undefined ? String(sourceRow[key.source] ?? "") : auditFact(key.field, usable)), status, latest?.filename || "", latest?.capturedAt || ""];
+    });
+    return { ok: true, headers: outputHeaders, rows: matrixRows, total: matrixRows.length, withFacts, errors: [] };
+  }
+
+  function buildDeviceSettingsAuditXlsx(targetList, candidateState) {
+    if (!global.XLSX) return { ok: false, errors: ["Локальная библиотека XLSX не загружена"] };
+    const report = buildDeviceSettingsAuditRows(targetList, candidateState);
+    if (!report.ok) return report;
+    try {
+      const matrix = [report.headers, ...report.rows];
+      const sheet = global.XLSX.utils.aoa_to_sheet(matrix);
+      for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+        for (let columnIndex = 0; columnIndex < report.headers.length; columnIndex += 1) {
+          const cell = sheet[global.XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })];
+          if (cell) { cell.t = "s"; delete cell.f; }
+        }
+      }
+      sheet["!autofilter"] = { ref: `A1:${global.XLSX.utils.encode_col(report.headers.length - 1)}${matrix.length}` };
+      sheet["!cols"] = report.headers.map((header) => ({ wch: Math.min(42, Math.max(16, String(header).length + 2)) }));
+      const workbook = global.XLSX.utils.book_new();
+      global.XLSX.utils.book_append_sheet(workbook, sheet, "Фактические настройки");
+      return { ...report, bytes: global.XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true }) };
+    } catch (_error) {
+      return { ok: false, errors: ["Не удалось сформировать XLSX с фактическими настройками"] };
     }
   }
 
@@ -5025,6 +5160,8 @@
     filterInventoryDevices,
     buildVcsSiteNameRows,
     buildVcsSiteNameXlsx,
+    buildDeviceSettingsAuditRows,
+    buildDeviceSettingsAuditXlsx,
     getActivePreviousChangeSets,
     getActiveBaselineAssignment,
     getBaselineDrift,
@@ -6220,7 +6357,7 @@
       <section class="card section-gap"><h2>4. План автоматического опроса</h2>
         <form class="automatic-plan-form" data-polling-plan-form>
           <div class="field"><label for="management-target-list-file">Список устройств для закрытия портов 80 и 23 (http, telnet)</label><input id="management-target-list-file" name="managementTargetListFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>
-          ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div>` : `<p class="muted">Файл должен иметь структуру выгрузки SR. Он используется только для задачи закрытия портов и не добавляется в основную SR или аналитику.</p>`}
+          ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div><div class="button-row section-gap"><button class="button secondary" type="button" data-download-device-settings-audit>Скачать таблицу фактических настроек</button></div>` : `<p class="muted">Файл должен иметь структуру выгрузки SR. Он используется только для задачи закрытия портов и не добавляется в основную SR или аналитику.</p>`}
           <fieldset class="polling-mode-selector"><legend>Способ выбора устройств</legend><div>
             <label class="polling-mode-choice"><input type="radio" name="pollingMode" value="${POLLING_SELECTION_MODE_FILTERS}"${projection.mode === POLLING_SELECTION_MODE_FILTERS ? " checked" : ""}> По фильтрам</label>
             <label class="polling-mode-choice"><input type="radio" name="pollingMode" value="${POLLING_SELECTION_MODE_SINGLE_IP}"${projection.mode === POLLING_SELECTION_MODE_SINGLE_IP ? " checked" : ""}> По IP-адресу</label>
@@ -6715,6 +6852,17 @@
         setMessage(file.errors?.[0] || "Не удалось скачать таблицу Site name.", "error");
       } else {
         setMessage("Таблица Site name скачана.", "success");
+      }
+      render();
+      return;
+    }
+
+    if (event.target.closest("[data-download-device-settings-audit]")) {
+      const file = buildDeviceSettingsAuditXlsx(managementTargetListSession, state);
+      if (!file.ok || !downloadBlob(file.bytes, `device-settings-audit-${nowIso().slice(0, 10)}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
+        setMessage(file.errors?.[0] || "Не удалось скачать таблицу фактических настроек.", "error");
+      } else {
+        setMessage(`Таблица скачана: строк ${file.total}, с подтверждёнными фактами ${file.withFacts}.`, "success");
       }
       render();
       return;
@@ -7399,7 +7547,7 @@
         fileBuffer = await readFileArrayBuffer(file);
         const parsed = await parseManagementTargetWorkbook({ arrayBuffer: fileBuffer });
         if (!parsed.ok) throw Object.assign(new Error("management_target_list_invalid"), { safeErrors: parsed.errors });
-        managementTargetListSession = { devices: parsed.devices, sourceSha256: parsed.sourceSha256 };
+        managementTargetListSession = { devices: parsed.devices, sourceSha256: parsed.sourceSha256, headers: parsed.headers, rows: parsed.rows };
         ui.managementTargetListSummary = { filename: file.name, acceptedCount: parsed.acceptedCount };
         ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL] };
         ui.pollingPlanResult = null;

@@ -1,5 +1,13 @@
 # Карта контекста
 
+## Feature 033 — сверка настроек терминалов ВКС (в работе)
+
+- Требования и матрица доступного чтения: `specs/033-device-settings-audit/`.
+- Сеансовый XLSX-список, сопоставление с JSON и локальный отчёт: `app.js`; проверка: `tests.js`.
+- Поля JSON и подтверждённые read-only config-запросы: `mvp_runtime/adapters/device_settings.py`, `huawei_te40.py`, `huawei_bar310.py`; непроверенные поля явно отмечаются `protocol_required`.
+- Справка: `product-catalog.js`; решение: `docs/decisions/ADR-0034-device-settings-audit-read-boundary.md`.
+- Изменение параметров и закрытый доступ к плану требуют отдельного подтверждения безопасного метода и модельных контрактов.
+
 ## Feature 032 — таблица Site name терминалов ВКС
 
 - Требования и критерии: `specs/032-vcs-site-name-report/spec.md`.

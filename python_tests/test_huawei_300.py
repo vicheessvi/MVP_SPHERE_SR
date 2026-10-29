@@ -88,6 +88,8 @@ class Huawei300Tests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["vendorPolling"]["contract"], "huawei-bar300-web-cgi-v1")
         self.assertEqual(result["siteName"]["value"], "Synthetic Site")
+        self.assertEqual(result["deviceSettings"]["fields"]["http"]["status"], "protocol_required")
+        self.assertEqual(result["deviceSettings"]["fields"]["snmpV2"]["status"], "not_exposed")
         self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic Site")
         self.assertEqual(result["webBlocks"]["LAN Settings"]["POE MAC Address"], "02:00:00:00:03:02")
         self.assertTrue(all(call["method"] in {"GET", "POST"} for call in calls))

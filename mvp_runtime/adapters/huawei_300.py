@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from mvp_runtime.redaction import sanitize_result
+from mvp_runtime.adapters.device_settings import unknown_device_settings
 
 from .huawei_te40 import (
     MAC_PATTERN,
@@ -227,6 +228,7 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             "webInterface": {"ok": True, "evidence": f"Huawei {label} current CGI and identity markers confirmed", "insecureTls": not reject_unauthorized},
             "webBlocks": blocks,
             "siteName": site_name,
+            "deviceSettings": unknown_device_settings(label, not_exposed=("snmpV2", "autoUpdate")),
             "rawResources": sanitize_result(resources),
             "readMode": "targeted",
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},

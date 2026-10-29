@@ -209,7 +209,10 @@ class HuaweiBar310Tests(unittest.TestCase):
         )
         self.assertTrue(read_only["ok"])
         self.assertNotIn("managementActions", read_only)
-        self.assertFalse(any(item["path"] == "/v1/om/config" for item in read_only_calls))
+        self.assertEqual(read_only["deviceSettings"]["fields"]["http"]["status"], "read")
+        self.assertEqual(read_only["deviceSettings"]["fields"]["telnet"]["status"], "not_exposed")
+        self.assertTrue(any(item["path"] == "/v1/om/config" and item["method"] == "POST" for item in read_only_calls))
+        self.assertFalse(any(item["method"] == "PUT" for item in read_only_calls))
 
     def test_bar_management_action_fails_closed_on_http_marker_schema_or_verification_drift(self):
         cases = (

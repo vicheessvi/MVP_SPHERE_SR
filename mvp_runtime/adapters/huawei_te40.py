@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from mvp_runtime.redaction import sanitize_result
 from mvp_runtime.adapters.huawei_site_name import read_site_name
+from mvp_runtime.adapters.device_settings import binary_setting, unknown_device_settings
 
 
 LOGIN_MARKERS = (
@@ -317,6 +318,31 @@ def _safe_management_state(planned_model: str, values: dict[str, int]) -> dict[s
     }
 
 
+def _read_device_settings(
+    planned_model: str,
+    bundle_text: str,
+    csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    settings = unknown_device_settings(planned_model.upper())
+    if not all(marker in bundle_text for marker in MANAGEMENT_ACTION_MARKERS):
+        return settings
+    try:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": list(MANAGEMENT_CONFIG_IDS), "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_read_failed")
+        values = _configuration_values(data)
+        settings["fields"]["telnet"] = binary_setting(values["enabletelnet"], "WEB_GetCfgParamAPI:enabletelnet")
+        settings["fields"]["http"] = binary_setting(
+            values["enable_http"], "WEB_GetCfgParamAPI:enable_http",
+            disabled_value=MANAGEMENT_TARGET_VALUES_BY_MODEL[planned_model]["enable_http"],
+        )
+    except Exception:
+        settings["fields"]["telnet"] = {"status": "unavailable", "value": None}
+        settings["fields"]["http"] = {"status": "unavailable", "value": None}
+    return settings
+
+
 def _disable_insecure_management_services(
     planned_model: str,
     bundle_text: str,
@@ -565,6 +591,14 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     site_name = read_site_name(bundle_text, lambda name, payload: action(name, {**(payload or {}), "acCSRFToken": csrf_token}))
     if DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks:
         management_actions.append(_disable_insecure_management_services(planned_model, bundle_text, csrf_token, action, settle))
+    verified_action = next((item for item in management_actions if item.get("status") in {"applied", "already_compliant"}), None)
+    if verified_action:
+        device_settings = unknown_device_settings(planned_model.upper())
+        after = verified_action["after"]
+        for key, action_key in (("telnet", "telnetPort23"), ("http", "httpPort80")):
+            device_settings["fields"][key] = {"status": "read", "value": after[action_key], "source": f"managementActions.after.{action_key}"}
+    else:
+        device_settings = _read_device_settings(planned_model, bundle_text, csrf_token, action)
     safe_resources = sanitize_result(resources)
     result = {
         **base,
@@ -572,6 +606,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized, "tlsProfile": tls_profile or "system_default"},
         "webBlocks": build_web_blocks(resources, ip),
         "siteName": site_name,
+        "deviceSettings": device_settings,
         "rawResources": safe_resources,
         "readMode": "targeted",
         "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},

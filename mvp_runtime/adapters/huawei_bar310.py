@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from mvp_runtime.redaction import sanitize_result
 from mvp_runtime.adapters.huawei_site_name import read_site_name
+from mvp_runtime.adapters.device_settings import binary_setting, unknown_device_settings
 
 
 CONTRACT_MODEL = "Bar 310"
@@ -313,6 +314,24 @@ def _management_state(http_value: int | None) -> dict[str, str]:
         "httpPort80": "disabled" if http_value == MANAGEMENT_HTTP_TARGET else "enabled" if http_value == 1 else "unknown",
         "telnetPort23": "not_exposed",
     }
+
+
+def _read_device_settings(
+    model: str,
+    bundle_text: str,
+    json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    settings = unknown_device_settings(model, not_exposed=("telnet", "snmpV2", "autoUpdate"))
+    if not all(marker in bundle_text for marker in MANAGEMENT_BUNDLE_MARKERS):
+        return settings
+    try:
+        outer, data = json_request("POST", MANAGEMENT_CONFIG_PATH, {"CfgIDString": ["enable_http"]}, True)
+        if outer.get("success") != 1:
+            raise Bar310ContractError("configuration_read_failed")
+        settings["fields"]["http"] = binary_setting(_management_http_value(data), "POST /v1/om/config:enable_http")
+    except Exception:
+        settings["fields"]["http"] = {"status": "unavailable", "value": None}
+    return settings
 
 
 def _disable_insecure_management_services(
@@ -661,12 +680,19 @@ def poll_huawei_310_family_device(
         and DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks
     ):
         management_actions.append(_disable_insecure_management_services(bundle_text, json_request, settle, str(contract.get("management_validation_status") or "provisional_user_validation")))
+    verified_action = next((item for item in management_actions if item.get("status") in {"applied", "already_compliant"}), None)
+    if verified_action:
+        device_settings = unknown_device_settings(contract_model, not_exposed=("telnet", "snmpV2", "autoUpdate"))
+        device_settings["fields"]["http"] = {"status": "read", "value": verified_action["after"]["httpPort80"], "source": "managementActions.after.httpPort80"}
+    else:
+        device_settings = _read_device_settings(contract_model, bundle_text, json_request)
     result = {
         **base,
         "ok": True,
         "webInterface": interface,
         "webBlocks": build_web_blocks(resources, ip),
         "siteName": site_name,
+        "deviceSettings": device_settings,
         "rawResources": sanitize_result(resources),
         "readMode": "targeted",
         "diagnostics": diagnostics,

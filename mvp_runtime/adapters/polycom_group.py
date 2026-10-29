@@ -15,6 +15,7 @@ from http.cookies import SimpleCookie
 from typing import Any, Callable
 
 from mvp_runtime.redaction import sanitize_result
+from mvp_runtime.adapters.device_settings import unknown_device_settings
 
 
 MAC_NAME = "system.network.wired.ethernet.macaddress"
@@ -410,6 +411,7 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
             "webInterface": {"ok": True, "evidence": "Polycom Group web REST read-only", "insecureTls": not reject_unauthorized, "tlsProfile": "system_default"},
             "webBlocks": web_blocks,
             "siteName": site_name,
+            "deviceSettings": unknown_device_settings(contract["model"], not_exposed=("wifi",)),
             "rawResources": sanitize_result({"system": safe_system, "status": status_rows, "systemTime": device_time, "uptime": uptime}),
             "readMode": "targeted",
             "diagnostics": {"attemptedResourceKeys": ["system", "mac", "status", "systemTime", "uptime"], "resourceErrors": resource_errors},

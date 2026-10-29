@@ -18,5 +18,6 @@ ADR фиксируют значимые решения, их контекст, �
 - `ADR-0012-automatic-polling-plan.md` — plan v2, XLSX-пул и последовательная запись результатов.
 - `ADR-0013-in-tool-polling.md` — исторический Node loopback API и browser ACK.
 - `ADR-0014-python-runtime-migration.md` — актуальный Python 3.11+ standard-library runtime и удаление Node/PowerShell production path.
+- `ADR-0034-device-settings-audit-read-boundary.md` — локальная сверка настроек и отделение read-only опроса от будущих изменений.
 
 Новый ADR нужен при изменении trust boundary, bind address, способа хранения ключа/секретов, подключении внешнего сервиса, реального vendor transport или новой роли.

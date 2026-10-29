@@ -140,7 +140,9 @@ class HuaweiBoxContractTests(unittest.TestCase):
                 ordinary = poll({"ip": "192.0.2.31", "model": model, "allowInsecureTls": True}, [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}], {"request": family_request(ordinary_calls, model, management=True)})
                 self.assertTrue(ordinary["ok"])
                 self.assertNotIn("managementActions", ordinary)
-                self.assertFalse(any(call["path"] == "/v1/om/config" for call in ordinary_calls))
+                self.assertEqual(ordinary["deviceSettings"]["fields"]["http"]["status"], "read")
+                self.assertTrue(any(call["path"] == "/v1/om/config" and call["method"] == "POST" for call in ordinary_calls))
+                self.assertFalse(any(call["method"] == "PUT" for call in ordinary_calls))
 
     def test_box_http_only_action_fails_closed_on_contract_or_verification_drift(self):
         for poll, model, _contract_id in self.MANAGEMENT_CASES:

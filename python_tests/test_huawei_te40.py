@@ -90,7 +90,9 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertIn("ActionID=Web_RequestCertificate?rmd=0.25", paths[7])
         self.assertEqual(paths[9], "/system/web_all.js")
         resource_calls = calls[10:]
-        self.assertEqual(len(resource_calls), 6)
+        self.assertEqual(len(resource_calls), 7)
+        self.assertEqual(result["deviceSettings"]["fields"]["http"]["status"], "read")
+        self.assertEqual(result["deviceSettings"]["fields"]["telnet"]["status"], "read")
         self.assertTrue(all(json.loads(item["body"])["acCSRFToken"] == "SYNTHETIC-CSRF" for item in resource_calls))
         self.assertTrue(all(item["headers"].get("Cookie") == "HuaweiSession=synthetic" for item in calls[5:]))
         self.assertTrue(all(item["reject_unauthorized"] is False for item in calls))
@@ -252,7 +254,9 @@ class HuaweiTe40Tests(unittest.TestCase):
             {"request": self.success_request(no_action_calls)},
         )
         self.assertTrue(no_action["ok"])
-        self.assertFalse(any("WEB_GetCfgParamAPI" in item["path"] or "WEB_SaveCfgParamAPI" in item["path"] for item in no_action_calls))
+        self.assertTrue(any("WEB_GetCfgParamAPI" in item["path"] for item in no_action_calls))
+        self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in no_action_calls))
+        self.assertEqual(no_action["deviceSettings"]["fields"]["telnet"]["status"], "read")
 
         compliant_calls = []
         compliant = poll_huawei_te_device(
