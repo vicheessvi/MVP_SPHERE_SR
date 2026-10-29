@@ -1,24 +1,16 @@
 <!--
 Sync Impact Report
-- Version change: 3.1.0 -> 3.2.0
+- Version change: 3.2.0 -> 4.0.0
 - Modified principles:
-  - placeholder Principle 1 -> I. Неизменяемые исходные доказательства
-  - placeholder Principle 2 -> II. Идентичность предшествует сравнению
-  - placeholder Principle 3 -> III. Детерминированная нормализация
-  - placeholder Principle 4 -> IV. Безопасная работа с неполными данными
-  - placeholder Principle 5 -> V. Разделение типов событий и объяснимость
-  - VI. Защита инфраструктурных данных -> VI. Локальная защита данных и секретов
-- Added sections:
-  - Ограничения данных и аналитики
-  - Workflow и контроль качества
+  - VI. Локальная защита данных и секретов -> VI. Локальная защита данных, секретов и доступа
+- Added sections: none
 - Removed sections: none
-- Dependent templates:
-  - .specify/templates/plan-template.md: no edit required; Constitution Check
-    reads this file at planning time
-  - .specify/templates/spec-template.md: no edit required
-  - .specify/templates/tasks-template.md: no edit required
-- Modified principle VI to make Python 3.11+ standard-library loopback the production polling boundary, remove the unused persistent runtime store/vault, and retain explicit user-selected JSON output plus ephemeral XLSX transfer.
-- Dependent artifacts updated by feature 014: AGENTS.md, architecture, ADR-0014, tests.
+- Reason for MAJOR bump: a narrowly scoped, user-approved exception to the ban on
+  persistent internal credential storage now permits one per-Windows-user local
+  administrative password verifier outside Git. Plaintext and device credentials
+  remain ephemeral; Python runtime must enforce the plan gate.
+- Follow-up: feature 033 specification, architecture decision, runtime/UI and tests
+  must be aligned before the gate is considered implemented.
 -->
 
 # MVP_SPHERE_SR Constitution
@@ -82,12 +74,13 @@ Rationale: ошибки стороннего сбора не должны пре
 Rationale: пользователь должен понимать, что изменилось, почему система сделала
 вывод и насколько этому выводу можно доверять.
 
-### VI. Локальная защита данных и секретов
+### VI. Локальная защита данных, секретов и доступа
 
 Внутренние IP, MAC, hostname, имена пользователей, сведения об оборудовании,
 исходные снимки и результаты аналитики MUST считаться чувствительными
 инфраструктурными данными. Приложение MUST NOT создавать постоянное внутреннее
-хранилище рабочих данных или секретов. Явно выбранные пользователем исходные и
+хранилище рабочих данных или секретов, кроме описанного ниже проверочного
+значения административного пароля. Явно выбранные пользователем исходные и
 выходные файлы MAY оставаться в совместимом открытом формате под защитой прав
 доступа Windows; приложение MUST NOT создавать их скрытые копии. Production
 runtime автоматического опроса MUST использовать установленный Python 3.11+ без
@@ -105,8 +98,26 @@ runtime-хранилище, логи, диагностику, backup или Git.
 и иные fallback-источники запрещены. Ошибка импорта или polling MUST скрывать
 значения секретов. Доступ к workflow MUST иметь только роль «Администратор МЦТП».
 
+При первом запуске на каждом компьютере администратор MUST задавать собственные
+логин и пароль через одноразовую loopback-сессию Python runtime. Runtime MAY
+создать только один локальный файл проверочного значения в профиле текущего
+пользователя Windows вне каталога проекта и Git. Файл MUST содержать случайную
+соль, версию параметров memory-hard KDF и результат проверки пароля, но MUST NOT
+содержать открытый пароль, секреты устройств или данные опросов. Создание MUST
+быть атомарным и доступным только в ещё не настроенном профиле; повторный запуск
+MUST требовать входа. Python runtime MUST проверять вход до доступа к созданию и
+запуску плана и к передаче учётных данных устройств. Клиентская проверка MUST
+NOT считаться границей защиты. После закрытия runtime пароль и право доступа
+MUST исчезать из памяти; изменение или сброс локального проверочного значения
+MUST требовать отдельного явного действия пользователя и MUST NOT иметь
+автоматического fallback. Доступ к локальному файлу MUST ограничиваться правами
+текущей учётной записи Windows; инструмент MUST NOT обещать защиту от владельца
+компьютера, который может изменять исходный код или читать собственный профиль.
+
 Rationale: polling требует секретов, но аналитика не должна становиться каналом
 их утечки; непостоянный Python runtime отделяет полномочия опроса от данных анализа.
+Локальное проверочное значение позволяет задать свой пароль на каждом ПК без
+публикации его в Git и без постоянного хранения паролей устройств.
 
 ## Ограничения данных и аналитики
 
@@ -163,4 +174,4 @@ MUST быть явно согласована пользователем, сод
 проведённых проверках и известных отклонениях. Исключение допускается только как
 явно документированное временное решение с владельцем и условием устранения.
 
-**Version**: 3.2.0 | **Ratified**: 2026-08-03 | **Last Amended**: 2026-09-01
+**Version**: 4.0.0 | **Ratified**: 2026-08-03 | **Last Amended**: 2026-10-29
