@@ -5343,6 +5343,7 @@
     zeroIntervalAcknowledged: false,
     pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false },
     credentialSummary: null,
+    adminAccess: launchMode.kind === "local" ? null : { adminConfigured: false, adminUnlocked: false },
     managementTargetListSummary: null,
     pollingOutputFolderName: null,
     automaticPolling: null,
@@ -5362,6 +5363,10 @@
   document.addEventListener("change", handleChange);
   document.addEventListener("input", handleInput);
   render();
+  if (launchMode.kind === "local") runtimeRequest("/api/session").then((session) => {
+    ui.adminAccess = { adminConfigured: session.adminConfigured === true, adminUnlocked: session.adminUnlocked === true };
+    render();
+  }).catch(() => { ui.adminAccess = { error: true }; render(); });
 
   function currentUser() {
     return state.users.find((user) => user.id === sessionUserId && user.active) || null;
@@ -6350,6 +6355,12 @@
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     const zeroInterval = isZeroIntervalRange(ui.pollingPlanSelection);
+    const adminLocked = launchMode.kind === "local" && ui.adminAccess?.adminUnlocked !== true;
+    const adminGate = !adminLocked ? "" : ui.adminAccess?.error
+      ? `<section class="card upload-card"><h2>Доступ к плану</h2><p role="alert">Не удалось проверить локальный доступ. Перезапустите инструмент.</p></section>`
+      : ui.adminAccess === null
+        ? `<section class="card upload-card"><h2>Доступ к плану</h2><p role="status">Проверка локального доступа…</p></section>`
+        : `<section class="card upload-card"><h2>${ui.adminAccess.adminConfigured ? "Вход в план опроса" : "Первичная настройка доступа"}</h2><form data-admin-access-form autocomplete="off"><div class="field"><label>Логин<input name="adminUsername" autocomplete="username" required maxlength="64"></label></div><div class="field"><label>Пароль<input name="adminPassword" type="password" autocomplete="${ui.adminAccess.adminConfigured ? "current-password" : "new-password"}" required minlength="12" maxlength="1024"></label></div>${ui.adminAccess.adminConfigured ? "" : `<div class="field"><label>Повторите пароль<input name="adminPasswordConfirm" type="password" autocomplete="new-password" required minlength="12" maxlength="1024"></label></div>`}<button class="button primary" type="submit">${ui.adminAccess.adminConfigured ? "Войти" : "Создать доступ"}</button></form></section>`;
     return `
       <header class="page-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "upload").title)}</h1></div></header>
       <div class="upload-grid section-gap">
@@ -6371,13 +6382,14 @@
           </section>` : ""}
           ${ui.pollingImportSummary && !ui.inventoryBusy ? `<div class="upload-outcome section-gap" role="status"><strong>${escapeHtml(ui.pollingImportSummary.title)}</strong><span>Папок: ${ui.pollingImportSummary.folders} · JSON: ${ui.pollingImportSummary.files} · успешно: ${ui.pollingImportSummary.succeeded}</span><span>Дубликаты: ${ui.pollingImportSummary.duplicates} · ошибки: ${ui.pollingImportSummary.errors} · пропущено: ${ui.pollingImportSummary.ignored}</span></div>` : ""}
         </section>
-        <section class="card upload-card upload-credential-card"><h2>3. Учётные данные оборудования</h2>
+        ${adminGate}
+        <section class="card upload-card upload-credential-card"${adminLocked ? " hidden" : ""}><h2>3. Учётные данные оборудования</h2>
           <p class="muted">Введите пары в порядке проверки. Они действуют только в текущем сеансе.</p>
           <form data-credential-entry-form autocomplete="off"><div data-credential-rows class="credential-rows"><div class="credential-row"><label>Логин<input name="username" autocomplete="off" required maxlength="256"></label><div class="credential-password-field"><label>Пароль<input name="password" type="password" autocomplete="new-password" required maxlength="1024"></label><button class="password-visibility" type="button" data-toggle-password aria-label="Показать пароль" aria-pressed="false">Показать</button></div><button class="button secondary" type="button" data-remove-credential aria-label="Удалить пару">Удалить</button></div></div><div class="button-row section-gap"><button class="button secondary" type="button" data-add-credential>Добавить пару</button><button class="button primary" type="submit"${launchMode.kind !== "local" ? " disabled" : ""}>Передать для опроса</button>${ui.credentialSummary ? `<button class="button secondary" type="button" data-clear-credentials>Очистить</button>` : ""}</div></form>
           ${ui.credentialSummary ? `<p class="credential-ready" role="status">Готово пар: ${ui.credentialSummary.acceptedCount}. Данные будут удалены после опроса.</p>` : ""}
         </section>
       </div>
-      <section class="card section-gap"><h2>4. План автоматического опроса</h2>
+      <section class="card section-gap"${adminLocked ? " hidden" : ""}><h2>4. План автоматического опроса</h2>${launchMode.kind === "local" ? `<button class="button secondary" type="button" data-admin-lock>Закрыть доступ к плану</button>` : ""}
         <form class="automatic-plan-form" data-polling-plan-form>
           <div class="field"><label for="management-target-list-file">Список устройств для закрытия портов 80 и 23 (http, telnet)</label><input id="management-target-list-file" name="managementTargetListFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>
           ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div><div class="button-row section-gap"><button class="button secondary" type="button" data-download-device-settings-audit>Скачать таблицу фактических настроек</button></div>` : `<p class="muted">Файл должен иметь структуру выгрузки SR. Он используется только для задачи закрытия портов и не добавляется в основную SR или аналитику.</p>`}
@@ -6636,6 +6648,17 @@
   }
 
   async function handleClick(event) {
+    if (event.target.closest("[data-admin-lock]")) {
+      try {
+        await runtimeRequest("/api/admin/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        ui.adminAccess = { adminConfigured: true, adminUnlocked: false };
+        credentialPoolSession = null;
+        ui.credentialSummary = null;
+        setMessage("Доступ к плану закрыт.", "success");
+      } catch { setMessage("Не удалось закрыть доступ во время активного опроса.", "error"); }
+      render();
+      return;
+    }
     const visibilityToggle = event.target.closest("[data-toggle-password]");
     if (visibilityToggle) {
       const password = visibilityToggle.closest(".credential-row")?.querySelector('[name="password"]');
@@ -7062,6 +7085,28 @@
   }
 
   async function handleSubmit(event) {
+    const adminForm = event.target.closest("[data-admin-access-form]");
+    if (adminForm) {
+      event.preventDefault();
+      if (launchMode.kind !== "local" || !ui.adminAccess || ui.adminAccess.error) return;
+      const fields = new FormData(adminForm);
+      const username = String(fields.get("adminUsername") || "");
+      const password = String(fields.get("adminPassword") || "");
+      const confirm = String(fields.get("adminPasswordConfirm") || "");
+      const setup = !ui.adminAccess.adminConfigured;
+      adminForm.querySelectorAll("input").forEach((input) => { input.value = ""; });
+      if (setup && password !== confirm) { setMessage("Пароли не совпадают.", "error"); render(); return; }
+      try {
+        await runtimeRequest(setup ? "/api/admin/setup" : "/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
+        ui.adminAccess = { adminConfigured: true, adminUnlocked: true };
+        setMessage("Доступ к плану открыт для текущего запуска.", "success");
+      } catch (error) {
+        if (error.safeCode === "admin_already_configured") ui.adminAccess = { adminConfigured: true, adminUnlocked: false };
+        setMessage(setup ? "Не удалось создать доступ. Используйте логин до 64 символов и пароль от 12 символов." : "Неверный логин или пароль либо вход временно ограничен.", "error");
+      }
+      render();
+      return;
+    }
     const referenceSearchForm = event.target.closest("[data-reference-search]");
     if (referenceSearchForm) {
       event.preventDefault();
@@ -7116,6 +7161,7 @@
     const credentialImportForm = event.target.closest("[data-credential-entry-form]");
     if (credentialImportForm) {
       event.preventDefault();
+      if (launchMode.kind === "local" && ui.adminAccess?.adminUnlocked !== true) { setMessage("Сначала войдите в план опроса.", "error"); render(); return; }
       if (launchMode.kind !== "local") { setMessage(automaticPollingErrorMessage("runtime_required"), "error"); render(); return; }
       const pairs = Array.from(credentialImportForm.querySelectorAll(".credential-row"), (row) => ({ username: row.querySelector('[name="username"]')?.value.trim() || "", password: row.querySelector('[name="password"]')?.value || "" }));
       const payload = JSON.stringify({ pairs });
@@ -7140,6 +7186,7 @@
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
     if (pollingPlanForm) {
       event.preventDefault();
+      if (launchMode.kind === "local" && ui.adminAccess?.adminUnlocked !== true) { setMessage("Сначала войдите в план опроса.", "error"); render(); return; }
       const formData = new FormData(pollingPlanForm);
       ui.pollingPlanSelection.mode = formData.get("pollingMode") === POLLING_SELECTION_MODE_SINGLE_IP ? POLLING_SELECTION_MODE_SINGLE_IP : POLLING_SELECTION_MODE_FILTERS;
       if (ui.pollingPlanSelection.mode === POLLING_SELECTION_MODE_SINGLE_IP) ui.pollingPlanSelection.ipAddress = String(formData.get("ipAddress") || "");

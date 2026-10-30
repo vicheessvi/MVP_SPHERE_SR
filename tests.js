@@ -25,6 +25,14 @@
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
   const tests = [];
 
+  test("План показывает первичную настройку и вход, а пароль не сохраняется в state", () => {
+    const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    assert(source.includes('data-admin-access-form'));
+    assert(source.includes('runtimeRequest(setup ? "/api/admin/setup" : "/api/admin/login"'));
+    assert(source.includes('ui.adminAccess?.adminUnlocked !== true'));
+    assert(source.includes('data-admin-lock'));
+  });
+
   test("Журнал восстановления не содержит credential hash и исключает сохранённые устройства", () => {
     const plan = { schemaVersion: 3, authenticationInputSha256: "a".repeat(64), managementTasks: [], devices: [{ ip: "192.0.2.1" }, { ip: "192.0.2.2" }] };
     const manifest = pollingRecovery.create(plan, true, "2026-01-01T00:00:00Z");

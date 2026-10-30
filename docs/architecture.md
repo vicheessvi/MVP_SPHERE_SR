@@ -28,6 +28,7 @@ index.html (file://) -> volatile browser state -> manual import/analytics only
 
 - `mvp_runtime/launcher.py` проверяет Python 3.11+ и обязательные ресурсы, создаёт случайный loopback-порт и открывает одноразовый URL.
 - `mvp_runtime/server.py` обслуживает только точный allowlist локальных файлов и API credentials/jobs/status/result/ACK/cancel. Generic directory serving и `/api/storage/*` отсутствуют.
+- `mvp_runtime/admin_access.py` хранит только salted scrypt-verifier в профиле текущего пользователя Windows вне проекта. Первый запуск на ПК создаёт его атомарно; последующие требуют входа. `mvp_runtime/server.py` проверяет право доступа в одноразовой loopback-сессии до любого `/api/polling/*`, поэтому скрытие формы в браузере не является границей безопасности.
 - `mvp_runtime/credentials.py` ограниченно читает первую таблицу XLSX через ZIP/XML, отвергает macros/external links/unsafe XML и не вычисляет формулы.
 - `mvp_runtime/catalog.py` читает общий `runtime/device-catalog.json` и fail-closed определяет manifest.
 - `mvp_runtime/polling.py` нормализует unicast IPv4, создаёт allowlist ровно из плана, выполняет последовательный ping/dispatch/interval и содержит additive adapter registry.

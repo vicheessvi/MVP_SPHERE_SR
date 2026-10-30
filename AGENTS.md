@@ -11,8 +11,8 @@
 - Прямой `file://index.html` — ручной импорт и аналитика без сетевого опроса.
 - Хранение: только память вкладки/runtime; выбранные готовые JSON пишутся только в указанную пользователем папку; `localStorage`/`IndexedDB` не используются.
 - Роль: только «Администратор МЦТП».
-- Constitution: версия 3.2.0 в `.specify/memory/constitution.md`.
-- Текущая feature: `specs/032-vcs-site-name-report/`.
+- Constitution: версия 4.0.0 в `.specify/memory/constitution.md`.
+- Текущая feature: `specs/033-device-settings-audit/`.
 
 ## Правила работы агента
 
@@ -36,6 +36,7 @@
 - Никогда не помещать реальные логины, пароли, токены, ключи, IP-выгрузки или runtime data в Git, fixtures, логи, state, аналитику и ответы API.
 - Учётные данные вводятся пользователем в форме текущей вкладки и передаются только в same-origin loopback runtime. После передачи поля очищаются; пары нельзя помещать в state, plan, browser storage или постоянное хранилище.
 - Runtime сверяет SHA-256 переданных пар, очищает пул во всех terminal paths и выдаёт redacted JSON по одному до ACK записи. Vault и fallback credentials запрещены.
+- Доступ к плану на каждом ПК настраивается при первом запуске: локальный scrypt-verifier хранится только в профиле текущего пользователя Windows вне Git, открытый пароль не сохраняется. Python runtime проверяет вход до любого `/api/polling/*`; браузерное скрытие формы не считается границей защиты. Пароли оборудования по-прежнему только в памяти задания.
 - Не добавлять внешнюю передачу, CDN, телеметрию, third-party Python dependency или non-loopback bind без явного решения пользователя и security review.
 - Не делать commit/push без явного указания пользователя.
 - Значимые решения фиксировать в `docs/decisions`, этапы — в `docs/implementation-log.md`.

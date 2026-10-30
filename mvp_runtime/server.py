@@ -7,6 +7,7 @@ import hashlib
 import re
 import secrets
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -17,6 +18,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .catalog import CATALOG
+from .admin_access import configured, create_verifier, default_verifier_path, verify
 from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_pairs, parse_credential_workbook
 from .polling import PollingError, normalize_ipv4, validate_plan_interval
 from .polling_job import JobInputError, PollingJob, TERMINAL_STATUSES, create_polling_job
@@ -51,6 +53,9 @@ def utc_now() -> str:
 @dataclass
 class RuntimeSession:
     csrf_token: str
+    admin_unlocked: bool = False
+    failed_admin_attempts: int = 0
+    admin_retry_after: float = 0.0
     created_at: str = field(default_factory=utc_now)
     credential_pool: list[dict[str, str]] | None = None
     credential_sha256: str | None = None
@@ -71,6 +76,7 @@ class RuntimeSession:
 @dataclass
 class RuntimeState:
     project_root: Path
+    admin_verifier_path: Path
     launch_token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     launch_used: bool = False
     sessions: dict[str, RuntimeSession] = field(default_factory=dict)
@@ -438,6 +444,63 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _admin_route(self, path: str, session: RuntimeSession) -> bool:
+        if path not in {"/api/admin/setup", "/api/admin/login", "/api/admin/logout"}:
+            return False
+        if self.command != "POST":
+            self._json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "method_not_allowed"})
+            return True
+        verifier_path = self.server.state.admin_verifier_path
+        if path == "/api/admin/logout":
+            with self.server.state.lock:
+                if session.active_job_id:
+                    self._json(HTTPStatus.CONFLICT, {"error": "job_already_active"})
+                    return True
+                session.admin_unlocked = False
+                session.clear_credentials()
+            self._json(HTTPStatus.OK, {"ok": True, "adminUnlocked": False})
+            return True
+        value = self._read_json(8192)
+        username = value.get("username")
+        password = value.get("password")
+        if path == "/api/admin/setup":
+            if configured(verifier_path):
+                self._json(HTTPStatus.CONFLICT, {"error": "admin_already_configured"})
+                return True
+            try:
+                created = create_verifier(verifier_path, username, password)
+            except ValueError:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "admin_credentials_invalid"})
+                return True
+            if not created:
+                self._json(HTTPStatus.CONFLICT, {"error": "admin_already_configured"})
+                return True
+            with self.server.state.lock:
+                session.admin_unlocked = True
+            self._json(HTTPStatus.OK, {"ok": True, "adminConfigured": True, "adminUnlocked": True})
+            return True
+        if not configured(verifier_path):
+            self._json(HTTPStatus.CONFLICT, {"error": "admin_setup_required"})
+            return True
+        with self.server.state.lock:
+            if time.monotonic() < session.admin_retry_after:
+                self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "admin_retry_later"})
+                return True
+        accepted = verify(verifier_path, username, password)
+        with self.server.state.lock:
+            if accepted:
+                session.admin_unlocked = True
+                session.failed_admin_attempts = 0
+                session.admin_retry_after = 0.0
+            else:
+                session.admin_unlocked = False
+                session.failed_admin_attempts += 1
+                if session.failed_admin_attempts >= 5:
+                    session.admin_retry_after = time.monotonic() + 60.0
+        self._json(HTTPStatus.OK if accepted else HTTPStatus.UNAUTHORIZED,
+                   {"ok": accepted, "adminUnlocked": accepted, **({} if accepted else {"error": "admin_login_failed"})})
+        return True
+
     def _dispatch(self) -> None:
         parsed = urlsplit(self.path)
         path = unquote(parsed.path)
@@ -449,11 +512,18 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
             return
         _, session = session_pair
         if path == "/api/session" and self.command == "GET":
-            self._json(HTTPStatus.OK, {"secureRuntime": True, "role": "administrator", "displayName": "Администратор МЦТП", "csrfToken": session.csrf_token})
+            self._json(HTTPStatus.OK, {"secureRuntime": True, "role": "administrator", "displayName": "Администратор МЦТП", "csrfToken": session.csrf_token, "adminConfigured": configured(self.server.state.admin_verifier_path), "adminUnlocked": session.admin_unlocked})
             return
         if path == "/runtime-config.js" and self.command in {"GET", "HEAD"}:
             script = f"globalThis.__MVP_SECURE_RUNTIME__=true;globalThis.__MVP_CSRF__={json.dumps(session.csrf_token)};"
             self._send(HTTPStatus.OK, script, "text/javascript; charset=utf-8")
+            return
+        if self._admin_route(path, session):
+            return
+        with self.server.state.lock:
+            admin_unlocked = session.admin_unlocked
+        if path.startswith("/api/polling/") and not admin_unlocked:
+            self._json(HTTPStatus.FORBIDDEN, {"error": "admin_login_required"})
             return
         if self._credentials_route(session):
             return
@@ -487,7 +557,7 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         self._safe_dispatch()
 
 
-def create_server(project_root: Path | str, port: int = 0) -> LocalRuntimeServer:
+def create_server(project_root: Path | str, port: int = 0, admin_verifier_path: Path | None = None) -> LocalRuntimeServer:
     root = Path(project_root).resolve()
-    state = RuntimeState(project_root=root)
+    state = RuntimeState(project_root=root, admin_verifier_path=admin_verifier_path or default_verifier_path())
     return LocalRuntimeServer((HOST, int(port)), state)

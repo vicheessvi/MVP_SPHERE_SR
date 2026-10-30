@@ -1863,3 +1863,4 @@ table .mono {
     animation-iteration-count: 1 !important;
   }
 }
+.card[hidden] { display: none !important; }

@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import unittest
+import tempfile
 from http.cookies import SimpleCookie
 from pathlib import Path
 
@@ -14,8 +15,10 @@ from python_tests.helpers import credential_xlsx
 
 
 class ServerHarness:
-    def __init__(self) -> None:
-        self.server = create_server(Path(__file__).resolve().parent.parent)
+    def __init__(self, admin_verifier_path: Path | None = None) -> None:
+        self.admin_dir = tempfile.TemporaryDirectory() if admin_verifier_path is None else None
+        path = admin_verifier_path or Path(self.admin_dir.name) / "admin-access.json"
+        self.server = create_server(Path(__file__).resolve().parent.parent, admin_verifier_path=path)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.host = f"127.0.0.1:{self.server.server_port}"
@@ -24,6 +27,8 @@ class ServerHarness:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
+        if self.admin_dir is not None:
+            self.admin_dir.cleanup()
 
     def request(self, method: str, path: str, *, headers: dict[str, str] | None = None, body: bytes | str | None = None) -> tuple[int, dict[str, str], bytes]:
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
@@ -36,7 +41,7 @@ class ServerHarness:
         connection.close()
         return status, result_headers, data
 
-    def session(self) -> tuple[str, str]:
+    def session(self, unlock: bool = True) -> tuple[str, str]:
         status, headers, _ = self.request("GET", f"/launch?token={self.server.state.launch_token}")
         if status != 303:
             raise AssertionError(status)
@@ -46,7 +51,12 @@ class ServerHarness:
         status, _, body = self.request("GET", "/api/session", headers={"Cookie": header})
         if status != 200:
             raise AssertionError(status)
-        return header, json.loads(body)["csrfToken"]
+        csrf = json.loads(body)["csrfToken"]
+        if unlock:
+            status, _, _ = self.request("POST", "/api/admin/setup", headers={"Cookie": header, "Origin": f"http://{self.host}", "X-MVP-CSRF": csrf, "Content-Type": "application/json"}, body=json.dumps({"username": "synthetic-admin", "password": "SYNTHETIC-ADMIN-PASSWORD-123"}))
+            if status != 200:
+                raise AssertionError(status)
+        return header, csrf
 
 
 class ServerTests(unittest.TestCase):
@@ -55,6 +65,72 @@ class ServerTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.harness.close()
+
+    def test_first_run_admin_gate_blocks_polling_until_setup_or_login(self) -> None:
+        cookie, csrf = self.harness.session(unlock=False)
+        headers = {"Cookie": cookie, "Origin": f"http://{self.harness.host}", "X-MVP-CSRF": csrf, "Content-Type": "application/json"}
+        status, _, body = self.harness.request("GET", "/api/session", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)["adminConfigured"])
+        status, _, body = self.harness.request("POST", "/api/polling/credentials", headers=headers, body="{}")
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body)["error"], "admin_login_required")
+        status, _, _ = self.harness.request("POST", "/api/admin/setup", headers=headers, body=json.dumps({"username": "synthetic-admin", "password": "short"}))
+        self.assertEqual(status, 400)
+        secret = "SYNTHETIC-ADMIN-PASSWORD-123"
+        status, _, body = self.harness.request("POST", "/api/admin/setup", headers=headers, body=json.dumps({"username": "synthetic-admin", "password": secret}))
+        self.assertEqual(status, 200)
+        self.assertNotIn(secret, body.decode())
+        verifier = self.harness.server.state.admin_verifier_path.read_text(encoding="utf-8")
+        self.assertNotIn(secret, verifier)
+        status, _, _ = self.harness.request("POST", "/api/admin/setup", headers=headers, body=json.dumps({"username": "other", "password": "ANOTHER-SYNTHETIC-SECRET"}))
+        self.assertEqual(status, 409)
+        status, _, _ = self.harness.request("POST", "/api/admin/logout", headers=headers, body="{}")
+        self.assertEqual(status, 200)
+        status, _, body = self.harness.request("GET", "/api/polling/jobs/active", headers={"Cookie": cookie})
+        self.assertEqual(status, 403)
+        status, _, body = self.harness.request("POST", "/api/admin/login", headers=headers, body=json.dumps({"username": "synthetic-admin", "password": "WRONG-SYNTHETIC-PASSWORD"}))
+        self.assertEqual(status, 401)
+        self.assertNotIn("WRONG-SYNTHETIC-PASSWORD", body.decode())
+        status, _, body = self.harness.request("POST", "/api/admin/login", headers=headers, body=json.dumps({"username": "synthetic-admin", "password": secret}))
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["adminUnlocked"])
+
+    def test_admin_login_throttles_repeated_failures_and_requires_csrf(self) -> None:
+        cookie, csrf = self.harness.session()
+        status, _, body = self.harness.request("POST", "/api/admin/logout", headers={"Cookie": cookie}, body="{}")
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body)["error"], "csrf_or_origin_rejected")
+        headers = {"Cookie": cookie, "Origin": f"http://{self.harness.host}", "X-MVP-CSRF": csrf, "Content-Type": "application/json"}
+        status, _, _ = self.harness.request("POST", "/api/admin/logout", headers=headers, body="{}")
+        self.assertEqual(status, 200)
+        for _ in range(5):
+            status, _, _ = self.harness.request("POST", "/api/admin/login", headers=headers, body=json.dumps({"username": "synthetic-admin", "password": "WRONG-SYNTHETIC-PASSWORD"}))
+            self.assertEqual(status, 401)
+        status, _, body = self.harness.request("POST", "/api/admin/login", headers=headers, body=json.dumps({"username": "synthetic-admin", "password": "SYNTHETIC-ADMIN-PASSWORD-123"}))
+        self.assertEqual(status, 429)
+        self.assertEqual(json.loads(body)["error"], "admin_retry_later")
+
+    def test_new_runtime_with_existing_verifier_starts_locked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "admin-access.json"
+            first = ServerHarness(path)
+            try:
+                first.session()
+            finally:
+                first.close()
+            second = ServerHarness(path)
+            try:
+                cookie, _csrf = second.session(unlock=False)
+                status, _, body = second.request("GET", "/api/session", headers={"Cookie": cookie})
+                self.assertEqual(status, 200)
+                self.assertTrue(json.loads(body)["adminConfigured"])
+                self.assertFalse(json.loads(body)["adminUnlocked"])
+                status, _, body = second.request("GET", "/api/polling/jobs/active", headers={"Cookie": cookie})
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(body)["error"], "admin_login_required")
+            finally:
+                second.close()
 
     def test_launch_is_one_time_and_session_is_http_only(self) -> None:
         status, headers, _ = self.harness.request("GET", f"/launch?token={self.harness.server.state.launch_token}")
