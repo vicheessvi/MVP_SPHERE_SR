@@ -2086,7 +2086,7 @@
 
   test("Сверка настроек сохраняет исходные колонки и показывает только подтверждённый факт", () => {
     const headers = [...srHeaders(), "Telnet/HTTP", "Локальная камера", "Работы проведены", "SNMP v2", "Автообновление", "Автодозвон", "NTP", "Wi-Fi"];
-    const row = srRow({ IP: "192.0.2.40", Производитель: "Huawei", Модель: "TE40", "Telnet/HTTP": "Отключено", "Локальная камера": "Да", "Работы проведены": "Нет", "SNMP v2": "Отключено", Автообновление: "Отключено", Автодозвон: "Отключено", NTP: "Включено", "Wi-Fi": "Отключено" });
+    const row = srRow({ IP: "192.0.2.40", Производитель: "Huawei", Модель: "TE20", "Telnet/HTTP": "Отключено", "Локальная камера": "Да", "Работы проведены": "Нет", "SNMP v2": "Отключено", Автообновление: "Отключено", Автодозвон: "Отключено", NTP: "Включено", "Wi-Fi": "Отключено" });
     const parsed = api.parseManagementTargetRows({ headers, rows: [row] });
     assert(parsed.ok, parsed.errors?.join("; "));
     const list = { ...parsed, headers, rows: [row] };
@@ -2095,7 +2095,7 @@
     const emptyReport = api.buildDeviceSettingsAuditRows(list, candidate);
     assert(emptyReport.ok);
     assertEqual(emptyReport.rows[0][emptyReport.headers.indexOf("HTTP, факт")], "Нет данных");
-    const payload = { ok: true, adapterKey: "vcs/huawei/te-family", webBlocks: { "Device Info": { Model: "Huawei TE40" } }, deviceSettings: { fields: { telnet: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enabletelnet" }, http: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:enable_http" }, snmpV2: { status: "protocol_required", value: null } } } };
+    const payload = { ok: true, adapterKey: "vcs/huawei/te20-legacy", webBlocks: { "Device Info": { Model: "Huawei TE20" } }, deviceSettings: { fields: { telnet: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enabletelnet" }, http: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:enable_http" }, snmpV2: { status: "not_exposed", value: null, reason: "version_not_supported" }, wifi: { status: "not_exposed", value: null, reason: "capability_absent" }, autoUpdate: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:isenableautoupgrade" }, autoAnswer: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:autoreply" }, ntp: { status: "read", value: { enabled: true, modeCode: 1, server: "ntp.example.test" }, source: "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" } } } };
     candidate.pollingResults = [{ id: "audit-1", filename: "192.0.2.40.json", filenameIp: "192.0.2.40", internalIp: "192.0.2.40", matchStatus: "unmatched", capturedAt: "2026-10-01T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection(payload) }];
     const report = api.buildDeviceSettingsAuditRows(list, candidate);
     assert(report.ok, report.errors?.join("; "));
@@ -2103,7 +2103,11 @@
     assertEqual(report.headers[headers.indexOf("Telnet/HTTP") + 2], "HTTP, факт");
     assertEqual(report.rows[0][report.headers.indexOf("Telnet, факт")], "Отключено");
     assertEqual(report.rows[0][report.headers.indexOf("HTTP, факт")], "Включено");
-    assertEqual(report.rows[0][report.headers.indexOf("SNMP v2, факт")], "Нет данных");
+    assertEqual(report.rows[0][report.headers.indexOf("SNMP v2, факт")], "Не поддерживается (не используется)");
+    assertEqual(report.rows[0][report.headers.indexOf("Wi-Fi, факт")], "Отсутствует (отключено)");
+    assertEqual(report.rows[0][report.headers.indexOf("Автообновление, факт")], "Отключено");
+    assertEqual(report.rows[0][report.headers.indexOf("Автодозвон, факт")], "Отключено");
+    assert(report.rows[0][report.headers.indexOf("NTP, факт")].includes("ntp.example.test"));
     assertEqual(report.rows[0][report.headers.indexOf("Локальная камера")], "Да");
     assertEqual(report.rows[0][report.headers.indexOf("Работы проведены")], "Нет");
     const exported = api.buildDeviceSettingsAuditXlsx(list, candidate);
@@ -2112,9 +2116,9 @@
     assertEqual(global.XLSX.utils.sheet_to_json(sheet, { header: 1 })[1][report.headers.indexOf("HTTP, факт")], "Включено");
     const forged = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { http: { status: "read", value: "disabled", source: "unapproved-endpoint" } } } });
     assert(!forged.deviceSettings?.fields?.http);
-    candidate.pollingResults[0].normalizedData.adapterKey = "vcs/huawei/te20-legacy";
-    assertEqual(api.buildDeviceSettingsAuditRows(list, candidate).rows[0][report.headers.indexOf("HTTP, факт")], "Нет данных");
     candidate.pollingResults[0].normalizedData.adapterKey = "vcs/huawei/te-family";
+    assertEqual(api.buildDeviceSettingsAuditRows(list, candidate).rows[0][report.headers.indexOf("HTTP, факт")], "Нет данных");
+    candidate.pollingResults[0].normalizedData.adapterKey = "vcs/huawei/te20-legacy";
     candidate.pollingResults.push({ id: "audit-2", filename: "192.0.2.40.json", filenameIp: "192.0.2.40", internalIp: "192.0.2.40", matchStatus: "unmatched", capturedAt: "2026-10-02T10:00:00Z", parseStatus: "parsed", operationalStatus: "authorization_error", normalizedData: api.pollingPayloadProjection(payload) });
     assertEqual(api.buildDeviceSettingsAuditRows(list, candidate).rows[0][report.headers.indexOf("HTTP, факт")], "Нет данных");
     candidate.pollingResults[1].operationalStatus = "success";

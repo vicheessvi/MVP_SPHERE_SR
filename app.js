@@ -1362,20 +1362,36 @@
     const settingKeys = ["telnet", "http", "snmpV2", "autoUpdate", "autoAnswer", "ntp", "wifi", "ssh", "powerManagement"];
     const suppliedSettings = getCaseInsensitive(payload, "deviceSettings");
     const suppliedFields = getCaseInsensitive(suppliedSettings, "fields");
+    const te20SettingsConfirmed = projected.adapterKey === "vcs/huawei/te20-legacy"
+      && auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")) === "te20";
     const projectedFields = {};
     const approvedReadSources = {
       telnet: new Set(["WEB_GetCfgParamAPI:enabletelnet", "managementActions.after.telnetPort23"]),
-      http: new Set(["WEB_GetCfgParamAPI:enable_http", "POST /v1/om/config:enable_http", "managementActions.after.httpPort80"])
+      http: new Set(["WEB_GetCfgParamAPI:enable_http", "POST /v1/om/config:enable_http", "managementActions.after.httpPort80"]),
+      ssh: new Set(["WEB_GetCfgParamAPI:enable_ssh"]),
+      autoUpdate: new Set(["WEB_GetCfgParamAPI:isenableautoupgrade"]),
+      autoAnswer: new Set(["WEB_GetCfgParamAPI:autoreply"])
     };
     for (const key of settingKeys) {
       const supplied = getCaseInsensitive(suppliedFields, key);
       const status = normalizeText(getCaseInsensitive(supplied, "status"));
       const value = getCaseInsensitive(supplied, "value");
       const source = String(getCaseInsensitive(supplied, "source") || "");
-      if (status === "read" && approvedReadSources[key]?.has(source) && ["enabled", "disabled"].includes(value)) {
+      if (status === "read" && approvedReadSources[key]?.has(source) && ["enabled", "disabled"].includes(value)
+        && (["telnet", "http"].includes(key) || te20SettingsConfirmed)) {
         projectedFields[key] = { status: "read", value, source };
+      } else if (status === "read" && te20SettingsConfirmed && key === "ntp" && source === "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
+        projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, server: value.server }, source };
+      } else if (status === "read" && te20SettingsConfirmed && key === "powerManagement" && source === "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot" && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && [0, 1].includes(value.scheduledRestartCode)) {
+        projectedFields[key] = { status: "read", value: { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, scheduledRestartCode: value.scheduledRestartCode }, source };
       } else if (["protocol_required", "unavailable", "not_exposed"].includes(status)) {
         projectedFields[key] = { status, value: null };
+        if (te20SettingsConfirmed && key === "snmpV2" && status === "not_exposed" && getCaseInsensitive(supplied, "reason") === "version_not_supported") {
+          projectedFields[key].reason = "version_not_supported";
+        }
+        if (te20SettingsConfirmed && key === "wifi" && status === "not_exposed" && getCaseInsensitive(supplied, "reason") === "capability_absent") {
+          projectedFields[key].reason = "capability_absent";
+        }
       }
     }
     if (getCaseInsensitive(payload, "ok") === true) {
@@ -2949,11 +2965,18 @@
     if (!result) return "Нет данных";
     const setting = getCaseInsensitive(getCaseInsensitive(result.normalizedData, "deviceSettings")?.fields, field);
     const status = normalizeText(getCaseInsensitive(setting, "status"));
-    if (status === "not_exposed") return "Не предоставлено интерфейсом";
+    if (status === "not_exposed") {
+      if (field === "snmpV2" && setting.reason === "version_not_supported") return "Не поддерживается (не используется)";
+      if (field === "wifi" && setting.reason === "capability_absent") return "Отсутствует (отключено)";
+      return "Не предоставлено интерфейсом";
+    }
     if (status !== "read") return "Нет данных";
     const value = getCaseInsensitive(setting, "value");
     if (value === "enabled") return "Включено";
     if (value === "disabled") return "Отключено";
+    if (field === "ntp" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string") {
+      return `${value.enabled ? "Включено" : "Отключено"}; тип: код ${value.modeCode}; сервер: ${value.server || "не указан"}`;
+    }
     return typeof value === "string" && value.trim() ? value.trim() : "Нет данных";
   }
 

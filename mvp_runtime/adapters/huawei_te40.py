@@ -72,6 +72,10 @@ TE20_TLS_PROFILE = "huawei_te20_tls11_exact"
 DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
 MANAGEMENT_ACTION_MARKERS = ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "enabletelnet", "enable_http")
 MANAGEMENT_CONFIG_IDS = ("enabletelnet", "enable_http")
+TE20_READONLY_SETTING_IDS = (
+    "enable_ssh", "isenableautoupgrade", "synSerTime", "ntpGetMode",
+    "timeServer", "sleepTime", "enableTimeReboot", "autoreply",
+)
 MANAGEMENT_TARGET_VALUES_BY_MODEL = {
     "te20": {"enabletelnet": 0, "enable_http": 0},
     "te30": {"enabletelnet": 0, "enable_http": 1},
@@ -318,13 +322,71 @@ def _safe_management_state(planned_model: str, values: dict[str, int]) -> dict[s
     }
 
 
+def _exact_config_items(data: Any, ids: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise HuaweiContractError("configuration_schema_unconfirmed")
+    found = {key: data[key] for key in ids if key in data}
+    for collection_name in ("CfgItemInt", "CfgItemString"):
+        collection = data.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if isinstance(item, dict) and item.get("CfgItemID") in ids and "CfgItemInfo" in item:
+                found[item["CfgItemID"]] = item["CfgItemInfo"]
+    return found
+
+
+def _read_te20_extra_settings(
+    settings: dict[str, Any], bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> None:
+    if not all(marker in bundle_text for marker in ("WEB_GetCfgParamAPI", *TE20_READONLY_SETTING_IDS)):
+        return
+    try:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": list(TE20_READONLY_SETTING_IDS), "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_read_failed")
+        values = _exact_config_items(data, TE20_READONLY_SETTING_IDS)
+    except Exception:
+        for key in ("ssh", "autoUpdate", "ntp", "powerManagement", "autoAnswer"):
+            settings["fields"][key] = {"status": "unavailable", "value": None}
+        return
+    fields = settings["fields"]
+    for key, config_id in (("ssh", "enable_ssh"), ("autoUpdate", "isenableautoupgrade")):
+        if config_id in values:
+            fields[key] = binary_setting(values[config_id], f"WEB_GetCfgParamAPI:{config_id}")
+    if "autoreply" in values:
+        fields["autoAnswer"] = binary_setting(values["autoreply"], "WEB_GetCfgParamAPI:autoreply", disabled_value=1)
+    ntp_enabled = values.get("synSerTime")
+    ntp_mode = values.get("ntpGetMode")
+    ntp_server = values.get("timeServer")
+    if type(ntp_enabled) is int and ntp_enabled in (0, 1) and type(ntp_mode) is int and ntp_mode in (0, 1) and isinstance(ntp_server, str) and len(ntp_server) <= 255 and not any(ord(char) < 32 for char in ntp_server):
+        fields["ntp"] = {
+            "status": "read", "value": {"enabled": bool(ntp_enabled), "modeCode": ntp_mode, "server": ntp_server},
+            "source": "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer",
+        }
+    sleep_time = values.get("sleepTime")
+    scheduled = values.get("enableTimeReboot")
+    if type(sleep_time) is int and 0 <= sleep_time <= 100000 and type(scheduled) is int and scheduled in (0, 1):
+        fields["powerManagement"] = {
+            "status": "read", "value": {"sleepMode": "never" if sleep_time == 0 else "interval", "sleepTimeCode": sleep_time, "scheduledRestartCode": scheduled},
+            "source": "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot",
+        }
+
+
 def _read_device_settings(
     planned_model: str,
     bundle_text: str,
     csrf_token: str,
     action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+    resources: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    settings = unknown_device_settings(planned_model.upper())
+    settings = unknown_device_settings(planned_model.upper(), not_exposed=("snmpV2",) if planned_model == TE20_MODEL else ())
+    if planned_model == TE20_MODEL:
+        settings["fields"]["snmpV2"]["reason"] = "version_not_supported"
+        wifi_capability = ((resources or {}).get("termSpecs") or {}).get("EnableWifi")
+        if type(wifi_capability) is int and wifi_capability == 0:
+            settings["fields"]["wifi"] = {"status": "not_exposed", "value": None, "reason": "capability_absent"}
     if not all(marker in bundle_text for marker in MANAGEMENT_ACTION_MARKERS):
         return settings
     try:
@@ -340,6 +402,8 @@ def _read_device_settings(
     except Exception:
         settings["fields"]["telnet"] = {"status": "unavailable", "value": None}
         settings["fields"]["http"] = {"status": "unavailable", "value": None}
+    if planned_model == TE20_MODEL:
+        _read_te20_extra_settings(settings, bundle_text, csrf_token, action)
     return settings
 
 
@@ -593,12 +657,19 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         management_actions.append(_disable_insecure_management_services(planned_model, bundle_text, csrf_token, action, settle))
     verified_action = next((item for item in management_actions if item.get("status") in {"applied", "already_compliant"}), None)
     if verified_action:
-        device_settings = unknown_device_settings(planned_model.upper())
+        device_settings = unknown_device_settings(planned_model.upper(), not_exposed=("snmpV2",) if planned_model == TE20_MODEL else ())
+        if planned_model == TE20_MODEL:
+            device_settings["fields"]["snmpV2"]["reason"] = "version_not_supported"
+            wifi_capability = (resources.get("termSpecs") or {}).get("EnableWifi")
+            if type(wifi_capability) is int and wifi_capability == 0:
+                device_settings["fields"]["wifi"] = {"status": "not_exposed", "value": None, "reason": "capability_absent"}
         after = verified_action["after"]
         for key, action_key in (("telnet", "telnetPort23"), ("http", "httpPort80")):
             device_settings["fields"][key] = {"status": "read", "value": after[action_key], "source": f"managementActions.after.{action_key}"}
+        if planned_model == TE20_MODEL:
+            _read_te20_extra_settings(device_settings, bundle_text, csrf_token, action)
     else:
-        device_settings = _read_device_settings(planned_model, bundle_text, csrf_token, action)
+        device_settings = _read_device_settings(planned_model, bundle_text, csrf_token, action, resources)
     safe_resources = sanitize_result(resources)
     result = {
         **base,

@@ -4,7 +4,8 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, TE20_TLS_PROFILE, HuaweiTransportError, _https_context, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, TE20_TLS_PROFILE, HuaweiTransportError, _https_context, _read_te20_extra_settings, _read_device_settings, TE20_READONLY_SETTING_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.device_settings import unknown_device_settings
 from mvp_runtime.redaction import sanitize_result
 
 
@@ -31,6 +32,49 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
+    def test_te20_wifi_capability_absent_is_not_exposed_but_other_firmware_remains_unknown(self):
+        def action(_name, _payload):
+            return {"success": 1}, {"CfgItemInt": [
+                {"CfgItemID": "enabletelnet", "CfgItemInfo": 0},
+                {"CfgItemID": "enable_http", "CfgItemInfo": 0},
+            ]}
+
+        bundle = " ".join(MANAGEMENT_ACTION_MARKERS)
+        absent = _read_device_settings("te20", bundle, "SYNTHETIC-CSRF", action, {"termSpecs": {"EnableWifi": 0}})
+        capable = _read_device_settings("te20", bundle, "SYNTHETIC-CSRF", action, {"termSpecs": {"EnableWifi": 1}})
+        self.assertEqual(absent["fields"]["wifi"], {"status": "not_exposed", "value": None, "reason": "capability_absent"})
+        self.assertEqual(capable["fields"]["wifi"], {"status": "protocol_required", "value": None})
+
+    def test_te20_confirmed_readonly_settings_and_ntp_server(self):
+        settings = unknown_device_settings("TE20")
+        calls = []
+
+        def action(name, payload):
+            calls.append((name, payload))
+            return {"success": 1}, {
+                "CfgItemInt": [
+                    {"CfgItemID": "enable_ssh", "CfgItemInfo": 1},
+                    {"CfgItemID": "isenableautoupgrade", "CfgItemInfo": 0},
+                    {"CfgItemID": "synSerTime", "CfgItemInfo": 1},
+                    {"CfgItemID": "ntpGetMode", "CfgItemInfo": 1},
+                    {"CfgItemID": "sleepTime", "CfgItemInfo": 0},
+                    {"CfgItemID": "enableTimeReboot", "CfgItemInfo": 0},
+                    {"CfgItemID": "autoreply", "CfgItemInfo": 1},
+                ],
+                "CfgItemString": [{"CfgItemID": "timeServer", "CfgItemInfo": "ntp.example.test"}],
+            }
+
+        _read_te20_extra_settings(settings, "WEB_GetCfgParamAPI " + " ".join(TE20_READONLY_SETTING_IDS), "SYNTHETIC-CSRF", action)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "WEB_GetCfgParamAPI")
+        self.assertEqual(calls[0][1]["CfgIDString"], list(TE20_READONLY_SETTING_IDS))
+        self.assertEqual(settings["fields"]["ssh"]["value"], "enabled")
+        self.assertEqual(settings["fields"]["autoUpdate"]["value"], "disabled")
+        self.assertEqual(settings["fields"]["ntp"]["value"], {"enabled": True, "modeCode": 1, "server": "ntp.example.test"})
+        self.assertEqual(settings["fields"]["powerManagement"]["value"]["sleepMode"], "never")
+        self.assertEqual(settings["fields"]["autoAnswer"]["value"], "disabled")
+        self.assertEqual(settings["fields"]["wifi"]["status"], "protocol_required")
+
     def success_request(self, calls, overrides=None, terminal_model="TE40", configuration=None, persist_save=True, preauth_legacy=False):
         resources = synthetic_resources(terminal_model)
         overrides = overrides or {}
@@ -173,6 +217,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["vendorPolling"]["contract"], "huawei-te20-web-cgi-v1")
         self.assertEqual(result["webBlocks"]["Device Info"]["Model"], "Huawei TE20")
+        self.assertEqual(result["deviceSettings"]["fields"]["snmpV2"], {"status": "not_exposed", "value": None, "reason": "version_not_supported"})
         self.assertEqual(result["siteName"], {"status": "protocol_required", "value": None})
         self.assertTrue(all(item["tls_profile"] == TE20_TLS_PROFILE for item in calls))
         self.assertEqual(result["managementActions"][0]["status"], "applied")
