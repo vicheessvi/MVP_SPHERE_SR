@@ -236,7 +236,7 @@
       transport: "huawei_te20_web_cgi_v1",
       normalizerKey: "huawei-te-json-v1",
       credentialMode: "memory_xlsx_pool",
-      managementTasks: Object.freeze(["disable_insecure_management_services"])
+      managementTasks: Object.freeze(["disable_insecure_management_services", "set_te20_auto_answer_automatic", "set_te20_auto_answer_manual"])
     }),
     ...["te30", "te40", "te50", "te60"].map((modelNormalized) => Object.freeze({
       key: "vcs/huawei/te-family",
@@ -1381,9 +1381,13 @@
         && (["telnet", "http"].includes(key) || te20SettingsConfirmed)) {
         projectedFields[key] = { status: "read", value, source };
       } else if (status === "read" && te20SettingsConfirmed && key === "ntp" && source === "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
-        projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, server: value.server }, source };
-      } else if (status === "read" && te20SettingsConfirmed && key === "powerManagement" && source === "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot" && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && [0, 1].includes(value.scheduledRestartCode)) {
-        projectedFields[key] = { status: "read", value: { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, scheduledRestartCode: value.scheduledRestartCode }, source };
+        projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, mode: value.modeCode === 1 ? "manual" : "automatic", server: value.server }, source };
+      } else if (status === "read" && te20SettingsConfirmed && key === "powerManagement" && ["WEB_GetCfgParamAPI:sleepTime,enableTimeReboot", "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot,suppotReboot,rebootHour,rebootMinute"].includes(source) && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && [0, 1].includes(value.scheduledRestartCode)) {
+        const projectedPower = { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, scheduledRestartCode: value.scheduledRestartCode };
+        if (source.endsWith("suppotReboot,rebootHour,rebootMinute") && typeof value.shutdownRestartEnabled === "boolean" && Number.isInteger(value.restartHour) && value.restartHour >= 0 && value.restartHour <= 23 && Number.isInteger(value.restartMinute) && value.restartMinute >= 0 && value.restartMinute <= 59) {
+          Object.assign(projectedPower, { shutdownRestartEnabled: value.shutdownRestartEnabled, restartHour: value.restartHour, restartMinute: value.restartMinute });
+        }
+        projectedFields[key] = { status: "read", value: projectedPower, source };
       } else if (["protocol_required", "unavailable", "not_exposed"].includes(status)) {
         projectedFields[key] = { status, value: null };
         if (te20SettingsConfirmed && key === "snmpV2" && status === "not_exposed" && getCaseInsensitive(supplied, "reason") === "version_not_supported") {
@@ -2034,6 +2038,8 @@
   const POLLING_SELECTION_MODE_FILTERS = "filters";
   const POLLING_SELECTION_MODE_SINGLE_IP = "single_ip";
   const MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES = "disable_insecure_management_services";
+  const MANAGEMENT_TASK_TE20_AUTO_ANSWER = "set_te20_auto_answer_automatic";
+  const MANAGEMENT_TASK_TE20_MANUAL_ANSWER = "set_te20_auto_answer_manual";
 
   function pollingCategoryOrder(category) {
     const item = EQUIPMENT_CATEGORY_CATALOG.find((candidate) => candidate.id === category);
@@ -2210,7 +2216,12 @@
     if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить введённые учётные данные");
     if (!projection.supportedDevices.length) errors.push("Среди выбранных устройств нет оборудования с поддерживаемым автоматическим опросом");
     const managementTasks = input.disableInsecureManagementServices === true ? [MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES] : [];
-    if (managementTasks.length && !projection.managementEligibleDevices.length) errors.push("Среди выбранных устройств нет точной модели Huawei с поддержкой выбранной задачи управления HTTP/Telnet");
+    if (input.te20AnswerMode === "automatic" || input.setTe20AutoAnswerAutomatic === true) managementTasks.push(MANAGEMENT_TASK_TE20_AUTO_ANSWER);
+    if (input.te20AnswerMode === "manual") managementTasks.push(MANAGEMENT_TASK_TE20_MANUAL_ANSWER);
+    if (managementTasks.length > 1) errors.push("Запускайте изменение Answer mode отдельно от других задач управления");
+    const answerTask = managementTasks.find((task) => [MANAGEMENT_TASK_TE20_AUTO_ANSWER, MANAGEMENT_TASK_TE20_MANUAL_ANSWER].includes(task));
+    if (answerTask && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], answerTask) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Изменение Answer mode доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
+    if (managementTasks.includes(MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES) && !projection.managementEligibleDevices.length) errors.push("Среди выбранных устройств нет точной модели Huawei с поддержкой выбранной задачи управления HTTP/Telnet");
     if (errors.length) return { ok: false, state: deepClone(currentState), projection, errors };
     let next = deepClone(currentState);
     const plan = {
@@ -2975,7 +2986,7 @@
     if (value === "enabled") return "Включено";
     if (value === "disabled") return "Отключено";
     if (field === "ntp" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string") {
-      return `${value.enabled ? "Включено" : "Отключено"}; тип: код ${value.modeCode}; сервер: ${value.server || "не указан"}`;
+      return `${value.enabled ? "Включено" : "Отключено"}; тип: ${value.modeCode === 1 ? "Вручную" : "Автоматически"}; сервер: ${value.server || "не указан"}`;
     }
     return typeof value === "string" && value.trim() ? value.trim() : "Нет данных";
   }
@@ -5341,7 +5352,7 @@
     pollingCancelRequested: false,
     pollingPlanResult: null,
     zeroIntervalAcknowledged: false,
-    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false },
+    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false, te20AnswerMode: "" },
     credentialSummary: null,
     adminAccess: launchMode.kind === "local" ? null : { adminConfigured: false, adminUnlocked: false },
     managementTargetListSummary: null,
@@ -6403,7 +6414,7 @@
             ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
             ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
           </div>` : `<div class="polling-ip-selector"><div class="field"><label for="polling-target-ip">IP-адрес</label><input id="polling-target-ip" name="ipAddress" data-polling-ip-input inputmode="decimal" autocomplete="off" placeholder="Например, 192.0.2.10" value="${escapeHtml(ui.pollingPlanSelection.ipAddress || "")}"></div><div data-polling-ip-result aria-live="polite">${renderPollingIpTarget(projection)}</div></div>`}
-          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><span class="field-label">Интервал между опросами устройств</span><div class="polling-interval-range"><label for="polling-interval-min">От, секунд<input id="polling-interval-min" name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMinSeconds ?? "0")}" required></label><label for="polling-interval-max">До, секунд<input id="polling-interval-max" name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMaxSeconds ?? "0")}" required></label></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Отключить HTTP и Telnet по возможностям модели</label>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Для Bar 310, Box 310 и Box 610 отключается только HTTP; управление Telnet не предоставлено web-интерфейсом. Фильтры используют отдельный список устройств.</p>` : ""}</div>
+          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><span class="field-label">Интервал между опросами устройств</span><div class="polling-interval-range"><label for="polling-interval-min">От, секунд<input id="polling-interval-min" name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMinSeconds ?? "0")}" required></label><label for="polling-interval-max">До, секунд<input id="polling-interval-max" name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMaxSeconds ?? "0")}" required></label></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Отключить HTTP и Telnet по возможностям модели</label><div class="field"><label>Answer mode Huawei TE20 (один IP)<select name="te20AnswerMode"><option value=""${!ui.pollingPlanSelection.te20AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.te20AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.te20AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Для Bar 310, Box 310 и Box 610 отключается только HTTP; управление Telnet не предоставлено web-интерфейсом. Фильтры используют отдельный список устройств.</p>` : ""}</div>
           <div class="warning-panel polling-zero-warning" data-zero-interval-warning role="alert"${zeroInterval ? "" : " hidden"}><strong>Опрос без интервалов</strong><p>При диапазоне 0–0 между опросами устройств не будет пауз. Следующий опрос начнётся сразу после сохранения результата предыдущего устройства.</p><label><input type="checkbox" name="confirmNoInterval" data-confirm-zero-interval${zeroInterval && ui.zeroIntervalAcknowledged ? " checked" : ""}> Подтверждаю запуск опроса без интервалов</label></div>
           <button class="button primary" type="submit" data-start-automatic-polling${pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor)) ? "" : " disabled"}>Сформировать и запустить опрос</button>
         </form>
@@ -7195,6 +7206,7 @@
       ui.pollingPlanSelection.intervalMaxSeconds = String(formData.get("intervalMaxSeconds") ?? "");
       ui.pollingPlanSelection.allowInsecureTls = formData.get("allowInsecureTls") === "on";
       ui.pollingPlanSelection.disableInsecureManagementServices = formData.get("disableInsecureManagementServices") === "on";
+      ui.pollingPlanSelection.te20AnswerMode = ["automatic", "manual"].includes(formData.get("te20AnswerMode")) ? String(formData.get("te20AnswerMode")) : "";
       ui.zeroIntervalAcknowledged = isZeroIntervalRange(ui.pollingPlanSelection) && formData.get("confirmNoInterval") === "on";
       if (isZeroIntervalRange(ui.pollingPlanSelection) && !ui.zeroIntervalAcknowledged) { setMessage("Подтвердите запуск опроса без интервалов между устройствами.", "warning"); render(); return; }
       if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
@@ -7202,6 +7214,7 @@
       const result = createPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [], managementTargetSourceSha256: managementTargetListSession?.sourceSha256 || "", credentialsReady: Boolean(credentialPoolSession?.sourceSha256), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
       if (ui.pollingPlanSelection.disableInsecureManagementServices && !global.confirm(`Для точных Huawei TE20/TE30/TE40/TE50/TE60 будут применены подтверждённые настройки HTTP и Telnet; для Bar 310, Box 310 и Box 610 — только HTTP. Отсутствующее управление Telnet на моделях 310 будет отмечено в результате без изменения настройки. HTTP-запись на Box 310/610 ещё не проверена на реальном устройстве: сначала проверьте одну точную модель по IP. Поддерживается целей: ${result.plan.selectionSummary.managementEligible}; будет пропущено: ${result.plan.selectionSummary.managementSkipped}. Продолжить?`)) return;
+      if (ui.pollingPlanSelection.te20AnswerMode && !global.confirm(`На выбранном Huawei TE20 будет установлен режим Answer mode «${ui.pollingPlanSelection.te20AnswerMode === "automatic" ? "Автоматически" : "Вручную"}». Это изменит обработку входящих вызовов. Будет выполнено повторное чтение после записи. Продолжить?`)) return;
       ui.pollingPlanResult = { ...result.plan.selectionSummary, planId: result.plan.id };
       if (!commitState(result.state, `План сформирован: ${result.plan.selectionSummary.implemented} устройств готовы для автоматического опроса.`)) return;
       try {
@@ -7599,6 +7612,10 @@
 
   async function handleChange(event) {
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
+    if (pollingPlanForm && event.target.name === "te20AnswerMode") {
+      ui.pollingPlanSelection.te20AnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
+      return;
+    }
     if (pollingPlanForm && event.target.name === "confirmNoInterval") {
       ui.zeroIntervalAcknowledged = event.target.checked === true && isZeroIntervalRange(ui.pollingPlanSelection);
       syncZeroIntervalConsent(pollingPlanForm);

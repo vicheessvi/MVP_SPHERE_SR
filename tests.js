@@ -363,7 +363,7 @@
     });
     assertEqual(te20.support, "implemented");
     assertEqual(te20.transport, "huawei_te20_web_cgi_v1");
-    assertEqual(te20.managementTasks.join(","), "disable_insecure_management_services");
+    assertEqual(te20.managementTasks.join(","), "disable_insecure_management_services,set_te20_auto_answer_automatic,set_te20_auto_answer_manual");
     assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === "te20").length, 2);
     bar310Aliases.forEach((item) => {
       assertEqual(item.support, "implemented");
@@ -2116,6 +2116,9 @@
     assertEqual(report.rows[0][report.headers.indexOf("Автообновление, факт")], "Отключено");
     assertEqual(report.rows[0][report.headers.indexOf("Автодозвон, факт")], "Отключено");
     assert(report.rows[0][report.headers.indexOf("NTP, факт")].includes("ntp.example.test"));
+    assert(report.rows[0][report.headers.indexOf("NTP, факт")].includes("Вручную"));
+    const powerProjection = api.pollingPayloadProjection({ ok: true, adapterKey: "vcs/huawei/te20-legacy", webBlocks: { "Device Info": { Model: "Huawei TE20" } }, deviceSettings: { fields: { powerManagement: { status: "read", source: "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot,suppotReboot,rebootHour,rebootMinute", value: { sleepMode: "never", sleepTimeCode: 0, scheduledRestartCode: 0, shutdownRestartEnabled: false, restartHour: 4, restartMinute: 0 } } } } });
+    assertEqual(powerProjection.deviceSettings.fields.powerManagement.value.shutdownRestartEnabled, false);
     assertEqual(report.rows[0][report.headers.indexOf("Локальная камера")], "Да");
     assertEqual(report.rows[0][report.headers.indexOf("Работы проведены")], "Нет");
     const exported = api.buildDeviceSettingsAuditXlsx(list, candidate);
@@ -2137,6 +2140,26 @@
     assertEqual(legacy.deviceSettings.fields.telnet.value, "disabled");
     const unverified = api.pollingPayloadProjection({ ok: false, adapterKey: "vcs/huawei/te-family", managementActions: [{ id: "disable_insecure_management_services", status: "failed", after: { httpPort80: "disabled" } }] });
     assert(!unverified.deviceSettings);
+  });
+
+  test("Включение автоответа TE20 создаёт только отдельный план одного IP", () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = [{ id: "te20-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE20", modelNormalized: "te20", ipNormalized: "192.0.2.20", inCurrentSr: true }];
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    const input = { mode: "single_ip", ipAddress: "192.0.2.20", scheduledAt: "2026-10-30T12:00:00Z", intervalMinSeconds: 0, intervalMaxSeconds: 0, credentialsReady: true, credentialSourceSha256: "b".repeat(64), te20AnswerMode: "automatic" };
+    const accepted = api.createPollingPlan(state, input);
+    assert(accepted.ok, accepted.errors?.join("; "));
+    assertEqual(accepted.plan.managementTasks.join(","), "set_te20_auto_answer_automatic");
+    assertEqual(accepted.plan.targetSource, "sr");
+    const manual = api.createPollingPlan(state, { ...input, te20AnswerMode: "manual" });
+    assert(manual.ok, manual.errors?.join("; "));
+    assertEqual(manual.plan.managementTasks.join(","), "set_te20_auto_answer_manual");
+    assert(!api.createPollingPlan(state, { ...input, mode: "filters" }).ok);
+    assert(!api.createPollingPlan(state, { ...input, disableInsecureManagementServices: true }).ok);
+    const wrong = api.createDemoState();
+    wrong.inventoryDevices = [{ ...state.inventoryDevices[0], modelRaw: "TE40", modelNormalized: "te40" }];
+    wrong.srImports = state.srImports;
+    assert(!api.createPollingPlan(wrong, input).ok);
   });
 
   test("Галочка переключает доменный каскад и точный IP с SR на отдельный список", () => {

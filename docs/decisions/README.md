@@ -20,5 +20,6 @@ ADR фиксируют значимые решения, их контекст, �
 - `ADR-0014-python-runtime-migration.md` — актуальный Python 3.11+ standard-library runtime и удаление Node/PowerShell production path.
 - `ADR-0034-device-settings-audit-read-boundary.md` — локальная сверка настроек и отделение read-only опроса от будущих изменений.
 - `ADR-0035-first-run-plan-access.md` — первичная настройка доступа к плану и серверная проверка в локальном Python runtime.
+- `ADR-0036-te20-auto-answer-action.md` — отдельные проверенные задачи установки автоматического и ручного ответа exact Huawei TE20.
 
 Новый ADR нужен при изменении trust boundary, bind address, способа хранения ключа/секретов, подключении внешнего сервиса, реального vendor transport или новой роли.

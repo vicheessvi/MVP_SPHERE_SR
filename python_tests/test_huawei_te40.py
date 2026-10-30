@@ -4,7 +4,7 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, TE20_TLS_PROFILE, HuaweiTransportError, _https_context, _read_te20_extra_settings, _read_device_settings, TE20_READONLY_SETTING_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, TE20_TLS_PROFILE, HuaweiTransportError, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.adapters.device_settings import unknown_device_settings
 from mvp_runtime.redaction import sanitize_result
 
@@ -32,6 +32,49 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
+    def test_te20_auto_answer_write_is_separate_minimal_and_verified(self):
+        calls = []
+        answers = iter((1, 0))
+
+        def action(name, payload):
+            calls.append((name, payload))
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"CfgItemInt": [{"CfgItemID": "autoreply", "CfgItemInfo": next(answers)}]}
+            return {"success": 1}, {}
+
+        result = _set_te20_auto_answer_automatic("WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply", "SYNTHETIC-CSRF", action)
+        self.assertEqual(result["id"], SET_TE20_AUTO_ANSWER_ACTION)
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(result["after"], "automatic")
+        writes = [payload for name, payload in calls if name == "WEB_SaveCfgParamAPI"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0]["CfgItemInt"], [{"CfgItemID": "autoreply", "CfgItemInfo": 0}])
+        self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "WEB_GetCfgParamAPI"])
+
+        no_write = []
+        def already(name, payload):
+            no_write.append(name)
+            return {"success": 1}, {"autoreply": 0}
+        self.assertEqual(_set_te20_auto_answer_automatic("WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply", "SYNTHETIC-CSRF", already)["status"], "already_compliant")
+        self.assertEqual(no_write, ["WEB_GetCfgParamAPI"])
+
+        def unknown(name, payload):
+            return {"success": 1}, {"autoreply": 2}
+        self.assertEqual(_set_te20_auto_answer_automatic("WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply", "SYNTHETIC-CSRF", unknown)["safeError"], "configuration_schema_unconfirmed")
+
+        manual_calls = []
+        manual_values = iter((0, 1))
+        def set_manual(name, payload):
+            manual_calls.append((name, payload))
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"autoreply": next(manual_values)}
+            return {"success": 1}, {}
+        manual_result = _set_te20_auto_answer_manual("WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply", "SYNTHETIC-CSRF", set_manual)
+        self.assertEqual(manual_result["id"], SET_TE20_MANUAL_ANSWER_ACTION)
+        self.assertEqual(manual_result["status"], "applied")
+        self.assertEqual(manual_result["after"], "manual")
+        self.assertEqual([payload for name, payload in manual_calls if name == "WEB_SaveCfgParamAPI"][0]["CfgItemInt"], [{"CfgItemID": "autoreply", "CfgItemInfo": 1}])
+
     def test_te20_wifi_capability_absent_is_not_exposed_but_other_firmware_remains_unknown(self):
         def action(_name, _payload):
             return {"success": 1}, {"CfgItemInt": [
@@ -51,6 +94,12 @@ class HuaweiTe40Tests(unittest.TestCase):
 
         def action(name, payload):
             calls.append((name, payload))
+            if payload["CfgIDString"] == list(TE20_POWER_DETAIL_IDS):
+                return {"success": 1}, {"CfgItemInt": [
+                    {"CfgItemID": "suppotReboot", "CfgItemInfo": 0},
+                    {"CfgItemID": "rebootHour", "CfgItemInfo": 4},
+                    {"CfgItemID": "rebootMinute", "CfgItemInfo": 0},
+                ]}
             return {"success": 1}, {
                 "CfgItemInt": [
                     {"CfgItemID": "enable_ssh", "CfgItemInfo": 1},
@@ -64,14 +113,16 @@ class HuaweiTe40Tests(unittest.TestCase):
                 "CfgItemString": [{"CfgItemID": "timeServer", "CfgItemInfo": "ntp.example.test"}],
             }
 
-        _read_te20_extra_settings(settings, "WEB_GetCfgParamAPI " + " ".join(TE20_READONLY_SETTING_IDS), "SYNTHETIC-CSRF", action)
-        self.assertEqual(len(calls), 1)
+        _read_te20_extra_settings(settings, "WEB_GetCfgParamAPI " + " ".join((*TE20_READONLY_SETTING_IDS, *TE20_POWER_DETAIL_IDS)), "SYNTHETIC-CSRF", action)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][0], "WEB_GetCfgParamAPI")
         self.assertEqual(calls[0][1]["CfgIDString"], list(TE20_READONLY_SETTING_IDS))
         self.assertEqual(settings["fields"]["ssh"]["value"], "enabled")
         self.assertEqual(settings["fields"]["autoUpdate"]["value"], "disabled")
-        self.assertEqual(settings["fields"]["ntp"]["value"], {"enabled": True, "modeCode": 1, "server": "ntp.example.test"})
+        self.assertEqual(settings["fields"]["ntp"]["value"], {"enabled": True, "modeCode": 1, "mode": "manual", "server": "ntp.example.test"})
         self.assertEqual(settings["fields"]["powerManagement"]["value"]["sleepMode"], "never")
+        self.assertEqual(settings["fields"]["powerManagement"]["value"]["shutdownRestartEnabled"], False)
+        self.assertEqual(settings["fields"]["powerManagement"]["value"]["restartHour"], 4)
         self.assertEqual(settings["fields"]["autoAnswer"]["value"], "disabled")
         self.assertEqual(settings["fields"]["wifi"]["status"], "protocol_required")
 
@@ -206,6 +257,28 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertEqual(result["siteName"]["value"], "Synthetic TE20 Site")
         self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic TE20 Site")
         self.assertTrue(all(item["tls_profile"] == TE20_TLS_PROFILE for item in calls))
+
+    def test_te20_reads_site_name_from_confirmed_config_when_mailbox_subscription_absent(self):
+        calls = []
+        bundle = RESOURCE_MARKERS + " WEB_GetMailboxDataAPI 'sitename'"
+        original = self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True,
+            overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
+
+        def request(options):
+            if "ActionID=WEB_GetCfgParamAPI" in options["path"] and json.loads(options["body"]).get("CfgIDString") == ["sitename"]:
+                calls.append(options)
+                return envelope({"CfgItemString": [{"CfgItemID": "sitename", "CfgItemInfo": "Synthetic TE20 Site"}]})
+            return original(options)
+
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": request},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["siteName"], {"status": "read", "value": "Synthetic TE20 Site", "source": "huawei_cfg_sitename"})
+        self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic TE20 Site")
+        self.assertIn('"siteName"', json.dumps(result))
 
     def test_te20_uses_exact_tls11_legacy_preauth_and_guarded_management_action(self):
         calls = []

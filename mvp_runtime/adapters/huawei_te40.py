@@ -70,12 +70,15 @@ SUPPORTED_MODELS = frozenset({TE20_MODEL, *TE_FAMILY_MODELS})
 MANAGEMENT_SUPPORTED_MODELS = frozenset({"te20", "te30", "te40", "te50", "te60"})
 TE20_TLS_PROFILE = "huawei_te20_tls11_exact"
 DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
+SET_TE20_AUTO_ANSWER_ACTION = "set_te20_auto_answer_automatic"
+SET_TE20_MANUAL_ANSWER_ACTION = "set_te20_auto_answer_manual"
 MANAGEMENT_ACTION_MARKERS = ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "enabletelnet", "enable_http")
 MANAGEMENT_CONFIG_IDS = ("enabletelnet", "enable_http")
 TE20_READONLY_SETTING_IDS = (
     "enable_ssh", "isenableautoupgrade", "synSerTime", "ntpGetMode",
     "timeServer", "sleepTime", "enableTimeReboot", "autoreply",
 )
+TE20_POWER_DETAIL_IDS = ("suppotReboot", "rebootHour", "rebootMinute")
 MANAGEMENT_TARGET_VALUES_BY_MODEL = {
     "te20": {"enabletelnet": 0, "enable_http": 0},
     "te30": {"enabletelnet": 0, "enable_http": 1},
@@ -362,7 +365,7 @@ def _read_te20_extra_settings(
     ntp_server = values.get("timeServer")
     if type(ntp_enabled) is int and ntp_enabled in (0, 1) and type(ntp_mode) is int and ntp_mode in (0, 1) and isinstance(ntp_server, str) and len(ntp_server) <= 255 and not any(ord(char) < 32 for char in ntp_server):
         fields["ntp"] = {
-            "status": "read", "value": {"enabled": bool(ntp_enabled), "modeCode": ntp_mode, "server": ntp_server},
+            "status": "read", "value": {"enabled": bool(ntp_enabled), "modeCode": ntp_mode, "mode": "manual" if ntp_mode == 1 else "automatic", "server": ntp_server},
             "source": "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer",
         }
     sleep_time = values.get("sleepTime")
@@ -372,6 +375,35 @@ def _read_te20_extra_settings(
             "status": "read", "value": {"sleepMode": "never" if sleep_time == 0 else "interval", "sleepTimeCode": sleep_time, "scheduledRestartCode": scheduled},
             "source": "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot",
         }
+        if all(marker in bundle_text for marker in TE20_POWER_DETAIL_IDS):
+            try:
+                detail_outer, detail_data = action("WEB_GetCfgParamAPI", {"CfgIDString": list(TE20_POWER_DETAIL_IDS), "acCSRFToken": csrf_token})
+                if detail_outer.get("success") == 1:
+                    details = _exact_config_items(detail_data, TE20_POWER_DETAIL_IDS)
+                    shut_down = details.get("suppotReboot")
+                    hour = details.get("rebootHour")
+                    minute = details.get("rebootMinute")
+                    if type(shut_down) is int and shut_down in (0, 1) and type(hour) is int and 0 <= hour <= 23 and type(minute) is int and 0 <= minute <= 59:
+                        fields["powerManagement"]["value"].update({"shutdownRestartEnabled": bool(shut_down), "restartHour": hour, "restartMinute": minute})
+                        fields["powerManagement"]["source"] = "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot,suppotReboot,rebootHour,rebootMinute"
+            except Exception:
+                pass
+
+
+def _read_te20_site_name_config(
+    bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    if "WEB_GetCfgParamAPI" not in bundle_text or not re.search(r"['\"]sitename['\"]", bundle_text):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": ["sitename"], "acCSRFToken": csrf_token})
+        value = _exact_config_items(data, ("sitename",)).get("sitename") if outer.get("success") == 1 else None
+        if not isinstance(value, str) or not value.strip() or len(value) > 256 or any(ord(char) < 32 for char in value):
+            return {"status": "unavailable", "value": None}
+        return {"status": "read", "value": value, "source": "huawei_cfg_sitename"}
+    except Exception:
+        return {"status": "unavailable", "value": None}
 
 
 def _read_device_settings(
@@ -466,6 +498,62 @@ def _disable_insecure_management_services(
         if after is not None:
             failed["after"] = after
         return failed
+
+
+def _set_te20_answer_mode(
+    bundle_text: str,
+    csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+    target: int,
+) -> dict[str, Any]:
+    if type(target) is not int or target not in (0, 1):
+        raise ValueError("unsupported_answer_target")
+    action_id = SET_TE20_AUTO_ANSWER_ACTION if target == 0 else SET_TE20_MANUAL_ANSWER_ACTION
+    label = lambda value: "automatic" if value == 0 else "manual"
+    base = {"id": action_id, "transport": "https/443", "changed": False, "writeAttempted": False}
+    if not all(marker in bundle_text for marker in ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "autoreply")):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+
+    def read_value() -> int:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": ["autoreply"], "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_read_failed")
+        value = _exact_config_items(data, ("autoreply",)).get("autoreply")
+        if type(value) is not int or value not in (0, 1):
+            raise HuaweiContractError("configuration_schema_unconfirmed")
+        return value
+
+    before = None
+    write_attempted = False
+    try:
+        before = read_value()
+        if before == target:
+            return {**base, "status": "already_compliant", "before": label(target), "after": label(target)}
+        outer, _ = action("WEB_SaveCfgParamAPI", {
+            "CfgItemInt": [{"CfgItemID": "autoreply", "CfgItemInfo": target}],
+            "CfgItemString": [], "acCSRFToken": csrf_token,
+        })
+        write_attempted = True
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_write_failed")
+        after = read_value()
+        if after != target:
+            raise HuaweiContractError("configuration_verification_failed")
+        return {**base, "status": "applied", "changed": True, "writeAttempted": True, "before": label(before), "after": label(target)}
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        code = error.code if isinstance(error, HuaweiContractError) else _transport_code(error)
+        return {**base, "status": "failed", "writeAttempted": write_attempted, "safeError": code,
+                **({} if before is None else {"before": label(before)})}
+
+
+def _set_te20_auto_answer_automatic(bundle_text: str, csrf_token: str, action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]]) -> dict[str, Any]:
+    return _set_te20_answer_mode(bundle_text, csrf_token, action, 0)
+
+
+def _set_te20_auto_answer_manual(bundle_text: str, csrf_token: str, action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]]) -> dict[str, Any]:
+    return _set_te20_answer_mode(bundle_text, csrf_token, action, 1)
 
 
 def build_web_blocks(resources: dict[str, Any], ip: str) -> dict[str, Any]:
@@ -653,9 +741,15 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         }
     management_actions = []
     site_name = read_site_name(bundle_text, lambda name, payload: action(name, {**(payload or {}), "acCSRFToken": csrf_token}))
+    if planned_model == TE20_MODEL and site_name["status"] == "protocol_required":
+        site_name = _read_te20_site_name_config(bundle_text, csrf_token, action)
     if DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks:
         management_actions.append(_disable_insecure_management_services(planned_model, bundle_text, csrf_token, action, settle))
-    verified_action = next((item for item in management_actions if item.get("status") in {"applied", "already_compliant"}), None)
+    if planned_model == TE20_MODEL and SET_TE20_AUTO_ANSWER_ACTION in requested_management_tasks:
+        management_actions.append(_set_te20_auto_answer_automatic(bundle_text, csrf_token, action))
+    if planned_model == TE20_MODEL and SET_TE20_MANUAL_ANSWER_ACTION in requested_management_tasks:
+        management_actions.append(_set_te20_auto_answer_manual(bundle_text, csrf_token, action))
+    verified_action = next((item for item in management_actions if item.get("id") == DISABLE_INSECURE_SERVICES_ACTION and item.get("status") in {"applied", "already_compliant"}), None)
     if verified_action:
         device_settings = unknown_device_settings(planned_model.upper(), not_exposed=("snmpV2",) if planned_model == TE20_MODEL else ())
         if planned_model == TE20_MODEL:

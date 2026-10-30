@@ -16,6 +16,30 @@ HUAWEI_BOX610 = {"category": "vcs", "manufacturer": "Huawei", "model": "Box 610"
 
 
 class PollingTests(unittest.TestCase):
+    def test_te20_auto_answer_action_requires_one_exact_sr_ip_target(self) -> None:
+        plan = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "managementTasks": ["set_te20_auto_answer_automatic"], "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "single_ip"}}
+        for invalid in (
+            {**plan, "selection": {"mode": "filters"}},
+            {**plan, "targetSource": "port_closure_list"},
+            {**plan, "devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}, {**HUAWEI_TE20, "ip": "192.0.2.21"}]},
+            {**plan, "devices": [{**HUAWEI_MODELS[0], "ip": "192.0.2.20"}]},
+            {**plan, "managementTasks": ["set_te20_auto_answer_automatic", "disable_insecure_management_services"]},
+        ):
+            with self.assertRaises(PollingError):
+                run_plan(invalid, {"ping": lambda *_args: self.fail("network must not start")})
+        seen = []
+        result = run_plan(plan, {"ping": lambda *_args: {"ok": True, "durationMs": 1},
+                                 "get_credentials": lambda *_args: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
+                                 "adapters": {"huawei_te20_web_cgi_v1": lambda _device, _credentials, options: seen.append(options["management_tasks"]) or {"ok": True}}})
+        self.assertEqual(seen, [["set_te20_auto_answer_automatic"]])
+        self.assertTrue(result[0]["ok"])
+        manual_plan = {**plan, "managementTasks": ["set_te20_auto_answer_manual"]}
+        manual_result = run_plan(manual_plan, {"ping": lambda *_args: {"ok": True, "durationMs": 1},
+                                             "get_credentials": lambda *_args: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
+                                             "adapters": {"huawei_te20_web_cgi_v1": lambda _device, _credentials, options: seen.append(options["management_tasks"]) or {"ok": True}}})
+        self.assertEqual(seen[-1], ["set_te20_auto_answer_manual"])
+        self.assertTrue(manual_result[0]["ok"])
+
     def test_probe_requires_exact_ip_allowlist(self) -> None:
         with self.assertRaises(PollingError):
             probe_device({**SUPPORTED, "ip": "192.0.2.102"}, {"allowed_ips": {"192.0.2.100"}})

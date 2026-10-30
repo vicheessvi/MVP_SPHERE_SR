@@ -300,6 +300,18 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
         source_digest = str(plan.get("targetSourceSha256") or "").casefold()
         if plan.get("targetSource") != "port_closure_list" or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest):
             raise PollingError("Port-closure task requires a verified dedicated target list")
+    answer_tasks = {"set_te20_auto_answer_automatic", "set_te20_auto_answer_manual"}
+    requested_answer = answer_tasks.intersection(requested_management_tasks)
+    if requested_answer:
+        source_digest = str(plan.get("targetSourceSha256") or "").casefold()
+        selection = plan.get("selection") or {}
+        devices_for_action = plan["devices"]
+        if (len(requested_management_tasks) != 1 or plan.get("targetSource") != "sr"
+                or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest)
+                or not isinstance(selection, dict) or selection.get("mode") != "single_ip"
+                or len(devices_for_action) != 1
+                or not resolve_management_action(devices_for_action[0], next(iter(requested_answer))).get("supported")):
+            raise PollingError("TE20 answer-mode action requires one exact SR target selected by IP")
     devices = [dict(device) for device in plan["devices"]]
     ips = [normalize_ipv4(device.get("ipNormalized") or device.get("ip")) for device in devices]
     valid_ips = [ip for ip in ips if ip]

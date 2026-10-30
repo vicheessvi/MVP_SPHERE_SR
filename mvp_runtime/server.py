@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .catalog import CATALOG
+from .catalog import CATALOG, resolve_management_action
 from .admin_access import configured, create_verifier, default_verifier_path, verify
 from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_pairs, parse_credential_workbook
 from .polling import PollingError, normalize_ipv4, validate_plan_interval
@@ -326,6 +326,17 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
             if "disable_insecure_management_services" in management_tasks:
                 target_source_digest = str(plan.get("targetSourceSha256") or "").casefold()
                 if plan.get("targetSource") != "port_closure_list" or not re.fullmatch(r"[0-9a-f]{64}", target_source_digest):
+                    raise ValueError("plan_invalid")
+            answer_tasks = {"set_te20_auto_answer_automatic", "set_te20_auto_answer_manual"}
+            requested_answer = answer_tasks.intersection(management_tasks)
+            if requested_answer:
+                source_digest = str(plan.get("targetSourceSha256") or "").casefold()
+                selection = plan.get("selection") or {}
+                if (len(management_tasks) != 1 or plan.get("targetSource") != "sr"
+                        or not re.fullmatch(r"[0-9a-f]{64}", source_digest)
+                        or len(plan["devices"]) != 1 or not isinstance(selection, dict)
+                        or selection.get("mode") != "single_ip"
+                        or not resolve_management_action(plan["devices"][0], next(iter(requested_answer))).get("supported")):
                     raise ValueError("plan_invalid")
             valid_ips = []
             for device in plan["devices"]:

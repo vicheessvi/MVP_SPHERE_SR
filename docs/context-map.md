@@ -6,6 +6,8 @@
 - Требования и матрица доступного чтения: `specs/033-device-settings-audit/`.
 - Сеансовый XLSX-список, сопоставление с JSON и локальный отчёт: `app.js`; проверка: `tests.js`.
 - Поля JSON и подтверждённые read-only config-запросы: `mvp_runtime/adapters/device_settings.py`, `huawei_te40.py`, `huawei_bar310.py`; непроверенные поля явно отмечаются `protocol_required`.
+- Site name exact TE20: `mvp_runtime/adapters/huawei_te40.py` использует mailbox при полном контракте либо подтверждённый read-only `WEB_GetCfgParamAPI` fallback `sitename` после model/identity; синтетические тесты в `python_tests/test_huawei_te40.py`, решение ADR-0030.
+- Exact TE20 actions установки автоматического и ручного ответа: `mvp_runtime/adapters/huawei_te40.py`, `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `mvp_runtime/server.py`, `app.js`; только один IP из SR и отдельное подтверждение. Контракт: `specs/033-device-settings-audit/contracts/separate-setting-change.md`, решение: `docs/decisions/ADR-0036-te20-auto-answer-action.md`.
 - Справка: `product-catalog.js`; решение: `docs/decisions/ADR-0034-device-settings-audit-read-boundary.md`.
 - Изменение параметров требует отдельного подтверждения модельных контрактов; первый локальный вход реализован и ожидает эксплуатационной проверки на другом ПК.
 

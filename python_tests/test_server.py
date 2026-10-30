@@ -306,6 +306,13 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"], "plan_invalid")
 
+        for action_id in ("set_te20_auto_answer_automatic", "set_te20_auto_answer_manual"):
+            digest = self._upload_credentials(cookie, csrf)
+            invalid_answer_mode = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": [action_id], "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "filters"}, "devices": [{"ip": "192.0.2.40", "category": "vcs", "manufacturer": "Huawei", "model": "TE20"}]}
+            status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": invalid_answer_mode}).encode())
+            self.assertEqual(status, 400)
+            self.assertEqual(json.loads(body)["error"], "plan_invalid")
+
 
 if __name__ == "__main__":
     unittest.main()

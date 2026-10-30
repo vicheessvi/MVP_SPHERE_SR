@@ -11,6 +11,26 @@
       "models": ["TE20", "TE30", "TE40", "TE50", "TE60", "Bar 310", "CloudLink Bar 310", "CloudLinc Bar 310", "Box 310", "CloudLink Box 310", "CloudLinc Box 310", "Box 610", "CloudLink Box 610", "CloudLinc Box 610"],
       "protocolStatus": "supported",
       "transport": "huawei_te_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_auto_answer_automatic",
+      "label": "Включить автоматический ответ на Huawei TE20",
+      "category": "vcs",
+      "manufacturer": "huawei",
+      "aliases": ["huawey"],
+      "models": ["TE20"],
+      "protocolStatus": "supported",
+      "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_auto_answer_manual",
+      "label": "Установить ручной ответ на Huawei TE20",
+      "category": "vcs",
+      "manufacturer": "huawei",
+      "aliases": ["huawey"],
+      "models": ["TE20"],
+      "protocolStatus": "supported",
+      "transport": "huawei_te20_web_cgi_v1"
     }
   ],
   "entries": [
