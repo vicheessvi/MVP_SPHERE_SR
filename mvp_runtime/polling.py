@@ -22,6 +22,33 @@ class PollingCancelled(PollingError):
     code = "POLLING_CANCELLED"
 
 
+TE20_ANSWER_TASKS = frozenset({"set_te20_auto_answer_automatic", "set_te20_auto_answer_manual"})
+TE20_HTTP_TASKS = frozenset({"set_te20_http_open", "set_te20_http_closed"})
+TE20_TELNET_TASKS = frozenset({"set_te20_telnet_open", "set_te20_telnet_closed"})
+TE20_PORT_TASKS = TE20_HTTP_TASKS | TE20_TELNET_TASKS
+
+
+def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: list[str]) -> None:
+    answer = TE20_ANSWER_TASKS.intersection(requested_tasks)
+    port = TE20_PORT_TASKS.intersection(requested_tasks)
+    if not answer and not port:
+        return
+    if (len(answer) > 1 or (answer and len(requested_tasks) != 1)
+            or len(TE20_HTTP_TASKS.intersection(port)) > 1
+            or len(TE20_TELNET_TASKS.intersection(port)) > 1
+            or (port and any(task not in TE20_PORT_TASKS for task in requested_tasks))):
+        raise PollingError("TE20 management tasks conflict")
+    source_digest = str(plan.get("targetSourceSha256") or "").casefold()
+    selection = plan.get("selection") or {}
+    devices = plan.get("devices") or []
+    if (plan.get("targetSource") != "sr"
+            or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest)
+            or not isinstance(selection, dict) or selection.get("mode") != "single_ip"
+            or not isinstance(devices, list) or len(devices) != 1 or not isinstance(devices[0], dict)
+            or any(not resolve_management_action(devices[0], task).get("supported") for task in requested_tasks)):
+        raise PollingError("TE20 management action requires one exact SR target selected by IP")
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -300,18 +327,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
         source_digest = str(plan.get("targetSourceSha256") or "").casefold()
         if plan.get("targetSource") != "port_closure_list" or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest):
             raise PollingError("Port-closure task requires a verified dedicated target list")
-    answer_tasks = {"set_te20_auto_answer_automatic", "set_te20_auto_answer_manual"}
-    requested_answer = answer_tasks.intersection(requested_management_tasks)
-    if requested_answer:
-        source_digest = str(plan.get("targetSourceSha256") or "").casefold()
-        selection = plan.get("selection") or {}
-        devices_for_action = plan["devices"]
-        if (len(requested_management_tasks) != 1 or plan.get("targetSource") != "sr"
-                or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest)
-                or not isinstance(selection, dict) or selection.get("mode") != "single_ip"
-                or len(devices_for_action) != 1
-                or not resolve_management_action(devices_for_action[0], next(iter(requested_answer))).get("supported")):
-            raise PollingError("TE20 answer-mode action requires one exact SR target selected by IP")
+    validate_te20_single_target_tasks(plan, requested_management_tasks)
     devices = [dict(device) for device in plan["devices"]]
     ips = [normalize_ipv4(device.get("ipNormalized") or device.get("ip")) for device in devices]
     valid_ips = [ip for ip in ips if ip]

@@ -1,5 +1,13 @@
 # Карта контекста
 
+## Feature 034 — независимое управление HTTP/Telnet на exact TE20
+
+- Требования, отдельные действия и сценарии: `specs/034-te20-independent-port-controls/`.
+- Три варианта на каждый порт, план одного IP из SR и подтверждение: `app.js`.
+- Exact catalog, проверка плана и раздельное guarded write/post-read: `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `mvp_runtime/server.py`, `mvp_runtime/adapters/huawei_te40.py`.
+- Синтетические проверки: `tests.js`, `python_tests/test_huawei_te40.py`, `python_tests/test_polling.py`, `python_tests/test_server.py`. Решение: ADR-0037.
+- Открытие сервисов ещё ожидает реальной эксплуатационной проверки; новые действия других моделей не затрагивают.
+
 ## Feature 033 — сверка настроек терминалов ВКС (в работе)
 
 - Первый вход в план: `mvp_runtime/admin_access.py`, `/api/admin/*` и gate `/api/polling/*` в `mvp_runtime/server.py`, форма в `app.js`; тесты `python_tests/test_admin_access.py`, `python_tests/test_server.py`, `tests.js`; ADR-0035.

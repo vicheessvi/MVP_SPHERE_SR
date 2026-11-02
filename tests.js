@@ -363,7 +363,7 @@
     });
     assertEqual(te20.support, "implemented");
     assertEqual(te20.transport, "huawei_te20_web_cgi_v1");
-    assertEqual(te20.managementTasks.join(","), "disable_insecure_management_services,set_te20_auto_answer_automatic,set_te20_auto_answer_manual");
+    assertEqual(te20.managementTasks.join(","), "disable_insecure_management_services,set_te20_auto_answer_automatic,set_te20_auto_answer_manual,set_te20_http_open,set_te20_http_closed,set_te20_telnet_open,set_te20_telnet_closed");
     assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === "te20").length, 2);
     bar310Aliases.forEach((item) => {
       assertEqual(item.support, "implemented");
@@ -2162,6 +2162,26 @@
     assert(!api.createPollingPlan(wrong, input).ok);
   });
 
+  test("HTTP и Telnet TE20 имеют независимые открыть, закрыть и не менять", () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = [{ id: "te20-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE20", modelNormalized: "te20", ipNormalized: "192.0.2.20", inCurrentSr: true }];
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    const base = { mode: "single_ip", ipAddress: "192.0.2.20", scheduledAt: "2026-11-02T12:00:00Z", intervalMinSeconds: 0, intervalMaxSeconds: 0, credentialsReady: true, credentialSourceSha256: "b".repeat(64) };
+    const expected = { http: { open: "set_te20_http_open", close: "set_te20_http_closed" }, telnet: { open: "set_te20_telnet_open", close: "set_te20_telnet_closed" } };
+    for (const http of ["", "open", "close"]) for (const telnet of ["", "open", "close"]) {
+      const result = api.createPollingPlan(state, { ...base, te20HttpMode: http, te20TelnetMode: telnet });
+      assert(result.ok, result.errors?.join("; "));
+      assertEqual(result.plan.managementTasks.join(","), [expected.http[http], expected.telnet[telnet]].filter(Boolean).join(","));
+    }
+    assert(!api.createPollingPlan(state, { ...base, te20HttpMode: "open", mode: "filters" }).ok);
+    assert(!api.createPollingPlan(state, { ...base, te20HttpMode: "open", te20AnswerMode: "manual" }).ok);
+    assert(!api.createPollingPlan(state, { ...base, te20TelnetMode: "close", disableInsecureManagementServices: true }).ok);
+    const wrong = api.createDemoState();
+    wrong.inventoryDevices = [{ ...state.inventoryDevices[0], modelRaw: "TE40", modelNormalized: "te40" }];
+    wrong.srImports = state.srImports;
+    assert(!api.createPollingPlan(wrong, { ...base, te20HttpMode: "open" }).ok);
+  });
+
   test("Галочка переключает доменный каскад и точный IP с SR на отдельный список", () => {
     const headers = [...srHeaders(), "Домен"];
     const sr = api.importSrRows(api.createDemoState(), { headers, rows: [srRow({ IP: "192.0.2.211", Домен: "SR-Domain", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "TE40" })] });
@@ -2297,7 +2317,8 @@
     assert(css.includes('grid-template-columns: repeat(4, minmax(0, 1fr));'));
     assert(fs.readFileSync(require("path").join(__dirname, "index.html"), "utf8").includes('runtime/sphere.js'));
     assertEqual(typeof require("./runtime/sphere").mount, "function");
-    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Отключить HTTP и Telnet по возможностям модели"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Отключить HTTP и Telnet по возможностям модели", "HTTP Huawei TE20 (один IP)", "Telnet Huawei TE20 (один IP)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    assert(source.includes("Открытие включает соответствующий сетевой сервис и ещё не проверено на реальном устройстве"));
     assert(source.includes("Интервал между опросами устройств"));
     assert(source.includes('intervalMinSeconds: "0", intervalMaxSeconds: "0"'));
     assert(source.includes('name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0"'));

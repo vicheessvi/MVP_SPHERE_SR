@@ -31,6 +31,30 @@
       "models": ["TE20"],
       "protocolStatus": "supported",
       "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_http_open",
+      "label": "Включить HTTP на Huawei TE20",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_http_closed",
+      "label": "Отключить HTTP на Huawei TE20",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_telnet_open",
+      "label": "Включить Telnet на Huawei TE20",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_telnet_closed",
+      "label": "Отключить Telnet на Huawei TE20",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
     }
   ],
   "entries": [

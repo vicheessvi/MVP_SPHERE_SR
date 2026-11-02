@@ -4,7 +4,7 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, TE20_TLS_PROFILE, HuaweiTransportError, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, HuaweiTransportError, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_port_setting, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.adapters.device_settings import unknown_device_settings
 from mvp_runtime.redaction import sanitize_result
 
@@ -32,6 +32,92 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
+    def test_te20_port_actions_write_only_selected_field_and_verify(self):
+        for action_id, (field, target) in TE20_PORT_ACTIONS.items():
+            with self.subTest(action_id=action_id):
+                calls = []
+                values = iter((1 - target, target))
+
+                def action(name, payload):
+                    calls.append((name, payload))
+                    if name == "WEB_GetCfgParamAPI":
+                        return {"success": 1}, {"CfgItemInt": [{"CfgItemID": field, "CfgItemInfo": next(values)}]}
+                    return {"success": 1}, {}
+
+                result = _set_te20_port_setting(action_id, f"WEB_GetCfgParamAPI WEB_SaveCfgParamAPI {field}", "SYNTHETIC-CSRF", action)
+                self.assertEqual(result["status"], "applied")
+                self.assertEqual(result["before"], "enabled" if target == 0 else "disabled")
+                self.assertEqual(result["after"], "enabled" if target == 1 else "disabled")
+                self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "WEB_GetCfgParamAPI"])
+                self.assertEqual([payload["CfgIDString"] for name, payload in calls if name == "WEB_GetCfgParamAPI"], [[field], [field]])
+                writes = [payload for name, payload in calls if name == "WEB_SaveCfgParamAPI"]
+                self.assertEqual(writes[0]["CfgItemInt"], [{"CfgItemID": field, "CfgItemInfo": target}])
+                self.assertEqual(writes[0]["CfgItemString"], [])
+
+                no_write_calls = []
+                def already(name, payload):
+                    no_write_calls.append(name)
+                    return {"success": 1}, {field: target}
+                self.assertEqual(_set_te20_port_setting(action_id, f"WEB_GetCfgParamAPI WEB_SaveCfgParamAPI {field}", "SYNTHETIC-CSRF", already)["status"], "already_compliant")
+                self.assertEqual(no_write_calls, ["WEB_GetCfgParamAPI"])
+
+    def test_te20_port_actions_fail_closed_on_marker_schema_and_post_read(self):
+        calls = []
+        def never(name, payload):
+            calls.append(name)
+            return {"success": 1}, {}
+        self.assertEqual(_set_te20_port_setting("set_te20_http_open", "WEB_GetCfgParamAPI enable_http", "SYNTHETIC-CSRF", never)["safeError"], "management_contract_unconfirmed")
+        self.assertEqual(calls, [])
+        self.assertEqual(_set_te20_port_setting("set_te20_http_open", "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI enable_http", "SYNTHETIC-CSRF", never)["safeError"], "configuration_schema_unconfirmed")
+        self.assertEqual(calls, ["WEB_GetCfgParamAPI"])
+        values = iter((0, 0))
+        def post_mismatch(name, payload):
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"enable_http": next(values)}
+            return {"success": 1}, {}
+        failed = _set_te20_port_setting("set_te20_http_open", "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI enable_http", "SYNTHETIC-CSRF", post_mismatch)
+        self.assertEqual(failed["safeError"], "configuration_verification_failed")
+        self.assertTrue(failed["writeAttempted"])
+        self.assertFalse(failed["changed"])
+
+    def test_te20_port_actions_run_only_after_exact_identity_and_stop_after_failure(self):
+        calls = []
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True,
+                                            configuration={"enabletelnet": 0, "enable_http": 0}),
+             "management_tasks": ["set_te20_http_open", "set_te20_telnet_open"]},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual([item["status"] for item in result["managementActions"]], ["applied", "applied"])
+        writes = [json.loads(item["body"]) for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
+        self.assertEqual([item["CfgItemInt"] for item in writes], [
+            [{"CfgItemID": "enable_http", "CfgItemInfo": 1}],
+            [{"CfgItemID": "enabletelnet", "CfgItemInfo": 1}],
+        ])
+        self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
+
+        mismatch_calls = []
+        mismatch = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(mismatch_calls, terminal_model="TE40", preauth_legacy=True),
+             "management_tasks": ["set_te20_http_open"]},
+        )
+        self.assertFalse(mismatch["ok"])
+        self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in mismatch_calls))
+
+        conflict_calls = []
+        conflict = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": lambda options: conflict_calls.append(options),
+             "management_tasks": ["set_te20_http_open", "set_te20_http_closed"]},
+        )
+        self.assertEqual(conflict["safeError"], "management_task_conflict")
+        self.assertEqual(conflict_calls, [])
+
     def test_te20_auto_answer_write_is_separate_minimal_and_verified(self):
         calls = []
         answers = iter((1, 0))
