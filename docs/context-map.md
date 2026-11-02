@@ -1,5 +1,12 @@
 # Карта контекста
 
+## Feature 035 — отключение автообновления exact TE20
+
+- Спецификация и контракт: `specs/035-te20-disable-auto-update/`.
+- UI и план одного IP из SR: `app.js`; action allowlist: `runtime/device-catalog.json`.
+- Guarded pre-read, максимум одна запись, post-read: `mvp_runtime/adapters/huawei_te40.py`; проверка плана в `mvp_runtime/polling.py` и `mvp_runtime/server.py`.
+- Синтетические проверки: `tests.js`, `python_tests/test_huawei_te40.py`, `python_tests/test_polling.py`, `python_tests/test_server.py`; ADR-0038. Реальная write-проверка ожидается.
+
 ## Feature 034 — независимое управление HTTP/Telnet на exact TE20
 
 - Требования, отдельные действия и сценарии: `specs/034-te20-independent-port-controls/`.

@@ -16,6 +16,23 @@ HUAWEI_BOX610 = {"category": "vcs", "manufacturer": "Huawei", "model": "Box 610"
 
 
 class PollingTests(unittest.TestCase):
+    def test_te20_auto_update_disable_requires_one_exact_sr_target(self) -> None:
+        plan = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "managementTasks": ["disable_te20_auto_update"], "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "single_ip"}}
+        for invalid in (
+            {**plan, "selection": {"mode": "filters"}},
+            {**plan, "devices": [{**HUAWEI_MODELS[0], "ip": "192.0.2.20"}]},
+            {**plan, "managementTasks": ["disable_te20_auto_update", "set_te20_http_closed"]},
+            {**plan, "managementTasks": ["disable_te20_auto_update", "set_te20_auto_answer_manual"]},
+        ):
+            with self.assertRaises(PollingError):
+                run_plan(invalid, {"ping": lambda *_args: self.fail("network must not start")})
+        seen = []
+        results = run_plan(plan, {"ping": lambda *_args: {"ok": True, "durationMs": 1},
+                                  "get_credentials": lambda *_args: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
+                                  "adapters": {"huawei_te20_web_cgi_v1": lambda _device, _credentials, options: seen.append(options["management_tasks"]) or {"ok": True}}})
+        self.assertTrue(results[0]["ok"])
+        self.assertEqual(seen, [["disable_te20_auto_update"]])
+
     def test_te20_port_actions_require_one_exact_target_and_no_conflicts(self) -> None:
         plan = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "managementTasks": ["set_te20_http_open", "set_te20_telnet_closed"], "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "single_ip"}}
         for invalid in (

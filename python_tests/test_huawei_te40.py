@@ -4,7 +4,7 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, HuaweiTransportError, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_port_setting, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, DISABLE_TE20_AUTO_UPDATE_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, HuaweiTransportError, _disable_te20_auto_update, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_port_setting, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.adapters.device_settings import unknown_device_settings
 from mvp_runtime.redaction import sanitize_result
 
@@ -32,6 +32,71 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
+    def test_te20_auto_update_disable_is_single_field_and_verified(self):
+        calls = []
+        values = iter((1, 0))
+
+        def action(name, payload):
+            calls.append((name, payload))
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"CfgItemInt": [{"CfgItemID": "isenableautoupgrade", "CfgItemInfo": next(values)}]}
+            return {"success": 1}, {}
+
+        result = _disable_te20_auto_update("WEB_GetCfgParamAPI WEB_SaveCfgParamAPI isenableautoupgrade", "SYNTHETIC-CSRF", action)
+        self.assertEqual(result["id"], DISABLE_TE20_AUTO_UPDATE_ACTION)
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(result["before"], "enabled")
+        self.assertEqual(result["after"], "disabled")
+        self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "WEB_GetCfgParamAPI"])
+        self.assertEqual([payload["CfgIDString"] for name, payload in calls if name == "WEB_GetCfgParamAPI"], [["isenableautoupgrade"], ["isenableautoupgrade"]])
+        self.assertEqual([payload["CfgItemInt"] for name, payload in calls if name == "WEB_SaveCfgParamAPI"], [[{"CfgItemID": "isenableautoupgrade", "CfgItemInfo": 0}]])
+
+        already_calls = []
+        def already(name, payload):
+            already_calls.append(name)
+            return {"success": 1}, {"isenableautoupgrade": 0}
+        self.assertEqual(_disable_te20_auto_update("WEB_GetCfgParamAPI WEB_SaveCfgParamAPI isenableautoupgrade", "SYNTHETIC-CSRF", already)["status"], "already_compliant")
+        self.assertEqual(already_calls, ["WEB_GetCfgParamAPI"])
+
+    def test_te20_auto_update_disable_fails_closed(self):
+        calls = []
+        def action(name, payload):
+            calls.append(name)
+            return {"success": 1}, {"isenableautoupgrade": 2}
+        self.assertEqual(_disable_te20_auto_update("WEB_GetCfgParamAPI isenableautoupgrade", "SYNTHETIC-CSRF", action)["safeError"], "management_contract_unconfirmed")
+        self.assertEqual(calls, [])
+        self.assertEqual(_disable_te20_auto_update("WEB_GetCfgParamAPI WEB_SaveCfgParamAPI isenableautoupgrade", "SYNTHETIC-CSRF", action)["safeError"], "configuration_schema_unconfirmed")
+        self.assertEqual(calls, ["WEB_GetCfgParamAPI"])
+
+        values = iter((1, 1))
+        def mismatch(name, payload):
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"isenableautoupgrade": next(values)}
+            return {"success": 1}, {}
+        failed = _disable_te20_auto_update("WEB_GetCfgParamAPI WEB_SaveCfgParamAPI isenableautoupgrade", "SYNTHETIC-CSRF", mismatch)
+        self.assertEqual(failed["safeError"], "configuration_verification_failed")
+        self.assertTrue(failed["writeAttempted"])
+        self.assertFalse(failed["changed"])
+
+    def test_te20_auto_update_disable_in_full_poll_follows_identity_gate(self):
+        calls = []
+        bundle = RESOURCE_MARKERS + " isenableautoupgrade"
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True,
+                                            configuration={"enabletelnet": 0, "enable_http": 0, "isenableautoupgrade": 1},
+                                            overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}}),
+             "management_tasks": [DISABLE_TE20_AUTO_UPDATE_ACTION]},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["managementActions"][0]["status"], "applied")
+        self.assertEqual(result["deviceSettings"]["fields"]["autoUpdate"]["value"], "disabled")
+        writes = [json.loads(item["body"]) for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0]["CfgItemInt"], [{"CfgItemID": "isenableautoupgrade", "CfgItemInfo": 0}])
+        self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
+
     def test_te20_port_actions_write_only_selected_field_and_verify(self):
         for action_id, (field, target) in TE20_PORT_ACTIONS.items():
             with self.subTest(action_id=action_id):

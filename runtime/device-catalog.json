@@ -55,6 +55,12 @@
       "label": "Отключить Telnet на Huawei TE20",
       "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
       "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "disable_te20_auto_update",
+      "label": "Отключить автообновление на Huawei TE20",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
     }
   ],
   "entries": [

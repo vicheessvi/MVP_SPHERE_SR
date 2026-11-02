@@ -26,14 +26,16 @@ TE20_ANSWER_TASKS = frozenset({"set_te20_auto_answer_automatic", "set_te20_auto_
 TE20_HTTP_TASKS = frozenset({"set_te20_http_open", "set_te20_http_closed"})
 TE20_TELNET_TASKS = frozenset({"set_te20_telnet_open", "set_te20_telnet_closed"})
 TE20_PORT_TASKS = TE20_HTTP_TASKS | TE20_TELNET_TASKS
+TE20_AUTO_UPDATE_TASK = "disable_te20_auto_update"
 
 
 def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: list[str]) -> None:
     answer = TE20_ANSWER_TASKS.intersection(requested_tasks)
     port = TE20_PORT_TASKS.intersection(requested_tasks)
-    if not answer and not port:
+    auto_update = TE20_AUTO_UPDATE_TASK in requested_tasks
+    if not answer and not port and not auto_update:
         return
-    if (len(answer) > 1 or (answer and len(requested_tasks) != 1)
+    if (len(answer) > 1 or ((answer or auto_update) and len(requested_tasks) != 1)
             or len(TE20_HTTP_TASKS.intersection(port)) > 1
             or len(TE20_TELNET_TASKS.intersection(port)) > 1
             or (port and any(task not in TE20_PORT_TASKS for task in requested_tasks))):
