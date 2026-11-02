@@ -73,6 +73,7 @@ DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
 SET_TE20_AUTO_ANSWER_ACTION = "set_te20_auto_answer_automatic"
 SET_TE20_MANUAL_ANSWER_ACTION = "set_te20_auto_answer_manual"
 DISABLE_TE20_AUTO_UPDATE_ACTION = "disable_te20_auto_update"
+TE20_SSH_ACTIONS = {"set_te20_ssh_enabled": 1, "set_te20_ssh_disabled": 0}
 TE20_PORT_ACTIONS = {
     "set_te20_http_open": ("enable_http", 1),
     "set_te20_http_closed": ("enable_http", 0),
@@ -580,6 +581,15 @@ def _disable_te20_auto_update(
     return _set_te20_binary_setting(DISABLE_TE20_AUTO_UPDATE_ACTION, "isenableautoupgrade", 0, bundle_text, csrf_token, action)
 
 
+def _set_te20_ssh(
+    action_id: str, bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    if action_id not in TE20_SSH_ACTIONS:
+        raise ValueError("unsupported_te20_ssh_action")
+    return _set_te20_binary_setting(action_id, "enable_ssh", TE20_SSH_ACTIONS[action_id], bundle_text, csrf_token, action)
+
+
 def _set_te20_binary_setting(
     action_id: str, config_id: str, target: int, bundle_text: str, csrf_token: str,
     action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
@@ -697,6 +707,8 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
                            or any(task not in TE20_PORT_ACTIONS for task in requested_management_tasks)):
             return {**base, "failedStage": "validation", "safeError": "management_task_conflict"}
         if DISABLE_TE20_AUTO_UPDATE_ACTION in requested_management_tasks and len(requested_management_tasks) != 1:
+            return {**base, "failedStage": "validation", "safeError": "management_task_conflict"}
+        if set(requested_management_tasks).intersection(TE20_SSH_ACTIONS) and len(requested_management_tasks) != 1:
             return {**base, "failedStage": "validation", "safeError": "management_task_conflict"}
     pool = credentials if isinstance(credentials, list) else [credentials]
     pool = [item for item in pool if isinstance(item, dict) and item.get("username") and item.get("password")]
@@ -835,6 +847,9 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             management_actions.append(_set_te20_port_setting(action_id, bundle_text, csrf_token, action))
         if DISABLE_TE20_AUTO_UPDATE_ACTION in requested_management_tasks:
             management_actions.append(_disable_te20_auto_update(bundle_text, csrf_token, action))
+        for action_id in requested_management_tasks:
+            if action_id in TE20_SSH_ACTIONS:
+                management_actions.append(_set_te20_ssh(action_id, bundle_text, csrf_token, action))
     verified_action = next((item for item in management_actions if item.get("id") == DISABLE_INSECURE_SERVICES_ACTION and item.get("status") in {"applied", "already_compliant"}), None)
     if verified_action:
         device_settings = unknown_device_settings(planned_model.upper(), not_exposed=("snmpV2",) if planned_model == TE20_MODEL else ())
@@ -853,6 +868,9 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     verified_auto_update = next((item for item in management_actions if item.get("id") == DISABLE_TE20_AUTO_UPDATE_ACTION and item.get("status") in {"applied", "already_compliant"}), None)
     if verified_auto_update:
         device_settings["fields"]["autoUpdate"] = {"status": "read", "value": "disabled", "source": "managementActions.after.disable_te20_auto_update"}
+    verified_ssh = next((item for item in management_actions if item.get("id") in TE20_SSH_ACTIONS and item.get("status") in {"applied", "already_compliant"}), None)
+    if verified_ssh:
+        device_settings["fields"]["ssh"] = {"status": "read", "value": verified_ssh["after"], "source": "managementActions.after.enable_ssh"}
     safe_resources = sanitize_result(resources)
     result = {
         **base,

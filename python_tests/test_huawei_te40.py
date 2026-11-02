@@ -4,7 +4,7 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, DISABLE_TE20_AUTO_UPDATE_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, HuaweiTransportError, _disable_te20_auto_update, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_port_setting, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, DISABLE_TE20_AUTO_UPDATE_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, TE20_SSH_ACTIONS, HuaweiTransportError, _disable_te20_auto_update, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_port_setting, _set_te20_ssh, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.adapters.device_settings import unknown_device_settings
 from mvp_runtime.redaction import sanitize_result
 
@@ -32,6 +32,28 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
+    def test_te20_ssh_actions_are_single_field_guarded_and_verified(self):
+        for action_id, target in TE20_SSH_ACTIONS.items():
+            with self.subTest(action_id=action_id):
+                calls = []
+                values = iter((1 - target, target))
+                def action(name, payload):
+                    calls.append((name, payload))
+                    return ({"success": 1}, {"enable_ssh": next(values)}) if name == "WEB_GetCfgParamAPI" else ({"success": 1}, {})
+                result = _set_te20_ssh(action_id, "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI enable_ssh", "SYNTHETIC-CSRF", action)
+                self.assertEqual(result["status"], "applied")
+                self.assertEqual(result["after"], "enabled" if target else "disabled")
+                self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "WEB_GetCfgParamAPI"])
+                self.assertEqual([payload["CfgIDString"] for name, payload in calls if name == "WEB_GetCfgParamAPI"], [["enable_ssh"], ["enable_ssh"]])
+                self.assertEqual([payload["CfgItemInt"] for name, payload in calls if name == "WEB_SaveCfgParamAPI"], [[{"CfgItemID": "enable_ssh", "CfgItemInfo": target}]])
+                no_write = []
+                def already(name, payload):
+                    no_write.append(name)
+                    return {"success": 1}, {"enable_ssh": target}
+                self.assertEqual(_set_te20_ssh(action_id, "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI enable_ssh", "SYNTHETIC-CSRF", already)["status"], "already_compliant")
+                self.assertEqual(no_write, ["WEB_GetCfgParamAPI"])
+        self.assertEqual(_set_te20_ssh("set_te20_ssh_disabled", "WEB_GetCfgParamAPI enable_ssh", "SYNTHETIC-CSRF", lambda *_: self.fail("no network"))["safeError"], "management_contract_unconfirmed")
+
     def test_te20_auto_update_disable_is_single_field_and_verified(self):
         calls = []
         values = iter((1, 0))

@@ -1,5 +1,11 @@
 # Карта контекста
 
+## Feature 036 — отдельное управление SSH exact TE20
+
+- Контракт и сценарии: `specs/036-te20-ssh-controls/`; решение: ADR-0039.
+- Трёхпозиционный UI и exact single-IP gate: `app.js`, `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `mvp_runtime/server.py`.
+- Guarded SSH pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; синтетические тесты в `tests.js` и `python_tests/`. Реальная write-проверка ожидается.
+
 ## Feature 035 — отключение автообновления exact TE20
 
 - Спецификация и контракт: `specs/035-te20-disable-auto-update/`.

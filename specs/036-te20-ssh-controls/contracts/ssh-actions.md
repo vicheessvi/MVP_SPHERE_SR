@@ -1,0 +1,3 @@
+# SSH action contract
+
+Only exact Huawei TE20, one IP selected from current SR, after admin gate and explicit confirmation. `set_te20_ssh_enabled` targets `enable_ssh=1`; `set_te20_ssh_disabled` targets `enable_ssh=0`. Current bundle must contain `WEB_GetCfgParamAPI`, `WEB_SaveCfgParamAPI`, `enable_ssh`. Read only `CfgIDString=["enable_ssh"]`; accept strict integer 0/1. Already-target is no-op. Otherwise at most one `WEB_SaveCfgParamAPI` with a single `CfgItemInt`, empty `CfgItemString` and current CSRF, then exact post-read. Unknown outcome is failure and never automatically retried. No HTTP fallback and no claim about TCP listener.

@@ -61,6 +61,18 @@
       "label": "Отключить автообновление на Huawei TE20",
       "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
       "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_ssh_enabled",
+      "label": "Включить SSH на Huawei TE20",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_ssh_disabled",
+      "label": "Отключить SSH на Huawei TE20",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
     }
   ],
   "entries": [
