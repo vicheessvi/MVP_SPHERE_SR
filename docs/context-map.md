@@ -4,14 +4,14 @@
 
 - Контракт и сценарии: `specs/036-te20-ssh-controls/`; решение: ADR-0039.
 - Трёхпозиционный UI и exact single-IP gate: `app.js`, `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `mvp_runtime/server.py`.
-- Guarded SSH pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; синтетические тесты в `tests.js` и `python_tests/`. Реальная write-проверка ожидается.
+- Guarded SSH pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; синтетические тесты в `tests.js` и `python_tests/`. Администратор подтвердил работу на рабочем ПК.
 
 ## Feature 035 — отключение автообновления exact TE20
 
 - Спецификация и контракт: `specs/035-te20-disable-auto-update/`.
 - UI и план одного IP из SR: `app.js`; action allowlist: `runtime/device-catalog.json`.
 - Guarded pre-read, максимум одна запись, post-read: `mvp_runtime/adapters/huawei_te40.py`; проверка плана в `mvp_runtime/polling.py` и `mvp_runtime/server.py`.
-- Синтетические проверки: `tests.js`, `python_tests/test_huawei_te40.py`, `python_tests/test_polling.py`, `python_tests/test_server.py`; ADR-0038. Реальная write-проверка ожидается.
+- Синтетические проверки: `tests.js`, `python_tests/test_huawei_te40.py`, `python_tests/test_polling.py`, `python_tests/test_server.py`; ADR-0038. Администратор подтвердил работу на рабочем ПК.
 
 ## Feature 034 — независимое управление HTTP/Telnet на exact TE20
 
@@ -19,7 +19,7 @@
 - Три варианта на каждый порт, план одного IP из SR и подтверждение: `app.js`.
 - Exact catalog, проверка плана и раздельное guarded write/post-read: `runtime/device-catalog.json`, `mvp_runtime/polling.py`, `mvp_runtime/server.py`, `mvp_runtime/adapters/huawei_te40.py`.
 - Синтетические проверки: `tests.js`, `python_tests/test_huawei_te40.py`, `python_tests/test_polling.py`, `python_tests/test_server.py`. Решение: ADR-0037.
-- Открытие сервисов ещё ожидает реальной эксплуатационной проверки; новые действия других моделей не затрагивают.
+- Администратор подтвердил открытие сервисов на рабочем ПК; новые действия других моделей не затрагивают.
 
 ## Feature 033 — сверка настроек терминалов ВКС (в работе)
 

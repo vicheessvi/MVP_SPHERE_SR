@@ -2,7 +2,7 @@
 
 **Branch**: `codex/secure-local-runtime`
 **Date**: 2026-11-02
-**Status**: Implemented; pending live validation
+**Status**: Implemented; confirmed by administrator on work PC
 
 ## User Scenarios & Testing
 
@@ -52,4 +52,4 @@
 
 ## Assumptions
 
-- Задача ограничена Huawei TE20 текущего этапа. Чтение `enable_ssh` подтверждено; команды изменения пока проверены синтетически, но не на живом устройстве.
+- Задача ограничена Huawei TE20 текущего этапа. Чтение `enable_ssh` подтверждено; администратор сообщил об успешной проверке включения и отключения на рабочем ПК.

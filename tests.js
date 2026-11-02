@@ -2356,7 +2356,7 @@
     assert(fs.readFileSync(require("path").join(__dirname, "index.html"), "utf8").includes('runtime/sphere.js'));
     assertEqual(typeof require("./runtime/sphere").mount, "function");
     ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Отключить HTTP и Telnet по возможностям модели", "HTTP Huawei TE20 (один IP)", "Telnet Huawei TE20 (один IP)", "Автообновление Huawei TE20 (один IP)", "SSH Huawei TE20 (один IP)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
-    assert(source.includes("Открытие включает соответствующий сетевой сервис и ещё не проверено на реальном устройстве"));
+    assert(source.includes("Открытие включает соответствующий сетевой сервис."));
     assert(source.includes("На одном выбранном Huawei TE20 будет отключено автообновление"));
     assert(source.includes("Интервал между опросами устройств"));
     assert(source.includes('intervalMinSeconds: "0", intervalMaxSeconds: "0"'));
