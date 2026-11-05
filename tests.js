@@ -363,7 +363,7 @@
     });
     assertEqual(te20.support, "implemented");
     assertEqual(te20.transport, "huawei_te20_web_cgi_v1");
-    assertEqual(te20.managementTasks.join(","), "disable_insecure_management_services,set_te20_auto_answer_automatic,set_te20_auto_answer_manual,set_te20_http_open,set_te20_http_closed,set_te20_telnet_open,set_te20_telnet_closed,disable_te20_auto_update,set_te20_ssh_enabled,set_te20_ssh_disabled");
+    assertEqual(te20.managementTasks.join(","), "disable_insecure_management_services,set_te20_auto_answer_automatic,set_te20_auto_answer_manual,set_te20_http_open,set_te20_http_closed,set_te20_telnet_open,set_te20_telnet_closed,disable_te20_auto_update,set_te20_ssh_enabled,set_te20_ssh_disabled,set_te20_ntp_settings");
     assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === "te20").length, 2);
     bar310Aliases.forEach((item) => {
       assertEqual(item.support, "implemented");
@@ -2220,6 +2220,30 @@
     assert(!api.createPollingPlan(wrong, { ...base, te20SshMode: "disable" }).ok);
   });
 
+  test("NTP TE20 выбирает синхронизацию, режим и сервер без лишних записей", () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = [{ id: "te20-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE20", modelNormalized: "te20", ipNormalized: "192.0.2.20", inCurrentSr: true }];
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    const base = { mode: "single_ip", ipAddress: "192.0.2.20", scheduledAt: "2026-11-05T12:00:00Z", intervalMinSeconds: 0, intervalMaxSeconds: 0, credentialsReady: true, credentialSourceSha256: "b".repeat(64) };
+    const unchanged = api.createPollingPlan(state, base);
+    assert(unchanged.ok, unchanged.errors?.join("; "));
+    assertEqual(unchanged.plan.managementTasks.join(","), "");
+    const selected = api.createPollingPlan(state, { ...base, te20NtpEnabled: "enable", te20NtpMode: "manual", te20NtpServerMode: "set", te20NtpServerValue: "ntp.example.test" });
+    assert(selected.ok, selected.errors?.join("; "));
+    assertEqual(selected.plan.managementTasks.join(","), "set_te20_ntp_settings");
+    assertEqual(JSON.stringify(selected.plan.ntpChanges), JSON.stringify({ enabled: true, mode: "manual", server: "ntp.example.test" }));
+    assertEqual(api.buildPollingPlanExport(selected.state, selected.plan.id).payload.ntpChanges.server, "ntp.example.test");
+    assert(!api.createPollingPlan(state, { ...base, te20NtpEnabled: "disable", te20NtpMode: "manual" }).ok);
+    assert(!api.createPollingPlan(state, { ...base, te20NtpMode: "automatic", te20NtpServerMode: "set", te20NtpServerValue: "ntp.example.test" }).ok);
+    assert(!api.createPollingPlan(state, { ...base, te20NtpServerMode: "set", te20NtpServerValue: "bad value" }).ok);
+    assert(!api.createPollingPlan(state, { ...base, te20NtpEnabled: "enable", te20SshMode: "disable" }).ok);
+    assert(!api.createPollingPlan(state, { ...base, te20NtpEnabled: "enable", mode: "filters" }).ok);
+    const wrong = api.createDemoState();
+    wrong.inventoryDevices = [{ ...state.inventoryDevices[0], modelRaw: "TE40", modelNormalized: "te40" }];
+    wrong.srImports = state.srImports;
+    assert(!api.createPollingPlan(wrong, { ...base, te20NtpEnabled: "enable" }).ok);
+  });
+
   test("Галочка переключает доменный каскад и точный IP с SR на отдельный список", () => {
     const headers = [...srHeaders(), "Домен"];
     const sr = api.importSrRows(api.createDemoState(), { headers, rows: [srRow({ IP: "192.0.2.211", Домен: "SR-Domain", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "TE40" })] });
@@ -2355,7 +2379,7 @@
     assert(css.includes('grid-template-columns: repeat(4, minmax(0, 1fr));'));
     assert(fs.readFileSync(require("path").join(__dirname, "index.html"), "utf8").includes('runtime/sphere.js'));
     assertEqual(typeof require("./runtime/sphere").mount, "function");
-    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Отключить HTTP и Telnet по возможностям модели", "HTTP Huawei TE20 (один IP)", "Telnet Huawei TE20 (один IP)", "Автообновление Huawei TE20 (один IP)", "SSH Huawei TE20 (один IP)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Отключить HTTP и Telnet по возможностям модели", "HTTP Huawei TE20 (один IP)", "Telnet Huawei TE20 (один IP)", "Автообновление Huawei TE20 (один IP)", "SSH Huawei TE20 (один IP)", "NTP Huawei TE20 (один IP)", "Имя сервера NTP"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
     assert(source.includes("Открытие включает соответствующий сетевой сервис."));
     assert(source.includes("На одном выбранном Huawei TE20 будет отключено автообновление"));
     assert(source.includes("Интервал между опросами устройств"));

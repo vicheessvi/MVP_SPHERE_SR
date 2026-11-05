@@ -73,6 +73,7 @@ DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
 SET_TE20_AUTO_ANSWER_ACTION = "set_te20_auto_answer_automatic"
 SET_TE20_MANUAL_ANSWER_ACTION = "set_te20_auto_answer_manual"
 DISABLE_TE20_AUTO_UPDATE_ACTION = "disable_te20_auto_update"
+SET_TE20_NTP_ACTION = "set_te20_ntp_settings"
 TE20_SSH_ACTIONS = {"set_te20_ssh_enabled": 1, "set_te20_ssh_disabled": 0}
 TE20_PORT_ACTIONS = {
     "set_te20_http_open": ("enable_http", 1),
@@ -634,6 +635,65 @@ def _set_te20_binary_setting(
                 **({} if before is None else {"before": label(before)})}
 
 
+def _set_te20_ntp_settings(
+    bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+    changes: dict[str, Any],
+) -> dict[str, Any]:
+    base = {"id": SET_TE20_NTP_ACTION, "transport": "https/443", "changed": False, "writeAttempted": False}
+    ids = ("synSerTime", "ntpGetMode", "timeServer")
+    if not all(marker in bundle_text for marker in ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", *ids)):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+
+    def read_state() -> dict[str, Any]:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": list(ids), "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_read_failed")
+        values = _exact_config_items(data, ids)
+        enabled, mode, server = (values.get(key) for key in ids)
+        if (type(enabled) is not int or enabled not in (0, 1) or type(mode) is not int or mode not in (0, 1)
+                or not isinstance(server, str) or len(server) > 41 or any(ord(char) < 32 for char in server)):
+            raise HuaweiContractError("configuration_schema_unconfirmed")
+        return {"enabled": enabled, "mode": mode, "server": server}
+
+    before = None
+    write_attempted = False
+    try:
+        before = read_state()
+        target = {
+            "enabled": before["enabled"] if changes["enabled"] is None else int(changes["enabled"]),
+            "mode": before["mode"] if changes["mode"] is None else (1 if changes["mode"] == "manual" else 0),
+            "server": before["server"] if changes["server"] is None else changes["server"],
+        }
+        if ((target["enabled"] == 0 and (changes["mode"] is not None or changes["server"] is not None))
+                or (target["mode"] == 0 and changes["server"] is not None)
+                or (target["enabled"] == 1 and target["mode"] == 1 and not target["server"])):
+            raise HuaweiContractError("configuration_combination_invalid")
+        safe_state = lambda value: {"enabled": bool(value["enabled"]), "mode": "manual" if value["mode"] == 1 else "automatic", "server": value["server"]}
+        if target == before:
+            return {**base, "status": "already_compliant", "before": safe_state(before), "after": safe_state(before)}
+        integers = [
+            {"CfgItemID": key, "CfgItemInfo": target[field]}
+            for key, field in (("synSerTime", "enabled"), ("ntpGetMode", "mode")) if target[field] != before[field]
+        ]
+        strings = ([{"CfgItemID": "timeServer", "CfgItemInfo": target["server"]}]
+                   if target["server"] != before["server"] else [])
+        write_attempted = True
+        outer, _ = action("WEB_SaveCfgParamAPI", {"CfgItemInt": integers, "CfgItemString": strings, "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_write_failed")
+        after = read_state()
+        if after != target:
+            raise HuaweiContractError("configuration_verification_failed")
+        return {**base, "status": "applied", "changed": True, "writeAttempted": True,
+                "before": safe_state(before), "after": safe_state(after)}
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        code = error.code if isinstance(error, HuaweiContractError) else _transport_code(error)
+        return {**base, "status": "failed", "writeAttempted": write_attempted, "safeError": code}
+
+
 def build_web_blocks(resources: dict[str, Any], ip: str) -> dict[str, Any]:
     esn = _resource(resources, "productEsn")
     mac = _resource(resources, "systemMac")
@@ -677,7 +737,7 @@ def build_web_blocks(resources: dict[str, Any], ip: str) -> dict[str, Any]:
 
 
 def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None) -> dict[str, Any]:
-    from mvp_runtime.polling import normalize_ipv4
+    from mvp_runtime.polling import PollingError, normalize_ipv4, validate_ntp_changes
 
     settings = options or {}
     request = settings.get("request") or native_https_request
@@ -710,6 +770,13 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             return {**base, "failedStage": "validation", "safeError": "management_task_conflict"}
         if set(requested_management_tasks).intersection(TE20_SSH_ACTIONS) and len(requested_management_tasks) != 1:
             return {**base, "failedStage": "validation", "safeError": "management_task_conflict"}
+        if SET_TE20_NTP_ACTION in requested_management_tasks:
+            if len(requested_management_tasks) != 1:
+                return {**base, "failedStage": "validation", "safeError": "management_task_conflict"}
+            try:
+                validate_ntp_changes({"ntpChanges": settings.get("ntp_changes")}, requested_management_tasks)
+            except PollingError:
+                return {**base, "failedStage": "validation", "safeError": "ntp_changes_invalid"}
     pool = credentials if isinstance(credentials, list) else [credentials]
     pool = [item for item in pool if isinstance(item, dict) and item.get("username") and item.get("password")]
     if not pool:
@@ -850,6 +917,8 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         for action_id in requested_management_tasks:
             if action_id in TE20_SSH_ACTIONS:
                 management_actions.append(_set_te20_ssh(action_id, bundle_text, csrf_token, action))
+        if SET_TE20_NTP_ACTION in requested_management_tasks:
+            management_actions.append(_set_te20_ntp_settings(bundle_text, csrf_token, action, settings["ntp_changes"]))
     verified_action = next((item for item in management_actions if item.get("id") == DISABLE_INSECURE_SERVICES_ACTION and item.get("status") in {"applied", "already_compliant"}), None)
     if verified_action:
         device_settings = unknown_device_settings(planned_model.upper(), not_exposed=("snmpV2",) if planned_model == TE20_MODEL else ())
@@ -871,6 +940,10 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     verified_ssh = next((item for item in management_actions if item.get("id") in TE20_SSH_ACTIONS and item.get("status") in {"applied", "already_compliant"}), None)
     if verified_ssh:
         device_settings["fields"]["ssh"] = {"status": "read", "value": verified_ssh["after"], "source": "managementActions.after.enable_ssh"}
+    verified_ntp = next((item for item in management_actions if item.get("id") == SET_TE20_NTP_ACTION and item.get("status") in {"applied", "already_compliant"}), None)
+    if verified_ntp:
+        after = verified_ntp["after"]
+        device_settings["fields"]["ntp"] = {"status": "read", "value": {"enabled": after["enabled"], "modeCode": 1 if after["mode"] == "manual" else 0, "mode": after["mode"], "server": after["server"]}, "source": "managementActions.after.ntp"}
     safe_resources = sanitize_result(resources)
     result = {
         **base,

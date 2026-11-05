@@ -1,5 +1,11 @@
 # Карта контекста
 
+## Feature 037 — настройки NTP exact TE20
+
+- Три поля выбора, контракт, ограничения и тесты: `specs/037-te20-ntp-controls/`.
+- План и UI: `app.js`; exact action: `runtime/device-catalog.json`; повторная валидация в `mvp_runtime/polling.py` и `mvp_runtime/server.py`.
+- Подтверждённое чтение и provisional one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; ADR-0040. Реальная запись не выполнялась.
+
 ## Feature 036 — отдельное управление SSH exact TE20
 
 - Контракт и сценарии: `specs/036-te20-ssh-controls/`; решение: ADR-0039.

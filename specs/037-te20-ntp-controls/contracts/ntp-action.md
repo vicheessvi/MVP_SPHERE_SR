@@ -1,0 +1,3 @@
+# Contract: set_te20_ntp_settings
+
+Только plan schema v3, один exact TE20 из SR, admin gate и отдельное подтверждение. `ntpChanges` проходит строгую валидацию в браузере, loopback API и исполнителе. Текущий bundle должен содержать `WEB_GetCfgParamAPI`, `WEB_SaveCfgParamAPI`, `synSerTime`, `ntpGetMode`, `timeServer`. После post-auth identity читаются ровно три поля; допустимы строгие int 0/1, 0/1 и ограниченная строка. Зависимости проверяются на итоговом состоянии. При совпадении — `already_compliant` без записи. Иначе максимум один POST с изменёнными `CfgItemInt`/`CfgItemString` и CSRF. Успех — только точный post-read всех трёх полей; неясный результат не повторяется автоматически. Для иных моделей `protocol_required`.

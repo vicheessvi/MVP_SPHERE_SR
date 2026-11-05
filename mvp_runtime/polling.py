@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import secrets
 import subprocess
 import sys
@@ -28,6 +29,26 @@ TE20_TELNET_TASKS = frozenset({"set_te20_telnet_open", "set_te20_telnet_closed"}
 TE20_PORT_TASKS = TE20_HTTP_TASKS | TE20_TELNET_TASKS
 TE20_AUTO_UPDATE_TASK = "disable_te20_auto_update"
 TE20_SSH_TASKS = frozenset({"set_te20_ssh_enabled", "set_te20_ssh_disabled"})
+TE20_NTP_TASK = "set_te20_ntp_settings"
+NTP_SERVER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,40}\Z")
+
+
+def validate_ntp_changes(plan: dict[str, Any], requested_tasks: list[str]) -> None:
+    changes = plan.get("ntpChanges")
+    if TE20_NTP_TASK not in requested_tasks:
+        if changes is not None:
+            raise PollingError("NTP settings require the exact TE20 action")
+        return
+    if not isinstance(changes, dict) or set(changes) != {"enabled", "mode", "server"}:
+        raise PollingError("NTP settings shape is invalid")
+    enabled, mode, server = changes["enabled"], changes["mode"], changes["server"]
+    if ((enabled is not None and type(enabled) is not bool)
+            or mode not in (None, "automatic", "manual")
+            or (server is not None and (not isinstance(server, str) or not NTP_SERVER_PATTERN.fullmatch(server)))
+            or (enabled is None and mode is None and server is None)
+            or (enabled is False and (mode is not None or server is not None))
+            or (mode == "automatic" and server is not None)):
+        raise PollingError("NTP settings are invalid or conflict")
 
 
 def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: list[str]) -> None:
@@ -35,9 +56,11 @@ def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: lis
     port = TE20_PORT_TASKS.intersection(requested_tasks)
     auto_update = TE20_AUTO_UPDATE_TASK in requested_tasks
     ssh = TE20_SSH_TASKS.intersection(requested_tasks)
-    if not answer and not port and not auto_update and not ssh:
+    ntp = TE20_NTP_TASK in requested_tasks
+    validate_ntp_changes(plan, requested_tasks)
+    if not answer and not port and not auto_update and not ssh and not ntp:
         return
-    if (len(answer) > 1 or len(ssh) > 1 or ((answer or auto_update or ssh) and len(requested_tasks) != 1)
+    if (len(answer) > 1 or len(ssh) > 1 or ((answer or auto_update or ssh or ntp) and len(requested_tasks) != 1)
             or len(TE20_HTTP_TASKS.intersection(port)) > 1
             or len(TE20_TELNET_TASKS.intersection(port)) > 1
             or (port and any(task not in TE20_PORT_TASKS for task in requested_tasks))):
@@ -255,7 +278,7 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
         result = adapter(
             {**device, "ipNormalized": ip, "allowInsecureTls": device.get("allowInsecureTls") is True or settings.get("allow_insecure_tls") is True},
             credential,
-            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks},
+            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes")},
         )
         merged = {**result, "ip": ip, "capturedAt": result.get("capturedAt") or captured_at, "adapterKey": manifest["key"], "networkAttempted": True, "ping": {"ok": True, "durationMs": ping.get("durationMs")}}
         return _complete_management_actions(device, requested_management_tasks, merged)
@@ -363,7 +386,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
             progress = settings.get("on_progress")
             if progress:
                 progress({"stage": "polling", "index": index, "total": len(devices), "device": {"ip": ip, "category": device.get("category"), "manufacturer": device.get("manufacturer"), "model": device.get("model")}})
-            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks})
+            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges")})
         results.append(result)
         if settings.get("on_result"):
             settings["on_result"](result, {"index": index, "total": len(devices), "device": device})

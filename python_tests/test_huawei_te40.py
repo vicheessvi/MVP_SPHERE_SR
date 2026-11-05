@@ -4,7 +4,7 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, DISABLE_TE20_AUTO_UPDATE_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, TE20_SSH_ACTIONS, HuaweiTransportError, _disable_te20_auto_update, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_port_setting, _set_te20_ssh, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, DISABLE_TE20_AUTO_UPDATE_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, SET_TE20_NTP_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, TE20_SSH_ACTIONS, HuaweiTransportError, _disable_te20_auto_update, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_ntp_settings, _set_te20_port_setting, _set_te20_ssh, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.adapters.device_settings import unknown_device_settings
 from mvp_runtime.redaction import sanitize_result
 
@@ -32,6 +32,72 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
+    def test_te20_ntp_writes_only_changed_fields_once_and_verifies(self):
+        state = {"synSerTime": 0, "ntpGetMode": 0, "timeServer": "old.example.test"}
+        calls = []
+        def action(name, payload):
+            calls.append((name, payload))
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"CfgItemInt": [{"CfgItemID": key, "CfgItemInfo": state[key]} for key in ("synSerTime", "ntpGetMode")], "CfgItemString": [{"CfgItemID": "timeServer", "CfgItemInfo": state["timeServer"]}]}
+            for item in payload["CfgItemInt"] + payload["CfgItemString"]:
+                state[item["CfgItemID"]] = item["CfgItemInfo"]
+            return {"success": 1}, {}
+        changes = {"enabled": True, "mode": "manual", "server": "new.example.test"}
+        bundle = "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI synSerTime ntpGetMode timeServer"
+        result = _set_te20_ntp_settings(bundle, "SYNTHETIC-CSRF", action, changes)
+        self.assertEqual(result["id"], SET_TE20_NTP_ACTION)
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(result["after"], {"enabled": True, "mode": "manual", "server": "new.example.test"})
+        self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "WEB_GetCfgParamAPI"])
+        self.assertEqual([payload["CfgIDString"] for name, payload in calls if name == "WEB_GetCfgParamAPI"], [["synSerTime", "ntpGetMode", "timeServer"]] * 2)
+        save = next(payload for name, payload in calls if name == "WEB_SaveCfgParamAPI")
+        self.assertEqual(save["CfgItemInt"], [{"CfgItemID": "synSerTime", "CfgItemInfo": 1}, {"CfgItemID": "ntpGetMode", "CfgItemInfo": 1}])
+        self.assertEqual(save["CfgItemString"], [{"CfgItemID": "timeServer", "CfgItemInfo": "new.example.test"}])
+        calls.clear()
+        self.assertEqual(_set_te20_ntp_settings(bundle, "SYNTHETIC-CSRF", action, changes)["status"], "already_compliant")
+        self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI"])
+
+    def test_te20_ntp_fails_closed_on_marker_schema_combination_and_postread(self):
+        bundle = "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI synSerTime ntpGetMode timeServer"
+        calls = []
+        def current(name, payload):
+            calls.append(name)
+            return {"success": 1}, {"synSerTime": 1, "ntpGetMode": 1, "timeServer": "ntp.example.test"}
+        missing = _set_te20_ntp_settings("WEB_GetCfgParamAPI synSerTime ntpGetMode timeServer", "SYNTHETIC-CSRF", current, {"enabled": False, "mode": None, "server": None})
+        self.assertEqual(missing["safeError"], "management_contract_unconfirmed")
+        self.assertEqual(calls, [])
+        invalid = _set_te20_ntp_settings(bundle, "SYNTHETIC-CSRF", current, {"enabled": False, "mode": "manual", "server": None})
+        self.assertEqual(invalid["safeError"], "configuration_combination_invalid")
+        self.assertEqual(calls, ["WEB_GetCfgParamAPI"])
+        values = iter((1, 1))
+        def mismatch(name, payload):
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"synSerTime": next(values), "ntpGetMode": 1, "timeServer": "ntp.example.test"}
+            return {"success": 1}, {}
+        failed = _set_te20_ntp_settings(bundle, "SYNTHETIC-CSRF", mismatch, {"enabled": False, "mode": None, "server": None})
+        self.assertEqual(failed["safeError"], "configuration_verification_failed")
+        self.assertTrue(failed["writeAttempted"])
+
+    def test_te20_ntp_action_in_full_poll_uses_exact_model_and_updates_json(self):
+        calls = []
+        bundle = RESOURCE_MARKERS + " synSerTime ntpGetMode timeServer"
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True,
+                                            configuration={"enabletelnet": 0, "enable_http": 0, "synSerTime": 1, "ntpGetMode": 1, "timeServer": "ntp.example.test"},
+                                            overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}}),
+             "management_tasks": [SET_TE20_NTP_ACTION], "ntp_changes": {"enabled": False, "mode": None, "server": None}},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["managementActions"][0]["status"], "applied")
+        self.assertFalse(result["deviceSettings"]["fields"]["ntp"]["value"]["enabled"])
+        writes = [json.loads(item["body"]) for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0]["CfgItemInt"], [{"CfgItemID": "synSerTime", "CfgItemInfo": 0}])
+        self.assertEqual(writes[0]["CfgItemString"], [])
+        self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
+
     def test_te20_ssh_actions_are_single_field_guarded_and_verified(self):
         for action_id, target in TE20_SSH_ACTIONS.items():
             with self.subTest(action_id=action_id):

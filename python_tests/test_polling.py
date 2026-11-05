@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError, abortable_wait, choose_interval_seconds, plan_interval_bounds, probe_device, register_adapter, run_plan, validate_plan_interval
+from mvp_runtime.polling import ADAPTER_REGISTRY, PollingCancelled, PollingError, abortable_wait, choose_interval_seconds, plan_interval_bounds, probe_device, register_adapter, run_plan, validate_ntp_changes, validate_plan_interval
 
 
 SUPPORTED = {"category": "controller", "manufacturer": "Extron", "model": "IPCP Pro 250", "pollingSupported": True}
@@ -16,6 +16,27 @@ HUAWEI_BOX610 = {"category": "vcs", "manufacturer": "Huawei", "model": "Box 610"
 
 
 class PollingTests(unittest.TestCase):
+    def test_te20_ntp_plan_validates_shape_conflicts_and_adapter_options(self) -> None:
+        changes = {"enabled": True, "mode": "manual", "server": "ntp.example.test"}
+        plan = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "managementTasks": ["set_te20_ntp_settings"], "ntpChanges": changes, "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "single_ip"}}
+        for invalid in (
+            {**plan, "ntpChanges": {"enabled": False, "mode": "manual", "server": None}},
+            {**plan, "ntpChanges": {"enabled": None, "mode": "automatic", "server": "ntp.example.test"}},
+            {**plan, "ntpChanges": {"enabled": None, "mode": None, "server": "bad value"}},
+            {**plan, "ntpChanges": {"enabled": None, "mode": None, "server": None}},
+            {**plan, "selection": {"mode": "filters"}},
+            {**plan, "devices": [{**HUAWEI_MODELS[0], "ip": "192.0.2.20"}]},
+            {**plan, "managementTasks": ["set_te20_ntp_settings", "set_te20_ssh_disabled"]},
+        ):
+            with self.assertRaises(PollingError):
+                run_plan(invalid, {"ping": lambda *_: self.fail("no network")})
+        seen = []
+        result = run_plan(plan, {"ping": lambda *_: {"ok": True, "durationMs": 1}, "get_credentials": lambda *_: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "adapters": {"huawei_te20_web_cgi_v1": lambda _device, _credentials, options: seen.append(options["ntp_changes"]) or {"ok": True}}})
+        self.assertTrue(result[0]["ok"])
+        self.assertEqual(seen, [changes])
+        with self.assertRaises(PollingError):
+            validate_ntp_changes({"ntpChanges": changes}, [])
+
     def test_te20_ssh_action_requires_one_exact_sr_target(self) -> None:
         plan = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "managementTasks": ["set_te20_ssh_disabled"], "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "single_ip"}}
         for invalid in ({**plan, "selection": {"mode": "filters"}}, {**plan, "devices": [{**HUAWEI_MODELS[0], "ip": "192.0.2.20"}]}, {**plan, "managementTasks": ["set_te20_ssh_disabled", "set_te20_ssh_enabled"]}, {**plan, "managementTasks": ["set_te20_ssh_disabled", "disable_te20_auto_update"]}):
