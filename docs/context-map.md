@@ -4,7 +4,7 @@
 
 - Спецификация, подтверждённые коды сна и отдельный контракт: `specs/038-te20-power-controls/`.
 - План/UI: `app.js`; exact action: `runtime/device-catalog.json`; повторная валидация в `mvp_runtime/polling.py` и `mvp_runtime/server.py`.
-- Guarded pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; ADR-0041. Реальная запись не выполнялась.
+- Guarded pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; ADR-0041. Администратор подтвердил работу новых параметров на рабочем TE20.
 
 ## Feature 037 — настройки NTP exact TE20
 
