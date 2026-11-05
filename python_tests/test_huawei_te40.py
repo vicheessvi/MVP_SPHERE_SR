@@ -4,7 +4,7 @@ import json
 import ssl
 import unittest
 
-from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, DISABLE_TE20_AUTO_UPDATE_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, SET_TE20_NTP_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, TE20_SSH_ACTIONS, HuaweiTransportError, _disable_te20_auto_update, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_ntp_settings, _set_te20_port_setting, _set_te20_ssh, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
+from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, DISABLE_TE20_AUTO_UPDATE_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, SET_TE20_NTP_ACTION, SET_TE20_POWER_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, TE20_SSH_ACTIONS, HuaweiTransportError, _disable_te20_auto_update, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_ntp_settings, _set_te20_power_settings, _set_te20_port_setting, _set_te20_ssh, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.adapters.device_settings import unknown_device_settings
 from mvp_runtime.redaction import sanitize_result
 
@@ -32,6 +32,65 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
+    def test_te20_power_writes_only_changed_fields_and_verifies(self):
+        state = {"suppotReboot": 0, "sleepTime": 0, "enableTimeReboot": 0, "rebootHour": 4, "rebootMinute": 0}
+        calls = []
+        def action(name, payload):
+            calls.append((name, payload))
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"CfgItemInt": [{"CfgItemID": key, "CfgItemInfo": state[key]} for key in state]}
+            for item in payload["CfgItemInt"]:
+                state[item["CfgItemID"]] = item["CfgItemInfo"]
+            return {"success": 1}, {}
+        bundle = "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI suppotReboot sleepTime enableTimeReboot rebootHour rebootMinute"
+        changes = {"shutdownRestart": True, "sleepMinutes": 10, "scheduledRestart": True, "restartHour": 3, "restartMinute": 15}
+        result = _set_te20_power_settings(bundle, "SYNTHETIC-CSRF", action, changes)
+        self.assertEqual(result["id"], SET_TE20_POWER_ACTION)
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "WEB_GetCfgParamAPI"])
+        save = next(payload for name, payload in calls if name == "WEB_SaveCfgParamAPI")
+        self.assertEqual([item["CfgItemID"] for item in save["CfgItemInt"]], list(state))
+        self.assertEqual(save["CfgItemString"], [])
+        calls.clear()
+        self.assertEqual(_set_te20_power_settings(bundle, "SYNTHETIC-CSRF", action, changes)["status"], "already_compliant")
+        self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI"])
+
+    def test_te20_power_fails_closed_on_marker_schema_schedule_and_postread(self):
+        bundle = "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI suppotReboot sleepTime enableTimeReboot rebootHour rebootMinute"
+        state = {"suppotReboot": 0, "sleepTime": 0, "enableTimeReboot": 0, "rebootHour": 4, "rebootMinute": 0}
+        calls = []
+        def action(name, payload):
+            calls.append(name)
+            return {"success": 1}, dict(state)
+        changes = {"shutdownRestart": None, "sleepMinutes": None, "scheduledRestart": None, "restartHour": 3, "restartMinute": 15}
+        self.assertEqual(_set_te20_power_settings("WEB_GetCfgParamAPI suppotReboot sleepTime enableTimeReboot rebootHour rebootMinute", "SYNTHETIC-CSRF", action, changes)["safeError"], "management_contract_unconfirmed")
+        self.assertEqual(calls, [])
+        self.assertEqual(_set_te20_power_settings(bundle, "SYNTHETIC-CSRF", action, changes)["safeError"], "configuration_combination_invalid")
+        self.assertEqual(calls, ["WEB_GetCfgParamAPI"])
+        def mismatched(name, payload):
+            return {"success": 1}, dict(state)
+        failed = _set_te20_power_settings(bundle, "SYNTHETIC-CSRF", mismatched, {"shutdownRestart": True, "sleepMinutes": None, "scheduledRestart": None, "restartHour": None, "restartMinute": None})
+        self.assertEqual(failed["safeError"], "configuration_verification_failed")
+        self.assertTrue(failed["writeAttempted"])
+
+    def test_te20_power_action_in_full_poll_updates_json_after_identity_gate(self):
+        calls = []
+        bundle = RESOURCE_MARKERS + " suppotReboot sleepTime enableTimeReboot rebootHour rebootMinute"
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True,
+                                            configuration={"enabletelnet": 0, "enable_http": 0, "suppotReboot": 0, "sleepTime": 0, "enableTimeReboot": 0, "rebootHour": 4, "rebootMinute": 0},
+                                            overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}}),
+             "management_tasks": [SET_TE20_POWER_ACTION], "power_changes": {"shutdownRestart": None, "sleepMinutes": 5, "scheduledRestart": None, "restartHour": None, "restartMinute": None}},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["managementActions"][0]["status"], "applied")
+        self.assertEqual(result["deviceSettings"]["fields"]["powerManagement"]["value"]["sleepTimeCode"], 5)
+        writes = [json.loads(item["body"]) for item in calls if "WEB_SaveCfgParamAPI" in item["path"]]
+        self.assertEqual([payload["CfgItemInt"] for payload in writes], [[{"CfgItemID": "sleepTime", "CfgItemInfo": 5}]])
+        self.assertNotIn("SYNTHETIC-PASSWORD", json.dumps(result))
+
     def test_te20_ntp_writes_only_changed_fields_once_and_verifies(self):
         state = {"synSerTime": 0, "ntpGetMode": 0, "timeServer": "old.example.test"}
         calls = []

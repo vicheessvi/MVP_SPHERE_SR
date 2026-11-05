@@ -30,6 +30,8 @@ TE20_PORT_TASKS = TE20_HTTP_TASKS | TE20_TELNET_TASKS
 TE20_AUTO_UPDATE_TASK = "disable_te20_auto_update"
 TE20_SSH_TASKS = frozenset({"set_te20_ssh_enabled", "set_te20_ssh_disabled"})
 TE20_NTP_TASK = "set_te20_ntp_settings"
+TE20_POWER_TASK = "set_te20_power_settings"
+POWER_SLEEP_VALUES = frozenset({0, 1, 5, 10, 15, 30, 60})
 NTP_SERVER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,40}\Z")
 
 
@@ -51,16 +53,39 @@ def validate_ntp_changes(plan: dict[str, Any], requested_tasks: list[str]) -> No
         raise PollingError("NTP settings are invalid or conflict")
 
 
+def validate_power_changes(plan: dict[str, Any], requested_tasks: list[str]) -> None:
+    changes = plan.get("powerChanges")
+    if TE20_POWER_TASK not in requested_tasks:
+        if changes is not None:
+            raise PollingError("Power settings require the exact TE20 action")
+        return
+    if not isinstance(changes, dict) or set(changes) != {"shutdownRestart", "sleepMinutes", "scheduledRestart", "restartHour", "restartMinute"}:
+        raise PollingError("Power settings shape is invalid")
+    shutdown, sleep, scheduled = (changes[key] for key in ("shutdownRestart", "sleepMinutes", "scheduledRestart"))
+    hour, minute = changes["restartHour"], changes["restartMinute"]
+    has_time = hour is not None or minute is not None
+    if ((shutdown is not None and type(shutdown) is not bool)
+            or (sleep is not None and (type(sleep) is not int or sleep not in POWER_SLEEP_VALUES))
+            or (scheduled is not None and type(scheduled) is not bool)
+            or (has_time and (type(hour) is not int or not 0 <= hour <= 23 or type(minute) is not int or not 0 <= minute <= 59))
+            or (shutdown is None and sleep is None and scheduled is None and not has_time)
+            or (scheduled is True and not has_time)
+            or (scheduled is False and has_time)):
+        raise PollingError("Power settings are invalid or conflict")
+
+
 def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: list[str]) -> None:
     answer = TE20_ANSWER_TASKS.intersection(requested_tasks)
     port = TE20_PORT_TASKS.intersection(requested_tasks)
     auto_update = TE20_AUTO_UPDATE_TASK in requested_tasks
     ssh = TE20_SSH_TASKS.intersection(requested_tasks)
     ntp = TE20_NTP_TASK in requested_tasks
+    power = TE20_POWER_TASK in requested_tasks
     validate_ntp_changes(plan, requested_tasks)
-    if not answer and not port and not auto_update and not ssh and not ntp:
+    validate_power_changes(plan, requested_tasks)
+    if not answer and not port and not auto_update and not ssh and not ntp and not power:
         return
-    if (len(answer) > 1 or len(ssh) > 1 or ((answer or auto_update or ssh or ntp) and len(requested_tasks) != 1)
+    if (len(answer) > 1 or len(ssh) > 1 or ((answer or auto_update or ssh or ntp or power) and len(requested_tasks) != 1)
             or len(TE20_HTTP_TASKS.intersection(port)) > 1
             or len(TE20_TELNET_TASKS.intersection(port)) > 1
             or (port and any(task not in TE20_PORT_TASKS for task in requested_tasks))):
@@ -278,7 +303,7 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
         result = adapter(
             {**device, "ipNormalized": ip, "allowInsecureTls": device.get("allowInsecureTls") is True or settings.get("allow_insecure_tls") is True},
             credential,
-            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes")},
+            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes")},
         )
         merged = {**result, "ip": ip, "capturedAt": result.get("capturedAt") or captured_at, "adapterKey": manifest["key"], "networkAttempted": True, "ping": {"ok": True, "durationMs": ping.get("durationMs")}}
         return _complete_management_actions(device, requested_management_tasks, merged)
@@ -386,7 +411,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
             progress = settings.get("on_progress")
             if progress:
                 progress({"stage": "polling", "index": index, "total": len(devices), "device": {"ip": ip, "category": device.get("category"), "manufacturer": device.get("manufacturer"), "model": device.get("model")}})
-            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges")})
+            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges")})
         results.append(result)
         if settings.get("on_result"):
             settings["on_result"](result, {"index": index, "total": len(devices), "device": device})

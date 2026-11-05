@@ -1,5 +1,11 @@
 # Карта контекста
 
+## Feature 038 — управление питанием exact TE20
+
+- Спецификация, подтверждённые коды сна и отдельный контракт: `specs/038-te20-power-controls/`.
+- План/UI: `app.js`; exact action: `runtime/device-catalog.json`; повторная валидация в `mvp_runtime/polling.py` и `mvp_runtime/server.py`.
+- Guarded pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; ADR-0041. Реальная запись не выполнялась.
+
 ## Feature 037 — настройки NTP exact TE20
 
 - Три поля выбора, контракт, ограничения и тесты: `specs/037-te20-ntp-controls/`.

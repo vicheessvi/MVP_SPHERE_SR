@@ -79,6 +79,12 @@
       "label": "Изменить настройки NTP на Huawei TE20",
       "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
       "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
+    },
+    {
+      "id": "set_te20_power_settings",
+      "label": "Изменить управление питанием Huawei TE20",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE20"], "protocolStatus": "supported", "transport": "huawei_te20_web_cgi_v1"
     }
   ],
   "entries": [

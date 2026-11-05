@@ -236,7 +236,7 @@
       transport: "huawei_te20_web_cgi_v1",
       normalizerKey: "huawei-te-json-v1",
       credentialMode: "memory_xlsx_pool",
-      managementTasks: Object.freeze(["disable_insecure_management_services", "set_te20_auto_answer_automatic", "set_te20_auto_answer_manual", "set_te20_http_open", "set_te20_http_closed", "set_te20_telnet_open", "set_te20_telnet_closed", "disable_te20_auto_update", "set_te20_ssh_enabled", "set_te20_ssh_disabled", "set_te20_ntp_settings"])
+      managementTasks: Object.freeze(["disable_insecure_management_services", "set_te20_auto_answer_automatic", "set_te20_auto_answer_manual", "set_te20_http_open", "set_te20_http_closed", "set_te20_telnet_open", "set_te20_telnet_closed", "disable_te20_auto_update", "set_te20_ssh_enabled", "set_te20_ssh_disabled", "set_te20_ntp_settings", "set_te20_power_settings"])
     }),
     ...["te30", "te40", "te50", "te60"].map((modelNormalized) => Object.freeze({
       key: "vcs/huawei/te-family",
@@ -2043,6 +2043,8 @@
   const MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE = "disable_te20_auto_update";
   const TE20_SSH_TASK_BY_MODE = Object.freeze({ enable: "set_te20_ssh_enabled", disable: "set_te20_ssh_disabled" });
   const MANAGEMENT_TASK_TE20_NTP = "set_te20_ntp_settings";
+  const MANAGEMENT_TASK_TE20_POWER = "set_te20_power_settings";
+  const TE20_SLEEP_VALUES = Object.freeze([0, 1, 5, 10, 15, 30, 60]);
   const TE20_PORT_TASK_BY_MODE = Object.freeze({
     http: Object.freeze({ open: "set_te20_http_open", close: "set_te20_http_closed" }),
     telnet: Object.freeze({ open: "set_te20_telnet_open", close: "set_te20_telnet_closed" })
@@ -2240,6 +2242,21 @@
     if (ntpMode === "automatic" && ntpServer !== null) errors.push("Для режима «Авто» имя сервера должно оставаться без изменений");
     const ntpChanges = { enabled: ntpEnabled, mode: ntpMode, server: ntpServer };
     if (ntpEnabled !== null || ntpMode !== null || ntpServer !== null) managementTasks.push(MANAGEMENT_TASK_TE20_NTP);
+    const binaryPower = (value) => value === "enable" ? true : value === "disable" ? false : null;
+    const shutdownRestart = binaryPower(input.te20ShutdownRestart);
+    const scheduledRestart = binaryPower(input.te20ScheduledRestart);
+    const sleepMinutes = input.te20SleepMinutes === undefined || input.te20SleepMinutes === "" ? null : Number(input.te20SleepMinutes);
+    const restartTime = String(input.te20RestartTime || "").trim();
+    const timeMatch = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(restartTime);
+    for (const [label, value] of [["Shut Down/Restart", input.te20ShutdownRestart], ["Плановый перезапуск", input.te20ScheduledRestart]]) {
+      if (value && !["enable", "disable"].includes(value)) errors.push(`Недопустимое значение «${label}»`);
+    }
+    if (sleepMinutes !== null && !TE20_SLEEP_VALUES.includes(sleepMinutes)) errors.push("Выберите подтверждённый интервал сна TE20");
+    if (restartTime && !timeMatch) errors.push("Укажите время планового перезапуска в формате ЧЧ:ММ (00:00–23:59)");
+    if (scheduledRestart === true && !timeMatch) errors.push("При включении планового перезапуска укажите время");
+    if (scheduledRestart === false && restartTime) errors.push("При отключении расписания время должно оставаться без изменений");
+    const powerChanges = { shutdownRestart, sleepMinutes, scheduledRestart, restartHour: timeMatch ? Number(timeMatch[1]) : null, restartMinute: timeMatch ? Number(timeMatch[2]) : null };
+    if (shutdownRestart !== null || sleepMinutes !== null || scheduledRestart !== null || restartTime) managementTasks.push(MANAGEMENT_TASK_TE20_POWER);
     for (const [port, value] of [["http", input.te20HttpMode], ["telnet", input.te20TelnetMode]]) {
       if (value && !["open", "close"].includes(value)) errors.push(`Недопустимое значение настройки ${port.toUpperCase()}`);
       if (TE20_PORT_TASK_BY_MODE[port][value]) managementTasks.push(TE20_PORT_TASK_BY_MODE[port][value]);
@@ -2251,11 +2268,13 @@
     const sshTask = managementTasks.find((task) => Object.values(TE20_SSH_TASK_BY_MODE).includes(task));
     if (sshTask && managementTasks.length > 1) errors.push("Изменение SSH запускайте отдельно от других задач управления");
     if (managementTasks.includes(MANAGEMENT_TASK_TE20_NTP) && managementTasks.length > 1) errors.push("Изменение NTP запускайте отдельно от других задач управления");
+    if (managementTasks.includes(MANAGEMENT_TASK_TE20_POWER) && managementTasks.length > 1) errors.push("Управление питанием запускайте отдельно от других задач управления");
     if (portTasks.length && managementTasks.length !== portTasks.length) errors.push("Отдельные настройки портов нельзя совмещать с другими задачами управления");
     if (answerTask && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], answerTask) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Изменение Answer mode доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
     if (managementTasks.includes(MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Отключение автообновления доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
     if (sshTask && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], sshTask) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Изменение SSH доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
     if (managementTasks.includes(MANAGEMENT_TASK_TE20_NTP) && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_NTP) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Изменение NTP доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
+    if (managementTasks.includes(MANAGEMENT_TASK_TE20_POWER) && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_POWER) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Управление питанием доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
     if (portTasks.length && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || portTasks.some((task) => !supportsManagementTask(projection.selectedDevices[0], task)) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Изменение HTTP/Telnet доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
     if (managementTasks.includes(MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES) && !projection.managementEligibleDevices.length) errors.push("Среди выбранных устройств нет точной модели Huawei с поддержкой выбранной задачи управления HTTP/Telnet");
     if (errors.length) return { ok: false, state: deepClone(currentState), projection, errors };
@@ -2271,6 +2290,7 @@
       targetDevices: usesManagementTargetList ? projection.selectedDevices.map(pollingRuntimeDevice) : [],
       managementTasks,
       ...(managementTasks.includes(MANAGEMENT_TASK_TE20_NTP) ? { ntpChanges } : {}),
+      ...(managementTasks.includes(MANAGEMENT_TASK_TE20_POWER) ? { powerChanges } : {}),
       fileCount: 0, successCount: 0, errorCount: 0, status: "ready_for_local_cli",
       selectionSummary: { total: projection.selectedDevices.length, implemented: projection.supportedDevices.length, notImplemented: projection.unsupportedDevices.length, managementEligible: projection.managementEligibleDevices.length, managementSkipped: projection.managementSkippedDevices.length }
     };
@@ -2287,7 +2307,7 @@
       : (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).map(pollingRuntimeDevice);
     return {
       ok: true,
-      payload: { schemaVersion: 3, scheduledAt: plan.capturedAt, intervalMinSeconds: plan.intervalMinSeconds, intervalMaxSeconds: plan.intervalMaxSeconds, ...(Number.isInteger(plan.intervalSeconds) ? { intervalSeconds: plan.intervalSeconds } : {}), authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), ...(plan.ntpChanges ? { ntpChanges: deepClone(plan.ntpChanges) } : {}), devices },
+      payload: { schemaVersion: 3, scheduledAt: plan.capturedAt, intervalMinSeconds: plan.intervalMinSeconds, intervalMaxSeconds: plan.intervalMaxSeconds, ...(Number.isInteger(plan.intervalSeconds) ? { intervalSeconds: plan.intervalSeconds } : {}), authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), ...(plan.ntpChanges ? { ntpChanges: deepClone(plan.ntpChanges) } : {}), ...(plan.powerChanges ? { powerChanges: deepClone(plan.powerChanges) } : {}), devices },
       filename: `extron-polling-plan-${String(plan.capturedAt || "").slice(0, 10) || "local"}.json`,
       errors: []
     };
@@ -5389,7 +5409,7 @@
     pollingCancelRequested: false,
     pollingPlanResult: null,
     zeroIntervalAcknowledged: false,
-    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false, te20AnswerMode: "", te20HttpMode: "", te20TelnetMode: "", te20AutoUpdateMode: "", te20SshMode: "", te20NtpEnabled: "", te20NtpMode: "", te20NtpServerMode: "", te20NtpServerValue: "" },
+    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false, te20AnswerMode: "", te20HttpMode: "", te20TelnetMode: "", te20AutoUpdateMode: "", te20SshMode: "", te20NtpEnabled: "", te20NtpMode: "", te20NtpServerMode: "", te20NtpServerValue: "", te20ShutdownRestart: "", te20SleepMinutes: "", te20ScheduledRestart: "", te20RestartTime: "" },
     credentialSummary: null,
     adminAccess: launchMode.kind === "local" ? null : { adminConfigured: false, adminUnlocked: false },
     managementTargetListSummary: null,
@@ -6456,6 +6476,7 @@
           <div class="filter-grid section-gap"><div class="field"><label>Автообновление Huawei TE20 (один IP)<select name="te20AutoUpdateMode"><option value=""${!ui.pollingPlanSelection.te20AutoUpdateMode ? " selected" : ""}>Не менять</option><option value="disable"${ui.pollingPlanSelection.te20AutoUpdateMode === "disable" ? " selected" : ""}>Отключить</option></select></label></div></div>
           <div class="filter-grid section-gap"><div class="field"><label>SSH Huawei TE20 (один IP)<select name="te20SshMode"><option value=""${!ui.pollingPlanSelection.te20SshMode ? " selected" : ""}>Не менять</option><option value="enable"${ui.pollingPlanSelection.te20SshMode === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20SshMode === "disable" ? " selected" : ""}>Отключить</option></select></label></div></div>
           <fieldset class="polling-mode-selector section-gap"><legend>NTP Huawei TE20 (один IP)</legend><div class="filter-grid"><div class="field"><label>Синхронизация NTP<select name="te20NtpEnabled"><option value=""${!ui.pollingPlanSelection.te20NtpEnabled ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20NtpEnabled === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20NtpEnabled === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Режим адреса NTP<select name="te20NtpMode"><option value=""${!ui.pollingPlanSelection.te20NtpMode ? " selected" : ""}>Без изменений</option><option value="manual"${ui.pollingPlanSelection.te20NtpMode === "manual" ? " selected" : ""}>Вручную</option><option value="automatic"${ui.pollingPlanSelection.te20NtpMode === "automatic" ? " selected" : ""}>Авто</option></select></label></div><div class="field"><label>Имя сервера NTP<select name="te20NtpServerMode"><option value=""${!ui.pollingPlanSelection.te20NtpServerMode ? " selected" : ""}>Без изменений</option><option value="set"${ui.pollingPlanSelection.te20NtpServerMode === "set" ? " selected" : ""}>Ввести значение</option></select></label><input name="te20NtpServerValue" aria-label="Новое имя сервера NTP" autocomplete="off" maxlength="41" placeholder="Имя или IP сервера" value="${escapeHtml(ui.pollingPlanSelection.te20NtpServerValue || "")}"${ui.pollingPlanSelection.te20NtpServerMode === "set" ? "" : " disabled"}></div></div></fieldset>
+          <fieldset class="polling-mode-selector section-gap"><legend>Управление питанием Huawei TE20 (один IP)</legend><div class="filter-grid"><div class="field"><label>Shut Down/Restart<select name="te20ShutdownRestart"><option value=""${!ui.pollingPlanSelection.te20ShutdownRestart ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20ShutdownRestart === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20ShutdownRestart === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Переход в спящий режим<select name="te20SleepMinutes"><option value=""${ui.pollingPlanSelection.te20SleepMinutes === "" ? " selected" : ""}>Без изменений</option>${TE20_SLEEP_VALUES.map((minutes) => `<option value="${minutes}"${String(ui.pollingPlanSelection.te20SleepMinutes) === String(minutes) ? " selected" : ""}>${minutes === 0 ? "Никогда" : `${minutes} мин`}</option>`).join("")}</select></label></div><div class="field"><label>Плановый перезапуск<select name="te20ScheduledRestart"><option value=""${!ui.pollingPlanSelection.te20ScheduledRestart ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20ScheduledRestart === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20ScheduledRestart === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Время перезапуска, ЧЧ:ММ<input name="te20RestartTime" type="time" aria-label="Время планового перезапуска" value="${escapeHtml(ui.pollingPlanSelection.te20RestartTime || "")}"></label></div></div></fieldset>
           <div class="warning-panel polling-zero-warning" data-zero-interval-warning role="alert"${zeroInterval ? "" : " hidden"}><strong>Опрос без интервалов</strong><p>При диапазоне 0–0 между опросами устройств не будет пауз. Следующий опрос начнётся сразу после сохранения результата предыдущего устройства.</p><label><input type="checkbox" name="confirmNoInterval" data-confirm-zero-interval${zeroInterval && ui.zeroIntervalAcknowledged ? " checked" : ""}> Подтверждаю запуск опроса без интервалов</label></div>
           <button class="button primary" type="submit" data-start-automatic-polling${pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor)) ? "" : " disabled"}>Сформировать и запустить опрос</button>
         </form>
@@ -7256,6 +7277,10 @@
       ui.pollingPlanSelection.te20NtpMode = ["automatic", "manual"].includes(formData.get("te20NtpMode")) ? String(formData.get("te20NtpMode")) : "";
       ui.pollingPlanSelection.te20NtpServerMode = formData.get("te20NtpServerMode") === "set" ? "set" : "";
       ui.pollingPlanSelection.te20NtpServerValue = String(formData.get("te20NtpServerValue") || "");
+      ui.pollingPlanSelection.te20ShutdownRestart = ["enable", "disable"].includes(formData.get("te20ShutdownRestart")) ? String(formData.get("te20ShutdownRestart")) : "";
+      ui.pollingPlanSelection.te20SleepMinutes = String(formData.get("te20SleepMinutes") ?? "");
+      ui.pollingPlanSelection.te20ScheduledRestart = ["enable", "disable"].includes(formData.get("te20ScheduledRestart")) ? String(formData.get("te20ScheduledRestart")) : "";
+      ui.pollingPlanSelection.te20RestartTime = String(formData.get("te20RestartTime") || "");
       ui.zeroIntervalAcknowledged = isZeroIntervalRange(ui.pollingPlanSelection) && formData.get("confirmNoInterval") === "on";
       if (isZeroIntervalRange(ui.pollingPlanSelection) && !ui.zeroIntervalAcknowledged) { setMessage("Подтвердите запуск опроса без интервалов между устройствами.", "warning"); render(); return; }
       if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
@@ -7268,6 +7293,7 @@
       if (ui.pollingPlanSelection.te20AutoUpdateMode === "disable" && !global.confirm("На одном выбранном Huawei TE20 будет отключено автообновление. Перед записью и после неё инструмент прочитает значение настройки. Продолжить?")) return;
       if (ui.pollingPlanSelection.te20SshMode && !global.confirm(`На одном выбранном Huawei TE20 SSH будет ${ui.pollingPlanSelection.te20SshMode === "enable" ? "включён" : "отключён"}. Перед записью и после неё инструмент прочитает значение настройки. Отключение SSH может прекратить удалённый доступ. Продолжить?`)) return;
       if (result.plan.managementTasks.includes(MANAGEMENT_TASK_TE20_NTP) && !global.confirm("На одном выбранном Huawei TE20 будут изменены только выбранные настройки NTP. Это может изменить время устройства. Будет выполнено чтение до записи и повторное чтение после неё. Продолжить?")) return;
+      if (result.plan.managementTasks.includes(MANAGEMENT_TASK_TE20_POWER) && !global.confirm("На одном выбранном Huawei TE20 будут изменены только выбранные настройки питания. Включённое расписание может автоматически перезагрузить терминал в указанное время. Перед записью и после неё инструмент прочитает значения. Действие ещё не проверено записью на реальном устройстве. Продолжить?")) return;
       ui.pollingPlanResult = { ...result.plan.selectionSummary, planId: result.plan.id };
       if (!commitState(result.state, `План сформирован: ${result.plan.selectionSummary.implemented} устройств готовы для автоматического опроса.`)) return;
       try {
@@ -7690,6 +7716,11 @@
       ui.pollingPlanResult = null;
       return;
     }
+    if (pollingPlanForm && ["te20ShutdownRestart", "te20SleepMinutes", "te20ScheduledRestart"].includes(event.target.name)) {
+      ui.pollingPlanSelection[event.target.name] = String(event.target.value || "");
+      ui.pollingPlanResult = null;
+      return;
+    }
     if (pollingPlanForm && event.target.name === "confirmNoInterval") {
       ui.zeroIntervalAcknowledged = event.target.checked === true && isZeroIntervalRange(ui.pollingPlanSelection);
       syncZeroIntervalConsent(pollingPlanForm);
@@ -7809,6 +7840,11 @@
     }
     if (event.target.name === "te20NtpServerValue") {
       ui.pollingPlanSelection.te20NtpServerValue = String(event.target.value || "");
+      ui.pollingPlanResult = null;
+      return;
+    }
+    if (event.target.name === "te20RestartTime") {
+      ui.pollingPlanSelection.te20RestartTime = String(event.target.value || "");
       ui.pollingPlanResult = null;
       return;
     }

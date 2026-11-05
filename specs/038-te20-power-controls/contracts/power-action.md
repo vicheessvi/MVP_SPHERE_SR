@@ -1,0 +1,3 @@
+# Contract: set_te20_power_settings
+
+Только один exact TE20 из SR, plan schema v3, admin gate, отдельное подтверждение. `powerChanges` строго проверяется в браузере, loopback API, исполнителе и адаптере. Текущий bundle должен содержать `WEB_GetCfgParamAPI`, `WEB_SaveCfgParamAPI` и все пять config-маркеров. После identity gate читаются ровно пять полей, допустимы строгие целые диапазоны. Уже целевое состояние — `already_compliant` без записи. Иначе один POST `WEB_SaveCfgParamAPI` с изменёнными `CfgItemInt`, пустым `CfgItemString` и CSRF. `applied` — только при точном post-read всех пяти полей. Неясную запись не повторять. Это настройка меню, не команда немедленного выключения или перезагрузки.
