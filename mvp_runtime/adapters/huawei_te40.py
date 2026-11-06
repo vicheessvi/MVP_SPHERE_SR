@@ -400,7 +400,7 @@ def _read_te20_extra_settings(
                 pass
 
 
-def _read_te20_site_name_config(
+def _read_te_site_name_config(
     bundle_text: str, csrf_token: str,
     action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
 ) -> dict[str, Any]:
@@ -958,8 +958,8 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         }
     management_actions = []
     site_name = read_site_name(bundle_text, lambda name, payload: action(name, {**(payload or {}), "acCSRFToken": csrf_token}))
-    if planned_model == TE20_MODEL and site_name["status"] == "protocol_required":
-        site_name = _read_te20_site_name_config(bundle_text, csrf_token, action)
+    if planned_model in SUPPORTED_MODELS and site_name["status"] == "protocol_required":
+        site_name = _read_te_site_name_config(bundle_text, csrf_token, action)
     if DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks:
         management_actions.append(_disable_insecure_management_services(planned_model, bundle_text, csrf_token, action, settle))
     if planned_model == TE20_MODEL and SET_TE20_AUTO_ANSWER_ACTION in requested_management_tasks:

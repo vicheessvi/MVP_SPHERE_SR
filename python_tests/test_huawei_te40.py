@@ -578,6 +578,84 @@ class HuaweiTe40Tests(unittest.TestCase):
         self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic TE20 Site")
         self.assertIn('"siteName"', json.dumps(result))
 
+    def test_te40_reads_site_name_from_confirmed_config_after_identity(self):
+        calls = []
+        bundle = RESOURCE_MARKERS + " WEB_GetMailBoxDataAPI 'sitename'"
+        original = self.success_request(calls, overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
+
+        def request(options):
+            if "ActionID=WEB_GetCfgParamAPI" in options["path"] and json.loads(options["body"]).get("CfgIDString") == ["sitename"]:
+                calls.append(options)
+                return envelope({"CfgItemString": [{"CfgItemID": "sitename", "CfgItemInfo": "Synthetic TE40 Site"}]})
+            return original(options)
+
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.40", "model": "TE40", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": request},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["siteName"], {"status": "read", "value": "Synthetic TE40 Site", "source": "huawei_cfg_sitename"})
+        self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], "Synthetic TE40 Site")
+        site_call = next(index for index, item in enumerate(calls) if json.loads(item.get("body") or "{}").get("CfgIDString") == ["sitename"])
+        self.assertGreater(site_call, next(index for index, item in enumerate(calls) if "WEB_GetVersionInfoAPI" in item["path"]))
+        self.assertEqual(json.loads(calls[site_call]["body"])["acCSRFToken"], "SYNTHETIC-CSRF")
+        self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in calls))
+
+    def test_te30_te50_te60_site_name_config_is_guarded_and_provisional(self):
+        for model in ("TE30", "TE50", "TE60"):
+            with self.subTest(model=model):
+                calls = []
+                bundle = RESOURCE_MARKERS + " 'sitename'"
+                original = self.success_request(calls, terminal_model=model, overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
+
+                def request(options):
+                    if "ActionID=WEB_GetCfgParamAPI" in options["path"] and json.loads(options["body"]).get("CfgIDString") == ["sitename"]:
+                        calls.append(options)
+                        return envelope({"CfgItemString": [{"CfgItemID": "sitename", "CfgItemInfo": f"Synthetic {model} Site"}]})
+                    return original(options)
+
+                result = poll_huawei_te_device(
+                    {"ip": "192.0.2.40", "model": model, "allowInsecureTls": True},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+                    {"request": request},
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["siteName"], {"status": "read", "value": f"Synthetic {model} Site", "source": "huawei_cfg_sitename"})
+                self.assertEqual(result["webBlocks"]["Device Info"]["Site Name"], f"Synthetic {model} Site")
+                site_call = next(index for index, item in enumerate(calls) if json.loads(item.get("body") or "{}").get("CfgIDString") == ["sitename"])
+                self.assertGreater(site_call, next(index for index, item in enumerate(calls) if "WEB_GetVersionInfoAPI" in item["path"]))
+                self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in calls))
+
+    def test_te_family_site_name_config_fails_closed_without_markers_or_string_schema(self):
+        for model, bundle, response in (
+            ("TE40", RESOURCE_MARKERS, None),
+            ("TE40", RESOURCE_MARKERS + " 'sitename'", {"CfgItemInt": [{"CfgItemID": "sitename", "CfgItemInfo": 1}]}),
+            ("TE30", RESOURCE_MARKERS, None),
+            ("TE50", RESOURCE_MARKERS + " 'sitename'", {"CfgItemString": [{"CfgItemID": "sitename", "CfgItemInfo": ""}]}),
+            ("TE60", RESOURCE_MARKERS + " 'sitename'", {"CfgItemString": [{"CfgItemID": "sitename", "CfgItemInfo": 1}]}),
+        ):
+            with self.subTest(model=model, response=response):
+                calls = []
+                original = self.success_request(calls, terminal_model=model, overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
+
+                def request(options):
+                    if "ActionID=WEB_GetCfgParamAPI" in options["path"] and json.loads(options["body"]).get("CfgIDString") == ["sitename"]:
+                        calls.append(options)
+                        return envelope(response)
+                    return original(options)
+
+                result = poll_huawei_te_device(
+                    {"ip": "192.0.2.40", "model": model, "allowInsecureTls": True},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+                    {"request": request},
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["siteName"]["status"], "unavailable" if response else "protocol_required")
+                self.assertNotIn("Site Name", result["webBlocks"]["Device Info"])
+                site_calls = [item for item in calls if json.loads(item.get("body") or "{}").get("CfgIDString") == ["sitename"]]
+                self.assertEqual(len(site_calls), 1 if response else 0)
+
     def test_te20_uses_exact_tls11_legacy_preauth_and_guarded_management_action(self):
         calls = []
         result = poll_huawei_te_device(
