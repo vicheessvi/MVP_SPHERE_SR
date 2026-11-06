@@ -72,8 +72,8 @@ TE20_TLS_PROFILE = "huawei_te20_tls11_exact"
 DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
 SET_TE20_AUTO_ANSWER_ACTION = "set_te20_auto_answer_automatic"
 SET_TE20_MANUAL_ANSWER_ACTION = "set_te20_auto_answer_manual"
-DISABLE_TE20_AUTO_UPDATE_ACTION = "disable_te20_auto_update"
 TE_FAMILY_ANSWER_ACTIONS = {"set_te_family_auto_answer_automatic": 0, "set_te_family_auto_answer_manual": 1}
+DISABLE_TE20_AUTO_UPDATE_ACTION = "disable_te20_auto_update"
 SET_TE20_NTP_ACTION = "set_te20_ntp_settings"
 SET_TE20_POWER_ACTION = "set_te20_power_settings"
 TE20_SSH_ACTIONS = {"set_te20_ssh_enabled": 1, "set_te20_ssh_disabled": 0}
@@ -417,6 +417,74 @@ def _read_te_site_name_config(
         return {"status": "unavailable", "value": None}
 
 
+TE_FAMILY_READ_IDS = ("enable_ssh", "isenableautoupgrade", "synSerTime", "ntpGetMode", "timeServer", "sleepTime", "enableTimeReboot", "autoreply")
+
+
+def _read_te_family_extra_settings(
+    settings: dict[str, Any], bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> None:
+    fields = settings["fields"]
+    ids = tuple(key for key in TE_FAMILY_READ_IDS if re.search(r"['\"]" + re.escape(key) + r"['\"]", bundle_text))
+    if "WEB_GetCfgParamAPI" in bundle_text and ids:
+        try:
+            outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": list(ids), "acCSRFToken": csrf_token})
+            if outer.get("success") != 1:
+                raise HuaweiContractError("configuration_read_failed")
+            values = _exact_config_items(data, ids)
+            for field, config_id in (("ssh", "enable_ssh"), ("autoUpdate", "isenableautoupgrade")):
+                if config_id in ids:
+                    fields[field] = binary_setting(values.get(config_id), f"WEB_GetCfgParamAPI:{config_id}")
+            if "autoreply" in ids:
+                fields["autoAnswer"] = binary_setting(values.get("autoreply"), "WEB_GetCfgParamAPI:autoreply", disabled_value=1)
+            if all(key in ids for key in ("synSerTime", "ntpGetMode", "timeServer")):
+                enabled, mode, server = (values.get(key) for key in ("synSerTime", "ntpGetMode", "timeServer"))
+                if type(enabled) is int and enabled in (0, 1) and type(mode) is int and mode in (0, 1) and isinstance(server, str) and len(server) <= 255 and not any(ord(char) < 32 for char in server):
+                    fields["ntp"] = {"status": "read", "value": {"enabled": bool(enabled), "modeCode": mode, "mode": "manual" if mode == 1 else "automatic", "server": server}, "source": "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer"}
+                else:
+                    fields["ntp"] = {"status": "unavailable", "value": None}
+            if "sleepTime" in ids:
+                sleep = values.get("sleepTime")
+                if type(sleep) is int and 0 <= sleep <= 100000:
+                    power = {"sleepMode": "never" if sleep == 0 else "interval", "sleepTimeCode": sleep}
+                    scheduled = values.get("enableTimeReboot")
+                    if "enableTimeReboot" in ids and type(scheduled) is int and scheduled in (0, 1):
+                        power["scheduledRestartCode"] = scheduled
+                    fields["powerManagement"] = {"status": "read", "value": power, "source": "WEB_GetCfgParamAPI:sleepTime"}
+                else:
+                    fields["powerManagement"] = {"status": "unavailable", "value": None}
+        except Exception:
+            for field, config_id in (("ssh", "enable_ssh"), ("autoUpdate", "isenableautoupgrade"), ("autoAnswer", "autoreply"), ("powerManagement", "sleepTime")):
+                if config_id in ids:
+                    fields[field] = {"status": "unavailable", "value": None}
+            if all(key in ids for key in ("synSerTime", "ntpGetMode", "timeServer")):
+                fields["ntp"] = {"status": "unavailable", "value": None}
+    if "WEB_GetSnmpCfgAPI" in bundle_text:
+        try:
+            outer, data = action("WEB_GetSnmpCfgAPI", {"acCSRFToken": csrf_token})
+            if outer.get("success") != 1 or not isinstance(data, dict):
+                raise HuaweiContractError("snmp_read_failed")
+            v2, service = data.get("snmpv2"), data.get("IsEnableSnmp")
+            if type(v2) is int and v2 in (0, 1) and type(service) is int and service in (0, 1):
+                fields["snmpV2"] = {"status": "read", "value": "enabled" if v2 == 1 and service == 1 else "disabled", "configuredEnabled": bool(v2), "serviceEnabled": bool(service), "source": "WEB_GetSnmpCfgAPI:snmpv2,IsEnableSnmp"}
+            else:
+                fields["snmpV2"] = {"status": "unavailable", "value": None}
+        except Exception:
+            fields["snmpV2"] = {"status": "unavailable", "value": None}
+    if "WEB_GetWifiStatModeAPI" in bundle_text:
+        try:
+            outer, data = action("WEB_GetWifiStatModeAPI", {"acCSRFToken": csrf_token})
+            if outer.get("success") != 1 or not isinstance(data, dict):
+                raise HuaweiContractError("wifi_read_failed")
+            mode = data.get("ucWifiMode")
+            if type(mode) is int and mode in (0, 1, 2, 3):
+                fields["wifi"] = {"status": "read", "value": {"modeCode": mode, "clientEnabled": mode in (2, 3), "accessPointEnabled": mode in (1, 3)}, "source": "WEB_GetWifiStatModeAPI:ucWifiMode"}
+            else:
+                fields["wifi"] = {"status": "unavailable", "value": None}
+        except Exception:
+            fields["wifi"] = {"status": "unavailable", "value": None}
+
+
 def _read_device_settings(
     planned_model: str,
     bundle_text: str,
@@ -430,6 +498,8 @@ def _read_device_settings(
         wifi_capability = ((resources or {}).get("termSpecs") or {}).get("EnableWifi")
         if type(wifi_capability) is int and wifi_capability == 0:
             settings["fields"]["wifi"] = {"status": "not_exposed", "value": None, "reason": "capability_absent"}
+    elif planned_model in TE_FAMILY_MODELS:
+        _read_te_family_extra_settings(settings, bundle_text, csrf_token, action)
     if not all(marker in bundle_text for marker in MANAGEMENT_ACTION_MARKERS):
         return settings
     try:
@@ -487,17 +557,6 @@ def _disable_insecure_management_services(
                 {"CfgItemID": "enable_http", "CfgItemInfo": target_values["enable_http"]},
             ],
             "CfgItemString": [],
-    elif planned_model in TE_FAMILY_MODELS and "autoreply" in bundle_text:
-        try:
-            outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": ["autoreply"], "acCSRFToken": csrf_token})
-            if outer.get("success") == 1:
-                value = _exact_config_items(data, ("autoreply",)).get("autoreply")
-                if type(value) is int and value in (0, 1):
-                    settings["fields"]["autoAnswer"] = binary_setting(value, "WEB_GetCfgParamAPI:autoreply", disabled_value=1)
-                else:
-                    settings["fields"]["autoAnswer"] = {"status": "unavailable", "value": None}
-        except Exception:
-            settings["fields"]["autoAnswer"] = {"status": "unavailable", "value": None}
             "acCSRFToken": csrf_token,
         }
         outer, _data = action("WEB_SaveCfgParamAPI", payload)
@@ -578,46 +637,6 @@ def _set_te20_auto_answer_manual(bundle_text: str, csrf_token: str, action: Call
     return _set_te20_answer_mode(bundle_text, csrf_token, action, 1)
 
 
-def _set_te20_port_setting(
-    action_id: str, bundle_text: str, csrf_token: str,
-    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
-) -> dict[str, Any]:
-    if action_id not in TE20_PORT_ACTIONS:
-        raise ValueError("unsupported_te20_port_action")
-    config_id, target = TE20_PORT_ACTIONS[action_id]
-    return _set_te20_binary_setting(action_id, config_id, target, bundle_text, csrf_token, action)
-
-
-def _disable_te20_auto_update(
-    bundle_text: str, csrf_token: str,
-    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
-) -> dict[str, Any]:
-    return _set_te20_binary_setting(DISABLE_TE20_AUTO_UPDATE_ACTION, "isenableautoupgrade", 0, bundle_text, csrf_token, action)
-
-
-def _set_te20_ssh(
-    action_id: str, bundle_text: str, csrf_token: str,
-    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
-) -> dict[str, Any]:
-    if action_id not in TE20_SSH_ACTIONS:
-        raise ValueError("unsupported_te20_ssh_action")
-    return _set_te20_binary_setting(action_id, "enable_ssh", TE20_SSH_ACTIONS[action_id], bundle_text, csrf_token, action)
-
-
-def _set_te20_binary_setting(
-    action_id: str, config_id: str, target: int, bundle_text: str, csrf_token: str,
-    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
-) -> dict[str, Any]:
-    base = {"id": action_id, "transport": "https/443", "changed": False, "writeAttempted": False}
-    if not all(marker in bundle_text for marker in ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", config_id)):
-        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
-
-    def read_value() -> int:
-        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": [config_id], "acCSRFToken": csrf_token})
-        if outer.get("success") != 1:
-            raise HuaweiContractError("configuration_read_failed")
-        value = _exact_config_items(data, (config_id,)).get(config_id)
-        if type(value) is not int or value not in (0, 1):
 def _set_te_family_answer_mode(action_id: str, planned_model: str, bundle_text: str, csrf_token: str,
                                action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]]) -> dict[str, Any]:
     if action_id not in TE_FAMILY_ANSWER_ACTIONS or planned_model not in TE_FAMILY_MODELS:
@@ -661,6 +680,46 @@ def _set_te_family_answer_mode(action_id: str, planned_model: str, bundle_text: 
                 **({} if before is None else {"before": label(before)})}
 
 
+def _set_te20_port_setting(
+    action_id: str, bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    if action_id not in TE20_PORT_ACTIONS:
+        raise ValueError("unsupported_te20_port_action")
+    config_id, target = TE20_PORT_ACTIONS[action_id]
+    return _set_te20_binary_setting(action_id, config_id, target, bundle_text, csrf_token, action)
+
+
+def _disable_te20_auto_update(
+    bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    return _set_te20_binary_setting(DISABLE_TE20_AUTO_UPDATE_ACTION, "isenableautoupgrade", 0, bundle_text, csrf_token, action)
+
+
+def _set_te20_ssh(
+    action_id: str, bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    if action_id not in TE20_SSH_ACTIONS:
+        raise ValueError("unsupported_te20_ssh_action")
+    return _set_te20_binary_setting(action_id, "enable_ssh", TE20_SSH_ACTIONS[action_id], bundle_text, csrf_token, action)
+
+
+def _set_te20_binary_setting(
+    action_id: str, config_id: str, target: int, bundle_text: str, csrf_token: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    base = {"id": action_id, "transport": "https/443", "changed": False, "writeAttempted": False}
+    if not all(marker in bundle_text for marker in ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", config_id)):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+
+    def read_value() -> int:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": [config_id], "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_read_failed")
+        value = _exact_config_items(data, (config_id,)).get(config_id)
+        if type(value) is not int or value not in (0, 1):
             raise HuaweiContractError("configuration_schema_unconfirmed")
         return value
 
@@ -1021,6 +1080,10 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         management_actions.append(_set_te20_auto_answer_automatic(bundle_text, csrf_token, action))
     if planned_model == TE20_MODEL and SET_TE20_MANUAL_ANSWER_ACTION in requested_management_tasks:
         management_actions.append(_set_te20_auto_answer_manual(bundle_text, csrf_token, action))
+    if planned_model in TE_FAMILY_MODELS:
+        for action_id in requested_management_tasks:
+            if action_id in TE_FAMILY_ANSWER_ACTIONS:
+                management_actions.append(_set_te_family_answer_mode(action_id, planned_model, bundle_text, csrf_token, action))
     if planned_model == TE20_MODEL:
         for action_id in requested_management_tasks:
             if action_id not in TE20_PORT_ACTIONS:
@@ -1085,10 +1148,6 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         result["managementActions"] = management_actions
         failed_action = next((item for item in management_actions if item.get("status") == "failed"), None)
         if failed_action:
-    if planned_model in TE_FAMILY_MODELS:
-        for action_id in requested_management_tasks:
-            if action_id in TE_FAMILY_ANSWER_ACTIONS:
-                management_actions.append(_set_te_family_answer_mode(action_id, planned_model, bundle_text, csrf_token, action))
             result["ok"] = False
             result["failedStage"] = "management_action"
             result["safeError"] = failed_action.get("safeError") or "management_action_failed"

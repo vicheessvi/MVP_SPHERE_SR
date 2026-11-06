@@ -32,7 +32,38 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
-    def test_te20_power_writes_only_changed_fields_and_verifies(self):
+    def test_te_family_readonly_settings_are_independent_and_redacted(self):
+        from mvp_runtime.adapters.huawei_te40 import _read_te_family_extra_settings
+        settings = unknown_device_settings("TE40")
+        bundle = "WEB_GetCfgParamAPI WEB_GetSnmpCfgAPI WEB_GetWifiStatModeAPI 'enable_ssh' 'isenableautoupgrade' 'synSerTime' 'ntpGetMode' 'timeServer' 'sleepTime' 'autoreply'"
+        calls = []
+        def action(name, payload):
+            calls.append((name, payload))
+            if name == "WEB_GetCfgParamAPI":
+                return {"success": 1}, {"enable_ssh": 1, "isenableautoupgrade": 0, "synSerTime": 0, "ntpGetMode": 1, "timeServer": "", "sleepTime": 10, "autoreply": 0}
+            if name == "WEB_GetSnmpCfgAPI":
+                return {"success": 1}, {"snmpv2": 0, "IsEnableSnmp": 1, "GetCommunity": "SYNTHETIC-SECRET"}
+            return {"success": 1}, {"ucWifiMode": 3, "szMacAddr": "00:00:00:00:00:01"}
+        _read_te_family_extra_settings(settings, bundle, "synthetic-csrf", action)
+        fields = settings["fields"]
+        self.assertEqual(fields["ssh"]["value"], "enabled")
+        self.assertEqual(fields["autoUpdate"]["value"], "disabled")
+        self.assertEqual(fields["autoAnswer"]["value"], "enabled")
+        self.assertEqual(fields["ntp"]["value"]["enabled"], False)
+        self.assertEqual(fields["powerManagement"]["value"]["sleepTimeCode"], 10)
+        self.assertNotIn("scheduledRestartCode", fields["powerManagement"]["value"])
+        self.assertEqual(fields["snmpV2"]["value"], "disabled")
+        self.assertEqual(fields["snmpV2"]["serviceEnabled"], True)
+        self.assertEqual(fields["wifi"]["value"], {"modeCode": 3, "clientEnabled": True, "accessPointEnabled": True})
+        self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_GetSnmpCfgAPI", "WEB_GetWifiStatModeAPI"])
+        self.assertNotIn("SYNTHETIC-SECRET", json.dumps(settings))
+        unknown = unknown_device_settings("TE40")
+        _read_te_family_extra_settings(unknown, "WEB_GetWifiStatModeAPI", "csrf", lambda *_: ({"success": 1}, {"ucWifiMode": 9}))
+        self.assertEqual(unknown["fields"]["wifi"], {"status": "unavailable", "value": None})
+        self.assertEqual(unknown["fields"]["ssh"]["status"], "protocol_required")
+        service_off = unknown_device_settings("TE40")
+        _read_te_family_extra_settings(service_off, "WEB_GetSnmpCfgAPI", "csrf", lambda *_: ({"success": 1}, {"snmpv2": 1, "IsEnableSnmp": 0}))
+        self.assertEqual(service_off["fields"]["snmpV2"]["value"], "disabled")
     def test_te_family_answer_mode_one_field_write_and_postread(self):
         from mvp_runtime.adapters.huawei_te40 import _set_te_family_answer_mode
         bundle = "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply data: [[1, this.objStrings.displayTx.TXT_CONFIG_CALL_COMM_MANNED_REPLY], [0, this.objStrings.displayTx.TXT_CONFIG_CALL_COMM_AUTO_REPLY]]"

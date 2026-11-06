@@ -2162,6 +2162,30 @@
     assert(!api.createPollingPlan(wrong, input).ok);
   });
 
+  test("Настройки TE30/40/50/60 читаются из проверенных источников без секретов", () => {
+    const fields = {
+      snmpV2: { status: "read", value: "disabled", configuredEnabled: false, serviceEnabled: true, source: "WEB_GetSnmpCfgAPI:snmpv2,IsEnableSnmp", GetCommunity: "SYNTHETIC-SECRET" },
+      autoUpdate: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:isenableautoupgrade" },
+      autoAnswer: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:autoreply" },
+      ntp: { status: "read", value: { enabled: false, modeCode: 1, server: "" }, source: "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" },
+      wifi: { status: "read", value: { modeCode: 3, clientEnabled: true, accessPointEnabled: true }, source: "WEB_GetWifiStatModeAPI:ucWifiMode" },
+      ssh: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:enable_ssh" },
+      powerManagement: { status: "read", value: { sleepMode: "interval", sleepTimeCode: 10 }, source: "WEB_GetCfgParamAPI:sleepTime" }
+    };
+    for (const model of ["TE30", "TE40", "TE50", "TE60"]) {
+      const payload = { ok: true, adapterKey: "vcs/huawei/te-family", webBlocks: { "Device Info": { Model: `Huawei ${model}` } }, deviceSettings: { fields } };
+      const result = api.pollingPayloadProjection(payload);
+      assertEqual(result.deviceSettings.fields.snmpV2.value, "disabled");
+      assertEqual(result.deviceSettings.fields.wifi.value.modeCode, 3);
+      assertEqual(result.deviceSettings.fields.powerManagement.value.sleepTimeCode, 10);
+      assert(!JSON.stringify(result).includes("SYNTHETIC-SECRET"));
+    }
+    const wrong = api.pollingPayloadProjection({ ok: true, adapterKey: "vcs/huawei/te-family", webBlocks: { "Device Info": { Model: "Huawei TE20" } }, deviceSettings: { fields } });
+    assert(!wrong.deviceSettings?.fields?.snmpV2);
+    const bad = api.pollingPayloadProjection({ ok: true, adapterKey: "vcs/huawei/te-family", webBlocks: { "Device Info": { Model: "Huawei TE40" } }, deviceSettings: { fields: { wifi: { status: "read", value: { modeCode: 9, clientEnabled: true, accessPointEnabled: true }, source: "WEB_GetWifiStatModeAPI:ucWifiMode" } } } });
+    assert(!bad.deviceSettings?.fields?.wifi);
+  });
+
   test("Answer Mode TE30/TE40/TE50/TE60 требует один точный IP из SR", () => {
     for (const model of ["TE30", "TE40", "TE50", "TE60"]) {
       const state = api.createDemoState();

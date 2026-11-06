@@ -1364,13 +1364,16 @@
     const suppliedFields = getCaseInsensitive(suppliedSettings, "fields");
     const te20SettingsConfirmed = projected.adapterKey === "vcs/huawei/te20-legacy"
       && auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")) === "te20";
+    const teFamilySettingsConfirmed = projected.adapterKey === "vcs/huawei/te-family"
+      && ["te30", "te40", "te50", "te60"].includes(auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")));
     const projectedFields = {};
     const approvedReadSources = {
       telnet: new Set(["WEB_GetCfgParamAPI:enabletelnet", "managementActions.after.telnetPort23"]),
       http: new Set(["WEB_GetCfgParamAPI:enable_http", "POST /v1/om/config:enable_http", "managementActions.after.httpPort80"]),
       ssh: new Set(["WEB_GetCfgParamAPI:enable_ssh"]),
       autoUpdate: new Set(["WEB_GetCfgParamAPI:isenableautoupgrade"]),
-      autoAnswer: new Set(["WEB_GetCfgParamAPI:autoreply"])
+      autoAnswer: new Set(["WEB_GetCfgParamAPI:autoreply"]),
+      snmpV2: new Set(["WEB_GetSnmpCfgAPI:snmpv2,IsEnableSnmp"])
     };
     for (const key of settingKeys) {
       const supplied = getCaseInsensitive(suppliedFields, key);
@@ -1378,10 +1381,22 @@
       const value = getCaseInsensitive(supplied, "value");
       const source = String(getCaseInsensitive(supplied, "source") || "");
       if (status === "read" && approvedReadSources[key]?.has(source) && ["enabled", "disabled"].includes(value)
-        && (["telnet", "http"].includes(key) || te20SettingsConfirmed)) {
+        && (["telnet", "http"].includes(key) || te20SettingsConfirmed || (teFamilySettingsConfirmed && ["ssh", "autoUpdate", "autoAnswer", "snmpV2"].includes(key)))) {
         projectedFields[key] = { status: "read", value, source };
-      } else if (status === "read" && te20SettingsConfirmed && key === "ntp" && source === "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
+        if (key === "snmpV2" && teFamilySettingsConfirmed) {
+          if (typeof getCaseInsensitive(supplied, "configuredEnabled") !== "boolean" || typeof getCaseInsensitive(supplied, "serviceEnabled") !== "boolean" || value !== (supplied.configuredEnabled && supplied.serviceEnabled ? "enabled" : "disabled")) {
+            delete projectedFields[key];
+          } else {
+            projectedFields[key].configuredEnabled = supplied.configuredEnabled;
+            projectedFields[key].serviceEnabled = supplied.serviceEnabled;
+          }
+        }
+      } else if (status === "read" && (te20SettingsConfirmed || teFamilySettingsConfirmed) && key === "ntp" && source === "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
         projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, mode: value.modeCode === 1 ? "manual" : "automatic", server: value.server }, source };
+      } else if (status === "read" && teFamilySettingsConfirmed && key === "wifi" && source === "WEB_GetWifiStatModeAPI:ucWifiMode" && isPlainObject(value) && [0, 1, 2, 3].includes(value.modeCode) && value.clientEnabled === [2, 3].includes(value.modeCode) && value.accessPointEnabled === [1, 3].includes(value.modeCode)) {
+        projectedFields[key] = { status: "read", value: { modeCode: value.modeCode, clientEnabled: value.clientEnabled, accessPointEnabled: value.accessPointEnabled }, source };
+      } else if (status === "read" && teFamilySettingsConfirmed && key === "powerManagement" && source === "WEB_GetCfgParamAPI:sleepTime" && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && value.sleepMode === (value.sleepTimeCode === 0 ? "never" : "interval") && (value.scheduledRestartCode === undefined || [0, 1].includes(value.scheduledRestartCode))) {
+        projectedFields[key] = { status: "read", value: { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, ...(value.scheduledRestartCode === undefined ? {} : { scheduledRestartCode: value.scheduledRestartCode }) }, source };
       } else if (status === "read" && te20SettingsConfirmed && key === "powerManagement" && ["WEB_GetCfgParamAPI:sleepTime,enableTimeReboot", "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot,suppotReboot,rebootHour,rebootMinute"].includes(source) && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && [0, 1].includes(value.scheduledRestartCode)) {
         const projectedPower = { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, scheduledRestartCode: value.scheduledRestartCode };
         if (source.endsWith("suppotReboot,rebootHour,rebootMinute") && typeof value.shutdownRestartEnabled === "boolean" && Number.isInteger(value.restartHour) && value.restartHour >= 0 && value.restartHour <= 23 && Number.isInteger(value.restartMinute) && value.restartMinute >= 0 && value.restartMinute <= 59) {
@@ -3086,6 +3101,9 @@
     outputHeaders.push("Статус сверки", "Файл опроса", "Дата опроса");
     const indexed = new Map();
     for (const result of candidateState?.pollingResults || []) {
+    if (field === "wifi" && isPlainObject(value) && typeof value.clientEnabled === "boolean" && typeof value.accessPointEnabled === "boolean") {
+      return `Клиент: ${value.clientEnabled ? "включён" : "отключён"}; точка доступа: ${value.accessPointEnabled ? "включена" : "отключена"}`;
+    }
       if (!result?.filenameIp) continue;
       if (!indexed.has(result.filenameIp)) indexed.set(result.filenameIp, []);
       indexed.get(result.filenameIp).push(result);

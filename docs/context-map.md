@@ -1,5 +1,10 @@
 # Карта контекста
 
+## Feature 041 — чтение настроек Huawei TE30/40/50/60
+
+- Требования, границы и матрица полей: `specs/041-te-family-settings-read/`; решение ADR-0043.
+- Exact model/identity и read-only адаптер: `mvp_runtime/adapters/huawei_te40.py`; фильтрация проверенных полей для импорта/аналитики: `app.js`.
+- Проверки: `python_tests/test_huawei_te40.py`, `tests.js`. На TE40 семь групп прочитаны; TE30/50/60 ожидают пользовательской сверки.
 ## Feature 040 — Answer Mode Huawei TE30/40/50/60
 
 - Exact one-IP action и контракт: `specs/040-te40-answer-mode/`, `runtime/device-catalog.json`, `app.js`, `mvp_runtime/polling.py`.
