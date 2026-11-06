@@ -1,5 +1,11 @@
 # Карта контекста
 
+## Feature 040 — Answer Mode Huawei TE30/40/50/60
+
+- Exact one-IP action и контракт: `specs/040-te40-answer-mode/`, `runtime/device-catalog.json`, `app.js`, `mvp_runtime/polling.py`.
+- Guarded pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; TE40 переход в автоматический режим подтверждён контролируемым опросом, остальные модели предварительны.
+- Тесты: `python_tests/test_huawei_te40.py`, `python_tests/test_polling.py`, `tests.js`.
+
 ## Feature 038 — управление питанием exact TE20
 
 - Спецификация, подтверждённые коды сна и отдельный контракт: `specs/038-te20-power-controls/`.

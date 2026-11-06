@@ -2162,6 +2162,23 @@
     assert(!api.createPollingPlan(wrong, input).ok);
   });
 
+  test("Answer Mode TE30/TE40/TE50/TE60 требует один точный IP из SR", () => {
+    for (const model of ["TE30", "TE40", "TE50", "TE60"]) {
+      const state = api.createDemoState();
+      state.inventoryDevices = [{ id: "te-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: model, modelNormalized: model.toLowerCase(), ipNormalized: "192.0.2.40", inCurrentSr: true }];
+      state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+      const base = { mode: "single_ip", ipAddress: "192.0.2.40", scheduledAt: "2026-11-06T12:00:00Z", intervalMinSeconds: 0, intervalMaxSeconds: 0, credentialsReady: true, credentialSourceSha256: "b".repeat(64) };
+      assertEqual(api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "" }).plan.managementTasks.length, 0);
+      for (const mode of ["automatic", "manual"]) {
+        const result = api.createPollingPlan(state, { ...base, teFamilyAnswerMode: mode });
+        assert(result.ok, result.errors?.join("; "));
+        assertEqual(result.plan.managementTasks.join(","), `set_te_family_auto_answer_${mode}`);
+      }
+      assert(!api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "automatic", disableInsecureManagementServices: true }).ok);
+      assert(!api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "automatic", mode: "filters" }).ok);
+    }
+  });
+
   test("HTTP и Telnet TE20 имеют независимые открыть, закрыть и не менять", () => {
     const state = api.createDemoState();
     state.inventoryDevices = [{ id: "te20-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE20", modelNormalized: "te20", ipNormalized: "192.0.2.20", inCurrentSr: true }];

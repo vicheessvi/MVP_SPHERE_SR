@@ -16,6 +16,19 @@ HUAWEI_BOX610 = {"category": "vcs", "manufacturer": "Huawei", "model": "Box 610"
 
 
 class PollingTests(unittest.TestCase):
+    def test_te_family_answer_mode_requires_one_exact_sr_ip_and_no_other_write(self) -> None:
+        from mvp_runtime.polling import validate_te20_single_target_tasks
+        for model in ("TE30", "TE40", "TE50", "TE60"):
+            task = "set_te_family_auto_answer_automatic"
+            plan = {"devices": [{"category": "vcs", "manufacturer": "Huawei", "model": model, "ip": "192.0.2.40"}],
+                    "managementTasks": [task], "targetSource": "sr", "targetSourceSha256": "a" * 64,
+                    "selection": {"mode": "single_ip"}}
+            validate_te20_single_target_tasks(plan, [task])
+            for invalid in ({**plan, "selection": {"mode": "filters"}},
+                            {**plan, "managementTasks": [task, "disable_insecure_management_services"]},
+                            {**plan, "devices": [{**plan["devices"][0], "model": "TE20"}]}):
+                with self.assertRaises(PollingError):
+                    validate_te20_single_target_tasks(invalid, invalid["managementTasks"])
     def test_te20_power_plan_validates_options_and_adapter_transport(self) -> None:
         changes = {"shutdownRestart": None, "sleepMinutes": 0, "scheduledRestart": True, "restartHour": 3, "restartMinute": 15}
         plan = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "managementTasks": ["set_te20_power_settings"], "powerChanges": changes, "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "single_ip"}}

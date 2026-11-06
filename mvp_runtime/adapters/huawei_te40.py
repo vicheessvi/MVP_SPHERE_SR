@@ -73,6 +73,7 @@ DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
 SET_TE20_AUTO_ANSWER_ACTION = "set_te20_auto_answer_automatic"
 SET_TE20_MANUAL_ANSWER_ACTION = "set_te20_auto_answer_manual"
 DISABLE_TE20_AUTO_UPDATE_ACTION = "disable_te20_auto_update"
+TE_FAMILY_ANSWER_ACTIONS = {"set_te_family_auto_answer_automatic": 0, "set_te_family_auto_answer_manual": 1}
 SET_TE20_NTP_ACTION = "set_te20_ntp_settings"
 SET_TE20_POWER_ACTION = "set_te20_power_settings"
 TE20_SSH_ACTIONS = {"set_te20_ssh_enabled": 1, "set_te20_ssh_disabled": 0}
@@ -486,6 +487,17 @@ def _disable_insecure_management_services(
                 {"CfgItemID": "enable_http", "CfgItemInfo": target_values["enable_http"]},
             ],
             "CfgItemString": [],
+    elif planned_model in TE_FAMILY_MODELS and "autoreply" in bundle_text:
+        try:
+            outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": ["autoreply"], "acCSRFToken": csrf_token})
+            if outer.get("success") == 1:
+                value = _exact_config_items(data, ("autoreply",)).get("autoreply")
+                if type(value) is int and value in (0, 1):
+                    settings["fields"]["autoAnswer"] = binary_setting(value, "WEB_GetCfgParamAPI:autoreply", disabled_value=1)
+                else:
+                    settings["fields"]["autoAnswer"] = {"status": "unavailable", "value": None}
+        except Exception:
+            settings["fields"]["autoAnswer"] = {"status": "unavailable", "value": None}
             "acCSRFToken": csrf_token,
         }
         outer, _data = action("WEB_SaveCfgParamAPI", payload)
@@ -606,6 +618,49 @@ def _set_te20_binary_setting(
             raise HuaweiContractError("configuration_read_failed")
         value = _exact_config_items(data, (config_id,)).get(config_id)
         if type(value) is not int or value not in (0, 1):
+def _set_te_family_answer_mode(action_id: str, planned_model: str, bundle_text: str, csrf_token: str,
+                               action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]]) -> dict[str, Any]:
+    if action_id not in TE_FAMILY_ANSWER_ACTIONS or planned_model not in TE_FAMILY_MODELS:
+        raise ValueError("unsupported_answer_action")
+    target = TE_FAMILY_ANSWER_ACTIONS[action_id]
+    base = {"id": action_id, "transport": "https/443", "changed": False, "writeAttempted": False}
+    if not all(marker in bundle_text for marker in ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "autoreply")):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+    # The current TE web form maps 0 to automatic and 1 to manual.
+    if not re.search(r"data:\s*\[\[1,\s*this\.objStrings\.displayTx\.TXT_CONFIG_CALL_COMM_MANNED_REPLY\],\s*\[0,\s*this\.objStrings\.displayTx\.TXT_CONFIG_CALL_COMM_AUTO_REPLY\]\]", bundle_text):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+    def read_value() -> int:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": ["autoreply"], "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_read_failed")
+        value = _exact_config_items(data, ("autoreply",)).get("autoreply")
+        if type(value) is not int or value not in (0, 1):
+            raise HuaweiContractError("configuration_schema_unconfirmed")
+        return value
+    before = None
+    attempted = False
+    label = lambda value: "automatic" if value == 0 else "manual"
+    try:
+        before = read_value()
+        if before == target:
+            return {**base, "status": "already_compliant", "before": label(before), "after": label(target)}
+        attempted = True
+        outer, _ = action("WEB_SaveCfgParamAPI", {"CfgItemInt": [{"CfgItemID": "autoreply", "CfgItemInfo": target}],
+                                               "CfgItemString": [], "acCSRFToken": csrf_token})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_write_failed")
+        after = read_value()
+        if after != target:
+            raise HuaweiContractError("configuration_verification_failed")
+        return {**base, "status": "applied", "changed": True, "writeAttempted": True, "before": label(before), "after": label(after)}
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        code = error.code if isinstance(error, HuaweiContractError) else _transport_code(error)
+        return {**base, "status": "failed", "writeAttempted": attempted, "safeError": code,
+                **({} if before is None else {"before": label(before)})}
+
+
             raise HuaweiContractError("configuration_schema_unconfirmed")
         return value
 
@@ -1030,6 +1085,10 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         result["managementActions"] = management_actions
         failed_action = next((item for item in management_actions if item.get("status") == "failed"), None)
         if failed_action:
+    if planned_model in TE_FAMILY_MODELS:
+        for action_id in requested_management_tasks:
+            if action_id in TE_FAMILY_ANSWER_ACTIONS:
+                management_actions.append(_set_te_family_answer_mode(action_id, planned_model, bundle_text, csrf_token, action))
             result["ok"] = False
             result["failedStage"] = "management_action"
             result["safeError"] = failed_action.get("safeError") or "management_action_failed"

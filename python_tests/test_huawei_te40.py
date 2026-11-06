@@ -33,6 +33,30 @@ def synthetic_resources(model="TE40"):
 
 class HuaweiTe40Tests(unittest.TestCase):
     def test_te20_power_writes_only_changed_fields_and_verifies(self):
+    def test_te_family_answer_mode_one_field_write_and_postread(self):
+        from mvp_runtime.adapters.huawei_te40 import _set_te_family_answer_mode
+        bundle = "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply data: [[1, this.objStrings.displayTx.TXT_CONFIG_CALL_COMM_MANNED_REPLY], [0, this.objStrings.displayTx.TXT_CONFIG_CALL_COMM_AUTO_REPLY]]"
+        for model in ("te30", "te40", "te50", "te60"):
+            with self.subTest(model=model):
+                state = {"value": 1}
+                calls = []
+                def action(name, payload):
+                    calls.append((name, payload))
+                    if name == "WEB_GetCfgParamAPI":
+                        return {"success": 1}, {"autoreply": state["value"]}
+                    state["value"] = payload["CfgItemInt"][0]["CfgItemInfo"]
+                    return {"success": 1}, {}
+                result = _set_te_family_answer_mode("set_te_family_auto_answer_automatic", model, bundle, "synthetic-csrf", action)
+                self.assertEqual(result["status"], "applied")
+                self.assertEqual(result["after"], "automatic")
+                self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "WEB_GetCfgParamAPI"])
+                self.assertEqual(calls[1][1]["CfgItemInt"], [{"CfgItemID": "autoreply", "CfgItemInfo": 0}])
+                calls.clear()
+                result = _set_te_family_answer_mode("set_te_family_auto_answer_manual", model, bundle, "synthetic-csrf", action)
+                self.assertEqual(result["status"], "applied")
+                self.assertEqual(state["value"], 1)
+                self.assertEqual(_set_te_family_answer_mode("set_te_family_auto_answer_manual", model, bundle, "synthetic-csrf", action)["status"], "already_compliant")
+        self.assertEqual(_set_te_family_answer_mode("set_te_family_auto_answer_automatic", "te40", "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply", "csrf", lambda *_: self.fail("must not call"))["safeError"], "management_contract_unconfirmed")
         state = {"suppotReboot": 0, "sleepTime": 0, "enableTimeReboot": 0, "rebootHour": 4, "rebootMinute": 0}
         calls = []
         def action(name, payload):

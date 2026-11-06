@@ -33,6 +33,18 @@
       "transport": "huawei_te20_web_cgi_v1"
     },
     {
+      "id": "set_te_family_auto_answer_automatic",
+      "label": "Включить автоматический ответ на Huawei TE30/40/50/60",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE30", "TE40", "TE50", "TE60"], "protocolStatus": "supported", "transport": "huawei_te_web_cgi_v1"
+    },
+    {
+      "id": "set_te_family_auto_answer_manual",
+      "label": "Установить ручной ответ на Huawei TE30/40/50/60",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["TE30", "TE40", "TE50", "TE60"], "protocolStatus": "supported", "transport": "huawei_te_web_cgi_v1"
+    },
+    {
       "id": "set_te20_http_open",
       "label": "Включить HTTP на Huawei TE20",
       "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
