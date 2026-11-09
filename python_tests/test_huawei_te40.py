@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import ssl
 import unittest
 
@@ -64,6 +65,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         service_off = unknown_device_settings("TE40")
         _read_te_family_extra_settings(service_off, "WEB_GetSnmpCfgAPI", "csrf", lambda *_: ({"success": 1}, {"snmpv2": 1, "IsEnableSnmp": 0}))
         self.assertEqual(service_off["fields"]["snmpV2"]["value"], "disabled")
+        self.assertEqual(service_off["fields"]["snmpV2"]["configuredEnabled"], True)
     def test_te_family_answer_mode_one_field_write_and_postread(self):
         from mvp_runtime.adapters.huawei_te40 import _set_te_family_answer_mode
         bundle = "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply data: [[1, this.objStrings.displayTx.TXT_CONFIG_CALL_COMM_MANNED_REPLY], [0, this.objStrings.displayTx.TXT_CONFIG_CALL_COMM_AUTO_REPLY]]"
@@ -88,6 +90,34 @@ class HuaweiTe40Tests(unittest.TestCase):
                 self.assertEqual(state["value"], 1)
                 self.assertEqual(_set_te_family_answer_mode("set_te_family_auto_answer_manual", model, bundle, "synthetic-csrf", action)["status"], "already_compliant")
         self.assertEqual(_set_te_family_answer_mode("set_te_family_auto_answer_automatic", "te40", "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply", "csrf", lambda *_: self.fail("must not call"))["safeError"], "management_contract_unconfirmed")
+    def test_te20_log_export_is_opt_in_after_identity(self):
+        calls = []
+        opened = []
+        received = []
+        bundle = RESOURCE_MARKERS + " exportLogFile actkn"
+        request = self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True,
+            overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
+        result = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": request, "collect_logs": True,
+             "log_opener": lambda options: opened.append(options["ip"]) or io.BytesIO(b"<?xml version='1.0'?><LogModule/>"),
+             "on_log": lambda stream, metadata: received.append((metadata["filename"], stream.read())) or {"status": "saved"}},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["logCollection"], {"status": "saved"})
+        self.assertEqual(opened, ["192.0.2.20"])
+        self.assertEqual(received[0][0], "192.0.2.20.xml")
+        self.assertNotIn("LogModule", json.dumps(result))
+        without = poll_huawei_te_device(
+            {"ip": "192.0.2.20", "model": "TE20", "allowInsecureTls": True},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+            {"request": self.success_request([], terminal_model="Huawei TE20", preauth_legacy=True), "collect_logs": False,
+             "log_opener": lambda _options: self.fail("log must not open")},
+        )
+        self.assertNotIn("logCollection", without)
+
+    def test_te20_power_writes_only_changed_fields_and_verifies(self):
         state = {"suppotReboot": 0, "sleepTime": 0, "enableTimeReboot": 0, "rebootHour": 4, "rebootMinute": 0}
         calls = []
         def action(name, payload):

@@ -30,6 +30,9 @@
     const count = value.plan.devices.length;
     if (value.savedIndices.some((index) => !Number.isInteger(index) || index < 0 || index >= count) || new Set(value.savedIndices).size !== value.savedIndices.length || value.saveFailures.some((event) => !event || !Number.isInteger(event.index) || event.index < 0 || event.index >= count || event.code !== "result_save_failed")) throw new Error("recovery_manifest_invalid");
     if (value.jobId !== undefined && !/^[A-Za-z0-9_-]{8,128}$/.test(String(value.jobId))) throw new Error("recovery_manifest_invalid");
+    if (value.logFolderName !== undefined && !/^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(?:-\d+)?$/.test(value.logFolderName)) throw new Error("recovery_manifest_invalid");
+    if (value.plan.collectLogs === true && typeof value.logFolderName !== "string") throw new Error("recovery_manifest_invalid");
+    if (value.plan.collectJson === false && value.plan.collectLogs !== true) throw new Error("recovery_manifest_invalid");
     if (value.activeOriginalIndices !== undefined && (!Array.isArray(value.activeOriginalIndices) || value.activeOriginalIndices.some((index) => !Number.isInteger(index) || index < 0 || index >= count) || new Set(value.activeOriginalIndices).size !== value.activeOriginalIndices.length)) throw new Error("recovery_manifest_invalid");
     return value;
   }

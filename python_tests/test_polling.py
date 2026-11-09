@@ -29,6 +29,15 @@ class PollingTests(unittest.TestCase):
                             {**plan, "devices": [{**plan["devices"][0], "model": "TE20"}]}):
                 with self.assertRaises(PollingError):
                     validate_te20_single_target_tasks(invalid, invalid["managementTasks"])
+    def test_log_only_plan_is_allowed_but_both_outputs_off_rejected(self) -> None:
+        base = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "collectJson": False, "collectLogs": True}
+        seen = []
+        result = run_plan(base, {"ping": lambda *_: {"ok": True, "durationMs": 1}, "get_credentials": lambda *_: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "adapters": {"huawei_te20_web_cgi_v1": lambda _device, _credentials, options: seen.append(options["collect_logs"]) or {"ok": True}}})
+        self.assertTrue(result[0]["ok"])
+        self.assertEqual(seen, [True])
+        with self.assertRaises(PollingError):
+            run_plan({**base, "collectLogs": False}, {"ping": lambda *_: self.fail("no network")})
+
     def test_te20_power_plan_validates_options_and_adapter_transport(self) -> None:
         changes = {"shutdownRestart": None, "sleepMinutes": 0, "scheduledRestart": True, "restartHour": 3, "restartMinute": 15}
         plan = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "managementTasks": ["set_te20_power_settings"], "powerChanges": changes, "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "single_ip"}}

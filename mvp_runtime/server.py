@@ -44,6 +44,8 @@ JOB_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)$")
 CANCEL_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)/cancel$")
 RESULT_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)/result$")
 ACK_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)/result/([A-Za-z0-9_-]+)/ack$")
+LOG_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)/log/([A-Za-z0-9_-]+)$")
+LOG_ACK_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)/log/([A-Za-z0-9_-]+)/ack$")
 
 
 def utc_now() -> str:
@@ -112,6 +114,28 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
 
     def log_message(self, _format: str, *_args: Any) -> None:
         return
+
+    def _stream_log(self, job: Any, log_id: str, stream: Any) -> None:
+        self.send_response(HTTPStatus.OK)
+        self._security_headers()
+        self.send_header("Content-Type", "application/xml")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    break
+                if not isinstance(chunk, bytes):
+                    raise ValueError("invalid_log_chunk")
+                self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
+                self.wfile.write(chunk)
+                self.wfile.write(b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (OSError, ValueError):
+            self.close_connection = True
+            job.acknowledge_log(log_id, False)
 
     def version_string(self) -> str:
         return self.server_version
@@ -315,6 +339,8 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
             assert_no_plan_secrets(plan)
             if not isinstance(plan, dict) or plan.get("schemaVersion") != 3 or not isinstance(plan.get("devices"), list) or not plan["devices"]:
                 raise ValueError("plan_invalid")
+            if type(plan.get("collectLogs", False)) is not bool or type(plan.get("collectJson", True)) is not bool or (plan.get("collectLogs") is not True and plan.get("collectJson") is False):
+                raise ValueError("plan_invalid")
             management_tasks = plan.get("managementTasks") or []
             known_management_tasks = {str(item.get("id")) for item in CATALOG.get("managementActions", [])}
             if (
@@ -429,6 +455,31 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
                     self._send(HTTPStatus.NO_CONTENT, b"")
                 else:
                     self._json(HTTPStatus.OK, {"ok": True, **pending})
+            return True
+        match = LOG_ROUTE.fullmatch(path)
+        if match and self.command == "GET":
+            if self.headers.get("X-MVP-CSRF") != session.csrf_token:
+                self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "csrf_or_origin_rejected"})
+                return True
+            job = self._job_for_session(session, match.group(1))
+            stream = job.log_stream(match.group(2)) if job else None
+            if stream is None:
+                self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "log_not_found"})
+            else:
+                self._stream_log(job, match.group(2), stream)
+            return True
+        match = LOG_ACK_ROUTE.fullmatch(path)
+        if match and self.command == "POST":
+            job = self._job_for_session(session, match.group(1))
+            if not job:
+                self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "job_not_found"})
+                return True
+            value = self._read_json(1024)
+            saved = value.get("saved")
+            if not isinstance(saved, bool) or not job.acknowledge_log(match.group(2), saved):
+                self._json(HTTPStatus.CONFLICT, {"ok": False, "error": "log_ack_rejected"})
+            else:
+                self._json(HTTPStatus.OK, {"ok": True, "status": job.status()["status"]})
             return True
         match = ACK_ROUTE.fullmatch(path)
         if match and self.command == "POST":

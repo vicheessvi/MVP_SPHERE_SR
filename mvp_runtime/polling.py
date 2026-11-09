@@ -295,6 +295,7 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
     captured_at = utc_now()
     manifest = resolve_manifest(device)
     requested_management_tasks = [str(item) for item in settings.get("management_tasks", [])]
+    collect_logs = settings.get("collect_logs") is True
     supported_management_tasks = [item for item in requested_management_tasks if resolve_management_action(device, item).get("supported")]
     transport = manifest.get("transport")
     if device.get("pollingSupported") is False or not transport or manifest.get("protocolStatus") != "supported":
@@ -315,9 +316,11 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
         result = adapter(
             {**device, "ipNormalized": ip, "allowInsecureTls": device.get("allowInsecureTls") is True or settings.get("allow_insecure_tls") is True},
             credential,
-            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes")},
+            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes"), "collect_logs": collect_logs and transport == "huawei_te20_web_cgi_v1", "on_log": settings.get("on_log"), "log_opener": settings.get("log_opener")},
         )
         merged = {**result, "ip": ip, "capturedAt": result.get("capturedAt") or captured_at, "adapterKey": manifest["key"], "networkAttempted": True, "ping": {"ok": True, "durationMs": ping.get("durationMs")}}
+        if collect_logs and transport != "huawei_te20_web_cgi_v1":
+            merged["logCollection"] = {"status": "protocol_required"}
         return _complete_management_actions(device, requested_management_tasks, merged)
     except BaseException as error:
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
@@ -379,6 +382,8 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
     if not isinstance(plan, dict) or not isinstance(plan.get("devices"), list):
         raise PollingError("Polling plan must contain devices[]")
     settings = options or {}
+    if type(plan.get("collectLogs", False)) is not bool or type(plan.get("collectJson", True)) is not bool or (plan.get("collectLogs") is not True and plan.get("collectJson") is False):
+        raise PollingError("Log collection option must be boolean")
     requested_management_tasks = plan.get("managementTasks") or []
     known_management_tasks = {str(item.get("id")) for item in CATALOG.get("managementActions", [])}
     if (
@@ -423,7 +428,12 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
             progress = settings.get("on_progress")
             if progress:
                 progress({"stage": "polling", "index": index, "total": len(devices), "device": {"ip": ip, "category": device.get("category"), "manufacturer": device.get("manufacturer"), "model": device.get("model")}})
-            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges")})
+            on_log = settings.get("on_log")
+            log_callback = (lambda stream, metadata: on_log(stream, {**metadata, "index": index, "total": len(devices)})) if callable(on_log) else None
+            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges"), "collect_logs": plan.get("collectLogs") is True, "on_log": log_callback})
+        if plan.get("collectLogs") is True and "logCollection" not in result:
+            log_status = "not_started" if result.get("adapterKey") == "vcs/huawei/te20-legacy" else "protocol_required"
+            result = {**result, "logCollection": {"status": log_status}}
         results.append(result)
         if settings.get("on_result"):
             settings["on_result"](result, {"index": index, "total": len(devices), "device": device})

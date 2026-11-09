@@ -5,11 +5,19 @@
 - Требования, границы и матрица полей: `specs/041-te-family-settings-read/`; решение ADR-0043.
 - Exact model/identity и read-only адаптер: `mvp_runtime/adapters/huawei_te40.py`; фильтрация проверенных полей для импорта/аналитики: `app.js`.
 - Проверки: `python_tests/test_huawei_te40.py`, `tests.js`. На TE40 семь групп прочитаны; TE30/50/60 ожидают пользовательской сверки.
+
 ## Feature 040 — Answer Mode Huawei TE30/40/50/60
 
 - Exact one-IP action и контракт: `specs/040-te40-answer-mode/`, `runtime/device-catalog.json`, `app.js`, `mvp_runtime/polling.py`.
 - Guarded pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; TE40 переход в автоматический режим подтверждён контролируемым опросом, остальные модели предварительны.
 - Тесты: `python_tests/test_huawei_te40.py`, `python_tests/test_polling.py`, `tests.js`.
+
+## Feature 039 — локальный сбор и импорт логов
+
+- Требования, TE20 evidence, контракт потока и режимы JSON/logs: `specs/039-device-log-collection/`; решение ADR-0042.
+- План, папки, streaming save и metadata-only import: `app.js`; pending log + ACK: `mvp_runtime/polling_job.py`, `mvp_runtime/server.py`.
+- Exact TE20 export after identity: `mvp_runtime/adapters/huawei_te40.py`; остальные модели `protocol_required` для логов.
+- Синтетические проверки: `tests.js`, `python_tests/test_huawei_te40.py`, `python_tests/test_polling_job.py`, `python_tests/test_server.py`. Полный live workflow ожидает проверки.
 
 ## Feature 038 — управление питанием exact TE20
 

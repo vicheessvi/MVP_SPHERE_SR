@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import hashlib
+import io
 import json
 import threading
 import time
@@ -11,6 +12,7 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 
 from mvp_runtime.server import create_server
+from mvp_runtime.polling_job import create_polling_job
 from python_tests.helpers import credential_xlsx
 
 
@@ -60,6 +62,43 @@ class ServerHarness:
 
 
 class ServerTests(unittest.TestCase):
+    def test_job_plan_rejects_both_outputs_disabled(self) -> None:
+        cookie, csrf = self.harness.session()
+        digest = self._upload_credentials(cookie, csrf)
+        plan = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": [], "collectJson": False, "collectLogs": False, "devices": [{"ip": "192.0.2.20"}]}
+        status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=json.dumps({"plan": plan}).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "plan_invalid")
+
+    def test_authenticated_log_stream_is_chunked_and_acknowledged(self) -> None:
+        cookie, csrf = self.harness.session()
+        data = b"<?xml version='1.0'?><LogModule>synthetic</LogModule>"
+        def runner(_plan, options):
+            log_result = options["on_log"](io.BytesIO(data), {"ip": "192.0.2.20", "filename": "192.0.2.20.xml", "index": 0, "total": 1})
+            options["on_progress"]({"stage": "processed", "result": {"ok": True, "logCollection": log_result}})
+        job = create_polling_job({"plan": {"schemaVersion": 3, "devices": [{"ip": "192.0.2.20"}], "collectLogs": True}, "credentials": [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "run_plan": runner})
+        session_id = cookie.split("=", 1)[1]
+        with self.harness.server.state.lock:
+            self.harness.server.state.jobs[job.id] = job
+            self.harness.server.state.sessions[session_id].active_job_id = job.id
+        pending = None
+        for _ in range(200):
+            status, _, body = self.harness.request("GET", f"/api/polling/jobs/{job.id}", headers={"Cookie": cookie})
+            pending = json.loads(body).get("pendingLog")
+            if pending: break
+            time.sleep(0.005)
+        self.assertIsNotNone(pending)
+        self.assertNotIn("SYNTHETIC-SECRET", json.dumps(pending))
+        denied, _, _ = self.harness.request("GET", f"/api/polling/jobs/{job.id}/log/{pending['logId']}", headers={"Cookie": cookie})
+        self.assertEqual(denied, 403)
+        status, headers, body = self.harness.request("GET", f"/api/polling/jobs/{job.id}/log/{pending['logId']}", headers={"Cookie": cookie, "X-MVP-CSRF": csrf})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("transfer-encoding"), "chunked")
+        self.assertEqual(body, data)
+        status, _, _ = self.harness.request("POST", f"/api/polling/jobs/{job.id}/log/{pending['logId']}/ack", headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=b'{"saved":true}')
+        self.assertEqual(status, 200)
+        self.assertEqual(job.join(2)["logsSaved"], 1)
+
     def setUp(self) -> None:
         self.harness = ServerHarness()
 

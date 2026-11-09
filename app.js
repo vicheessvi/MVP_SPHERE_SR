@@ -2036,6 +2036,39 @@
     return { ...normalized, sheetName: parsed.sheetName, headers: parsed.headers, rows: parsed.rows, sourceSha256: await sha256Bytes(input.arrayBuffer) };
   }
 
+  function classifyDeviceLogPrefix(prefix, filename) {
+    const bytes = prefix instanceof Uint8Array ? prefix : new Uint8Array(prefix || []);
+    if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) return "ZIP (без распаковки)";
+    const head = new TextDecoder("utf-8", { fatal: false }).decode(bytes.subarray(0, 2048)).replace(/^\uFEFF/, "").trimStart();
+    if (head.startsWith("<?xml") && /<LogModule(?:\s|>)/.test(head)) return "TE20 XML";
+    if (head.startsWith("<?xml")) return "XML (неизвестная схема)";
+    if (/\.(?:txt|log)$/i.test(String(filename || "")) && !bytes.includes(0)) return "Текст (без разбора)";
+    return "Неизвестный формат";
+  }
+
+  function buildDeviceLogImportRows(entries, currentState) {
+    const inventory = (currentState?.inventoryDevices || []).filter((device) => device.inCurrentSr !== false);
+    const byIp = new Map();
+    inventory.forEach((device) => {
+      const ip = normalizeIpv4(device.ipNormalized || device.ipRaw);
+      if (!ip) return;
+      if (!byIp.has(ip)) byIp.set(ip, []);
+      byIp.get(ip).push(device);
+    });
+    const rows = (entries || []).map((entry) => {
+      const name = String(entry.name || "");
+      const path = String(entry.relativePath || name).replace(/\\/g, "/");
+      const runFolder = path.split("/").slice(0, -1).reverse().find((part) => /^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(?:-\d+)?$/.test(part)) || "";
+      const ip = normalizeIpv4(name.replace(/\.(?:xml|zip|txt|log)$/i, ""));
+      const candidates = ip ? byIp.get(ip) || [] : [];
+      const matchStatus = !ip ? "IP не указан" : candidates.length === 1 ? "Сопоставлено" : candidates.length ? "Неоднозначный IP" : "Нет в SR";
+      return { path, name, runFolder, ip, size: Number(entry.size || 0), modifiedAt: Number.isFinite(entry.lastModified) ? new Date(entry.lastModified).toISOString() : "", format: entry.readError ? "Ошибка чтения" : classifyDeviceLogPrefix(entry.prefix, name), matchStatus, deviceName: candidates.length === 1 ? candidates[0].nameRaw || candidates[0].modelRaw || "" : "" };
+    });
+    const formats = {};
+    rows.forEach((row) => { formats[row.format] = (formats[row.format] || 0) + 1; });
+    return { rows, summary: { files: rows.length, bytes: rows.reduce((sum, row) => sum + row.size, 0), matched: rows.filter((row) => row.matchStatus === "Сопоставлено").length, issues: rows.filter((row) => row.matchStatus !== "Сопоставлено" || ["Ошибка чтения", "Неизвестный формат", "XML (неизвестная схема)"].includes(row.format)).length, formats } };
+  }
+
   function ensurePollingRun(next, input, capturedAt) {
     if (input.runId) return next.pollingRuns.find((item) => item.id === input.runId) || null;
     const folderIdentity = input.folderPath || input.folderName || "manual";
@@ -2055,6 +2088,7 @@
   const MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES = "disable_insecure_management_services";
   const MANAGEMENT_TASK_TE20_AUTO_ANSWER = "set_te20_auto_answer_automatic";
   const MANAGEMENT_TASK_TE20_MANUAL_ANSWER = "set_te20_auto_answer_manual";
+  const TE_FAMILY_ANSWER_TASK_BY_MODE = Object.freeze({ automatic: "set_te_family_auto_answer_automatic", manual: "set_te_family_auto_answer_manual" });
   const MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE = "disable_te20_auto_update";
   const TE20_SSH_TASK_BY_MODE = Object.freeze({ enable: "set_te20_ssh_enabled", disable: "set_te20_ssh_disabled" });
   const MANAGEMENT_TASK_TE20_NTP = "set_te20_ntp_settings";
@@ -2088,7 +2122,6 @@
     const labels = new Map();
     for (const device of devices) {
       const value = pollingDimensionValue(device, dimension);
-  const TE_FAMILY_ANSWER_TASK_BY_MODE = Object.freeze({ automatic: "set_te_family_auto_answer_automatic", manual: "set_te_family_auto_answer_manual" });
       if (labels.has(value)) continue;
       let label = "Не указано";
       if (dimension === "domains") label = normalizeDisplay(device.domain) || "Не указано";
@@ -2240,9 +2273,14 @@
     if (!input.credentialsReady) errors.push("Введите учётные данные оборудования в модуле «Загрузка данных и опрос устройств»");
     if (input.credentialsReady && !/^[0-9a-f]{64}$/i.test(String(input.credentialSourceSha256 || ""))) errors.push("Не удалось подтвердить введённые учётные данные");
     if (!projection.supportedDevices.length) errors.push("Среди выбранных устройств нет оборудования с поддерживаемым автоматическим опросом");
+    if (input.collectLogs !== undefined && typeof input.collectLogs !== "boolean") errors.push("Некорректный выбор сбора логов");
+    if (input.collectJson !== undefined && typeof input.collectJson !== "boolean") errors.push("Некорректный выбор JSON-опросов");
+    if (input.collectJson === false && input.collectLogs !== true) errors.push("Выберите JSON-опросы, сбор логов или оба варианта");
     const managementTasks = input.disableInsecureManagementServices === true ? [MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES] : [];
     if (input.te20AnswerMode === "automatic" || input.setTe20AutoAnswerAutomatic === true) managementTasks.push(MANAGEMENT_TASK_TE20_AUTO_ANSWER);
     if (input.te20AnswerMode === "manual") managementTasks.push(MANAGEMENT_TASK_TE20_MANUAL_ANSWER);
+    if (input.teFamilyAnswerMode && !TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]) errors.push("Недопустимое значение Answer mode Huawei TE30/40/50/60");
+    if (TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]) managementTasks.push(TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]);
     if (input.te20AutoUpdateMode && input.te20AutoUpdateMode !== "disable") errors.push("Недопустимое значение настройки автообновления");
     if (input.te20AutoUpdateMode === "disable") managementTasks.push(MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE);
     if (input.te20SshMode && !TE20_SSH_TASK_BY_MODE[input.te20SshMode]) errors.push("Недопустимое значение настройки SSH");
@@ -2279,8 +2317,6 @@
     }
     const answerTask = managementTasks.find((task) => [MANAGEMENT_TASK_TE20_AUTO_ANSWER, MANAGEMENT_TASK_TE20_MANUAL_ANSWER, ...Object.values(TE_FAMILY_ANSWER_TASK_BY_MODE)].includes(task));
     const portTasks = managementTasks.filter((task) => Object.values(TE20_PORT_TASK_BY_MODE).some((group) => Object.values(group).includes(task)));
-    if (input.teFamilyAnswerMode && !TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]) errors.push("Недопустимое значение Answer mode Huawei TE30/40/50/60");
-    if (TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]) managementTasks.push(TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]);
     if (answerTask && managementTasks.length > 1) errors.push("Запускайте изменение Answer mode отдельно от других задач управления");
     if (managementTasks.includes(MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) && managementTasks.length > 1) errors.push("Отключение автообновления запускайте отдельно от других задач управления");
     const sshTask = managementTasks.find((task) => Object.values(TE20_SSH_TASK_BY_MODE).includes(task));
@@ -2307,6 +2343,8 @@
       deviceIds: usesManagementTargetList ? [] : projection.selectedDevices.map((device) => device.id),
       targetDevices: usesManagementTargetList ? projection.selectedDevices.map(pollingRuntimeDevice) : [],
       managementTasks,
+      collectLogs: input.collectLogs === true,
+      collectJson: input.collectJson !== false,
       ...(managementTasks.includes(MANAGEMENT_TASK_TE20_NTP) ? { ntpChanges } : {}),
       ...(managementTasks.includes(MANAGEMENT_TASK_TE20_POWER) ? { powerChanges } : {}),
       fileCount: 0, successCount: 0, errorCount: 0, status: "ready_for_local_cli",
@@ -2325,7 +2363,7 @@
       : (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).map(pollingRuntimeDevice);
     return {
       ok: true,
-      payload: { schemaVersion: 3, scheduledAt: plan.capturedAt, intervalMinSeconds: plan.intervalMinSeconds, intervalMaxSeconds: plan.intervalMaxSeconds, ...(Number.isInteger(plan.intervalSeconds) ? { intervalSeconds: plan.intervalSeconds } : {}), authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), ...(plan.ntpChanges ? { ntpChanges: deepClone(plan.ntpChanges) } : {}), ...(plan.powerChanges ? { powerChanges: deepClone(plan.powerChanges) } : {}), devices },
+      payload: { schemaVersion: 3, scheduledAt: plan.capturedAt, intervalMinSeconds: plan.intervalMinSeconds, intervalMaxSeconds: plan.intervalMaxSeconds, ...(Number.isInteger(plan.intervalSeconds) ? { intervalSeconds: plan.intervalSeconds } : {}), authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), collectLogs: plan.collectLogs === true, collectJson: plan.collectJson !== false, ...(plan.ntpChanges ? { ntpChanges: deepClone(plan.ntpChanges) } : {}), ...(plan.powerChanges ? { powerChanges: deepClone(plan.powerChanges) } : {}), devices },
       filename: `extron-polling-plan-${String(plan.capturedAt || "").slice(0, 10) || "local"}.json`,
       errors: []
     };
@@ -3063,6 +3101,9 @@
     if (field === "ntp" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string") {
       return `${value.enabled ? "Включено" : "Отключено"}; тип: ${value.modeCode === 1 ? "Вручную" : "Автоматически"}; сервер: ${value.server || "не указан"}`;
     }
+    if (field === "wifi" && isPlainObject(value) && typeof value.clientEnabled === "boolean" && typeof value.accessPointEnabled === "boolean") {
+      return `Клиент: ${value.clientEnabled ? "включён" : "отключён"}; точка доступа: ${value.accessPointEnabled ? "включена" : "отключена"}`;
+    }
     return typeof value === "string" && value.trim() ? value.trim() : "Нет данных";
   }
 
@@ -3101,9 +3142,6 @@
     outputHeaders.push("Статус сверки", "Файл опроса", "Дата опроса");
     const indexed = new Map();
     for (const result of candidateState?.pollingResults || []) {
-    if (field === "wifi" && isPlainObject(value) && typeof value.clientEnabled === "boolean" && typeof value.accessPointEnabled === "boolean") {
-      return `Клиент: ${value.clientEnabled ? "включён" : "отключён"}; точка доступа: ${value.accessPointEnabled ? "включена" : "отключена"}`;
-    }
       if (!result?.filenameIp) continue;
       if (!indexed.has(result.filenameIp)) indexed.set(result.filenameIp, []);
       indexed.get(result.filenameIp).push(result);
@@ -5241,6 +5279,9 @@
     createBackup,
     createDemoState,
     buildPollingPlanExport,
+    buildDeviceLogImportRows,
+    classifyDeviceLogPrefix,
+    writeDeviceLogFile,
     createPollingPlan,
     isZeroIntervalRange,
     pollingStartEnabled,
@@ -5406,6 +5447,7 @@
   let credentialPoolSession = null;
   let managementTargetListSession = null;
   let pollingOutputRootHandle = null;
+  let logOutputRootHandle = null;
   let automaticPollingMonitor = null;
   let selectedPollingRecovery = null;
   const POLLING_RECOVERY = global.MVP_POLLING_RECOVERY || (typeof module === "object" && module.exports ? require("./runtime/polling-recovery") : null);
@@ -5426,15 +5468,19 @@
     srProgress: null,
     pollingImportResults: [],
     pollingImportSummary: null,
+    logImportSummary: null,
+    logImportRows: [],
+    logImportProgress: null,
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
     zeroIntervalAcknowledged: false,
-    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false, te20AnswerMode: "", teFamilyAnswerMode: "", te20HttpMode: "", te20TelnetMode: "", te20AutoUpdateMode: "", te20SshMode: "", te20NtpEnabled: "", te20NtpMode: "", te20NtpServerMode: "", te20NtpServerValue: "", te20ShutdownRestart: "", te20SleepMinutes: "", te20ScheduledRestart: "", te20RestartTime: "" },
+    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false, collectLogs: false, collectJson: true, te20AnswerMode: "", teFamilyAnswerMode: "", te20HttpMode: "", te20TelnetMode: "", te20AutoUpdateMode: "", te20SshMode: "", te20NtpEnabled: "", te20NtpMode: "", te20NtpServerMode: "", te20NtpServerValue: "", te20ShutdownRestart: "", te20SleepMinutes: "", te20ScheduledRestart: "", te20RestartTime: "" },
     credentialSummary: null,
     adminAccess: launchMode.kind === "local" ? null : { adminConfigured: false, adminUnlocked: false },
     managementTargetListSummary: null,
     pollingOutputFolderName: null,
+    logOutputFolderName: null,
     automaticPolling: null,
     pollingRecoverySummary: null,
     inventoryBusy: false,
@@ -5507,6 +5553,32 @@
     }
   }
 
+  async function writeDeviceLogFile(runDirectory, jobId, pending) {
+    const filename = String(pending?.filename || "");
+    if (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}\.xml$/.test(filename) || filename !== `${pending?.ip}.xml`) throw new Error("log_filename_invalid");
+    const response = await global.fetch(`/api/polling/jobs/${encodeURIComponent(jobId)}/log/${encodeURIComponent(pending.logId)}`, { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/xml", "X-MVP-CSRF": String(global.__MVP_CSRF__ || "") } });
+    if (!response.ok || !response.body) throw new Error("log_stream_unavailable");
+    const fileHandle = await runDirectory.handle.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable({ keepExistingData: false });
+    const reader = response.body.getReader();
+    let bytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array)) throw new Error("log_stream_invalid");
+        bytes += value.byteLength;
+        await writable.write(value);
+      }
+      if (!bytes) throw new Error("log_empty");
+      await writable.close();
+    } catch (error) {
+      try { await reader.cancel(); } catch { /* best effort */ }
+      try { await writable.abort(); } catch { /* best effort */ }
+      throw error;
+    }
+  }
+
   async function pendingResultAlreadyWritten(runDirectory, pending) {
     try {
       const file = await (await runDirectory.handle.getFileHandle(String(pending.filename))).getFile();
@@ -5545,7 +5617,23 @@
     return found[0] || null;
   }
 
+  async function reattachPollingIfPossible() {
+    if (!selectedPollingRecovery?.manifest.jobId || automaticPollingMonitor) return false;
+    if (selectedPollingRecovery.manifest.plan.collectLogs && !logOutputRootHandle) return false;
+    const active = await runtimeRequest("/api/polling/jobs/active");
+    if (active.activeJobId !== selectedPollingRecovery.manifest.jobId) return false;
+    const logRunDirectory = selectedPollingRecovery.manifest.plan.collectLogs
+      ? { name: selectedPollingRecovery.manifest.logFolderName, handle: await logOutputRootHandle.getDirectoryHandle(selectedPollingRecovery.manifest.logFolderName) }
+      : null;
+    selectedPollingRecovery.originalIndices = selectedPollingRecovery.manifest.activeOriginalIndices || selectedPollingRecovery.manifest.plan.devices.map((_, index) => index);
+    const monitorToken = Symbol("automatic-polling-reattach");
+    automaticPollingMonitor = monitorToken;
+    void monitorAutomaticPolling(active.activeJobId, monitorToken, selectedPollingRecovery, logRunDirectory);
+    return true;
+  }
+
   async function verifySavedResults(recovery) {
+    if (recovery.manifest.plan.collectJson === false) return [...recovery.manifest.savedIndices];
     const verified = [];
     for (let index = 0; index < recovery.manifest.plan.devices.length; index += 1) {
       const ip = String(recovery.manifest.plan.devices[index].ipNormalized || recovery.manifest.plan.devices[index].ip || "");
@@ -5579,25 +5667,37 @@
   }
 
   function automaticPollingStatusLabel(status) {
-    return ({ scheduled: "Ожидание времени запуска", running: "Опрос устройства", waiting_for_save: "Сохранение результата", waiting_interval: "Ожидание интервала", completed: "Завершено", cancelled: "Отменено", failed: "Ошибка" })[status] || "Подготовка";
+    return ({ scheduled: "Ожидание времени запуска", running: "Опрос устройства", waiting_for_save: "Сохранение результата", waiting_for_log: "Сохранение лога", waiting_interval: "Ожидание интервала", completed: "Завершено", cancelled: "Отменено", failed: "Ошибка" })[status] || "Подготовка";
   }
 
   function automaticPollingErrorMessage(code) {
-    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Введите учётные данные перед запуском опроса.", credential_file_invalid: "Учётные данные не приняты локальным исполнителем.", credential_sha_mismatch: "Учётные данные изменились после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", zero_interval_confirmation_required: "Подтвердите запуск опроса без интервалов.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить JSON результата; событие записано, опрос других устройств продолжается.", result_save_timeout: "Вкладка перестала подтверждать запись результатов. Опрос остановлен; продолжите его из выбранной папки после повторного ввода учётных данных.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
+    return ({ runtime_required: "Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", credentials_required: "Введите учётные данные перед запуском опроса.", credential_file_invalid: "Учётные данные не приняты локальным исполнителем.", credential_sha_mismatch: "Учётные данные изменились после формирования плана.", plan_invalid: "Сформированный план не принят локальным исполнителем.", log_folder_required: "Для сбора логов выберите отдельную папку с разрешением на запись.", zero_interval_confirmation_required: "Подтвердите запуск опроса без интервалов.", job_already_active: "В этой локальной сессии уже выполняется опрос.", result_save_failed: "Не удалось сохранить JSON результата; событие записано, опрос других устройств продолжается.", result_save_timeout: "Вкладка перестала подтверждать запись результатов. Опрос остановлен; продолжите его из выбранной папки после повторного ввода учётных данных.", polling_cancelled: "Автоматический опрос отменён.", local_runtime_error: "Локальный исполнитель не завершил операцию." })[code] || "Локальная операция не выполнена.";
   }
 
-  async function monitorAutomaticPolling(jobId, monitorToken, recovery) {
+  async function monitorAutomaticPolling(jobId, monitorToken, recovery, logRunDirectory = null) {
     const runDirectory = recovery.runDirectory;
     try {
       while (automaticPollingMonitor === monitorToken) {
         const status = await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}`);
         ui.automaticPolling = { ...status, runFolderName: runDirectory.name };
+        if (status.pendingLog) {
+          let saved = false;
+          try {
+            if (!logRunDirectory) throw new Error("log_folder_unavailable");
+            await writeDeviceLogFile(logRunDirectory, jobId, status.pendingLog);
+            saved = true;
+          } catch {
+            setMessage(`Не удалось сохранить лог устройства ${escapeHtml(String(status.pendingLog.ip || "без IP"))}. Опрос продолжается.`, "warning");
+          }
+          try { await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/log/${encodeURIComponent(status.pendingLog.logId)}/ack`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ saved }) }); }
+          catch (error) { if (error.status !== 409) throw error; }
+        }
         if (status.pendingResult) {
           const pending = await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/result`);
           if (pending) {
             let saved = false;
             try {
-              if (!await pendingResultAlreadyWritten(runDirectory, pending)) await writePollingResultFile(runDirectory, pending);
+              if (recovery.manifest.plan.collectJson !== false && !await pendingResultAlreadyWritten(runDirectory, pending)) await writePollingResultFile(runDirectory, pending);
               saved = true;
             } catch {
               setMessage(`Не удалось сохранить JSON для устройства ${escapeHtml(String(pending.payload?.ip || "без IP"))}. Опрос остальных устройств продолжается.`, "warning");
@@ -5615,9 +5715,9 @@
           selectedPollingRecovery = recovery.manifest.status === "completed" ? null : recovery;
           ui.pollingRecoverySummary = selectedPollingRecovery ? { folder: runDirectory.name, remaining: recovery.manifest.plan.devices.length - recovery.manifest.savedIndices.length, requiresReview: recovery.manifest.requiresReview?.length || 0 } : null;
           const message = status.status === "completed"
-            ? `Автоматический опрос завершён. Папка ${runDirectory.name}. ${status.saveFailed ? `Не сохранено JSON: ${status.saveFailed}; доступно продолжение.` : ""}`
+            ? `Автоматический опрос завершён. Папка ${runDirectory.name}. ${status.saveFailed ? `Не сохранено JSON: ${status.saveFailed}; доступно продолжение.` : ""}${status.logsFailed ? ` Ошибки сохранения логов: ${status.logsFailed}.` : ""}`
             : automaticPollingErrorMessage(status.safeError || (status.status === "cancelled" ? "polling_cancelled" : "local_runtime_error"));
-          setMessage(message, status.status === "completed" ? (status.saveFailed ? "warning" : "success") : status.status === "cancelled" ? "warning" : "error");
+          setMessage(message, status.status === "completed" ? (status.saveFailed || status.logsFailed ? "warning" : "success") : status.status === "cancelled" ? "warning" : "error");
           render();
           break;
         }
@@ -5641,10 +5741,14 @@
     const exported = buildPollingPlanExport(state, planId);
     if (!exported.ok) throw Object.assign(new Error("plan_invalid"), { safeCode: "plan_invalid" });
     if (isZeroIntervalRange(exported.payload) && !ui.zeroIntervalAcknowledged) throw Object.assign(new Error("zero_interval_confirmation_required"), { safeCode: "zero_interval_confirmation_required" });
-    if (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
+    if (exported.payload.collectJson && (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle))) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
+    if (exported.payload.collectLogs && (!logOutputRootHandle || !await ensurePollingOutputPermission(logOutputRootHandle))) throw Object.assign(new Error("log_folder_required"), { safeCode: "log_folder_required" });
     if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
-    const runDirectory = await createPollingRunDirectory(pollingOutputRootHandle, new Date().toISOString());
+    const startedAt = new Date().toISOString();
+    const logRunDirectory = exported.payload.collectLogs ? await createPollingRunDirectory(logOutputRootHandle, startedAt) : null;
+    const runDirectory = exported.payload.collectJson ? await createPollingRunDirectory(pollingOutputRootHandle, startedAt) : logRunDirectory;
     const manifest = POLLING_RECOVERY.create(exported.payload, allowInsecureTls);
+    if (logRunDirectory) manifest.logFolderName = logRunDirectory.name;
     const recovery = { manifest, runDirectory, originalIndices: exported.payload.devices.map((_, index) => index) };
     await writePollingRecovery(runDirectory, manifest);
     const started = await runtimeRequest("/api/polling/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId, plan: exported.payload, allowInsecureTls: allowInsecureTls === true }) });
@@ -5655,18 +5759,21 @@
       try { await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(started.jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch { /* runtime may be unavailable */ }
       throw error;
     }
-    ui.automaticPolling = { jobId: started.jobId, status: started.status, total: exported.payload.devices.length, processed: 0, successful: 0, failed: 0, unsupported: 0, allowInsecureTls: allowInsecureTls === true };
+    ui.automaticPolling = { jobId: started.jobId, status: started.status, total: exported.payload.devices.length, processed: 0, successful: 0, failed: 0, unsupported: 0, collectLogs: exported.payload.collectLogs === true, allowInsecureTls: allowInsecureTls === true };
     const monitorToken = Symbol("automatic-polling-monitor");
     automaticPollingMonitor = monitorToken;
     render();
-    void monitorAutomaticPolling(started.jobId, monitorToken, recovery);
+    void monitorAutomaticPolling(started.jobId, monitorToken, recovery, logRunDirectory);
   }
 
   async function resumeAutomaticPolling() {
     if (launchMode.kind !== "local" || automaticPollingMonitor || !selectedPollingRecovery) throw Object.assign(new Error("recovery_unavailable"), { safeCode: "recovery_unavailable" });
-    if (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle)) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
+    const recoveryPlan = selectedPollingRecovery.manifest.plan;
+    if (recoveryPlan.collectJson !== false && (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle))) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
+    if (recoveryPlan.collectLogs && (!logOutputRootHandle || !await ensurePollingOutputPermission(logOutputRootHandle))) throw Object.assign(new Error("log_folder_required"), { safeCode: "log_folder_required" });
     if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
     const recovery = selectedPollingRecovery;
+    const logRunDirectory = recoveryPlan.collectLogs ? { name: recovery.manifest.logFolderName, handle: await logOutputRootHandle.getDirectoryHandle(recovery.manifest.logFolderName) } : null;
     if (!recoveryTargetsMatchCurrentSource(recovery.manifest)) throw Object.assign(new Error("recovery_source_required"), { safeCode: "recovery_source_required" });
     const verifiedSaved = await verifySavedResults(recovery);
     recovery.manifest.savedIndices = verifiedSaved;
@@ -5681,7 +5788,7 @@
     const writeTask = remaining.plan.managementTasks?.length > 0;
     const warning = writeTask
       ? `Продолжить опрос ${remaining.originalIndices.length} устройств из папки ${recovery.runDirectory.name}? ${remaining.skippedForReview.length} устройств с неизвестным исходом операции управления будут пропущены и требуют отдельной проверки. Подтвердите повторное разрешение задачи отключения портов.`
-      : `Продолжить опрос ${remaining.originalIndices.length} устройств из папки ${recovery.runDirectory.name}? Сохранённые JSON повторно опрашиваться не будут.`;
+      : `Продолжить опрос ${remaining.originalIndices.length} устройств из папки ${recovery.runDirectory.name}? Уже подтверждённые результаты повторно опрашиваться не будут.`;
     if (!global.confirm(warning)) return;
     if (Number(remaining.plan.intervalMinSeconds) === 0 && Number(remaining.plan.intervalMaxSeconds) === 0 && !global.confirm("Опрос будет продолжен без интервалов между устройствами. Подтвердить?")) return;
     remaining.plan.authenticationInputSha256 = credentialPoolSession.sourceSha256;
@@ -5695,11 +5802,11 @@
       throw error;
     }
     recovery.originalIndices = remaining.originalIndices;
-    ui.automaticPolling = { jobId: started.jobId, status: started.status, total: remaining.originalIndices.length, processed: 0, saved: 0, saveFailed: 0, allowInsecureTls: recovery.manifest.allowInsecureTls, runFolderName: recovery.runDirectory.name };
+    ui.automaticPolling = { jobId: started.jobId, status: started.status, total: remaining.originalIndices.length, processed: 0, saved: 0, saveFailed: 0, collectJson: recoveryPlan.collectJson !== false, collectLogs: recoveryPlan.collectLogs === true, allowInsecureTls: recovery.manifest.allowInsecureTls, runFolderName: recovery.runDirectory.name };
     const monitorToken = Symbol("automatic-polling-resume");
     automaticPollingMonitor = monitorToken;
     render();
-    void monitorAutomaticPolling(started.jobId, monitorToken, recovery);
+    void monitorAutomaticPolling(started.jobId, monitorToken, recovery, logRunDirectory);
   }
 
   function commitState(nextState, successMessage) {
@@ -6482,6 +6589,8 @@
         <form class="automatic-plan-form" data-polling-plan-form>
           <div class="field"><label for="management-target-list-file">Список устройств для закрытия портов 80 и 23 (http, telnet)</label><input id="management-target-list-file" name="managementTargetListFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>
           ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div><div class="button-row section-gap"><button class="button secondary" type="button" data-download-device-settings-audit>Скачать таблицу фактических настроек</button></div>` : `<p class="muted">Файл должен иметь структуру выгрузки SR. Он используется только для задачи закрытия портов и не добавляется в основную SR или аналитику.</p>`}
+          <label class="polling-tls-option"><input name="collectJson" type="checkbox"${ui.pollingPlanSelection.collectJson !== false ? " checked" : ""}> Формировать JSON-опросы</label><label class="polling-tls-option"><input name="collectLogs" type="checkbox"${ui.pollingPlanSelection.collectLogs ? " checked" : ""}> Собирать логи устройств</label>
+          <div class="output-folder-picker section-gap"><div><strong>Отдельная папка для логов</strong><p class="muted">${ui.logOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.logOutputFolderName)}` : "Выберите папку при включении сбора логов."}</p></div><button class="button secondary" type="button" data-select-log-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку логов</button></div>
           <fieldset class="polling-mode-selector"><legend>Способ выбора устройств</legend><div>
             <label class="polling-mode-choice"><input type="radio" name="pollingMode" value="${POLLING_SELECTION_MODE_FILTERS}"${projection.mode === POLLING_SELECTION_MODE_FILTERS ? " checked" : ""}> По фильтрам</label>
             <label class="polling-mode-choice"><input type="radio" name="pollingMode" value="${POLLING_SELECTION_MODE_SINGLE_IP}"${projection.mode === POLLING_SELECTION_MODE_SINGLE_IP ? " checked" : ""}> По IP-адресу</label>
@@ -6504,6 +6613,9 @@
         <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div><div><dt>Закрытие портов доступно</dt><dd data-polling-count="management-eligible">${projection.managementEligibleDevices.length}</dd></div><div><dt>Закрытие портов будет пропущено</dt><dd data-polling-count="management-skipped">${projection.managementSkippedDevices.length}</dd></div></dl>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
         ${automatic ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(automaticPollingStatusLabel(automatic.status))}</span><strong>${automatic.processed || 0} из ${automatic.total || 0} устройств</strong></div><strong>${automaticPercent}%</strong></div><progress max="100" value="${automaticPercent}">${automaticPercent}%</progress><dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${automatic.successful || 0}</dd></div><div><dt>Ошибки опроса</dt><dd>${automatic.failed || 0}</dd></div><div><dt>Ошибки сохранения</dt><dd>${automatic.saveFailed || 0}</dd></div><div><dt>Не поддерживается</dt><dd>${automatic.unsupported || 0}</dd></div><div><dt>Папка запуска</dt><dd class="mono">${escapeHtml(automatic.runFolderName || "будет создана при старте")}</dd></div></dl>${automatic.allowInsecureTls ? `<p class="muted">Для этого запуска разрешён самоподписанный HTTPS-сертификат. Обычный HTTP не используется.</p>` : ""}${!["completed", "cancelled", "failed"].includes(automatic.status) ? `<button class="button danger" type="button" data-cancel-automatic-polling>Отменить опрос</button>` : ""}</section>` : ""}
+      </section>
+      <section class="card section-gap"><h2>Импорт логов устройств</h2><form class="form-grid" data-log-import-form><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required></div><button class="button primary" type="submit">Импортировать папку логов</button></form>${ui.logImportProgress ? `<p role="status">Проверено файлов: ${ui.logImportProgress.processed} из ${ui.logImportProgress.total}</p>` : ""}
+        ${ui.logImportSummary ? `<div class="upload-outcome section-gap" role="status"><strong>Логи импортированы</strong><span>Файлов: ${ui.logImportSummary.files} · размер: ${escapeHtml(formatBytes(ui.logImportSummary.bytes))} · сопоставлено: ${ui.logImportSummary.matched} · проблемы: ${ui.logImportSummary.issues}</span><span>${Object.entries(ui.logImportSummary.formats).map(([kind, count]) => `${escapeHtml(kind)}: ${count}`).join(" · ")}</span></div><div class="table-wrap section-gap"><table><thead><tr><th>Файл</th><th>Папка запуска</th><th>Тип</th><th>Размер</th><th>IP</th><th>Устройство SR</th><th>Сопоставление</th></tr></thead><tbody>${ui.logImportRows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.path)}</td><td>${escapeHtml(row.runFolder || "—")}</td><td>${escapeHtml(row.format)}</td><td>${escapeHtml(formatBytes(row.size))}</td><td>${escapeHtml(row.ip || "—")}</td><td>${escapeHtml(row.deviceName || "—")}</td><td>${escapeHtml(row.matchStatus)}</td></tr>`).join("")}</tbody></table></div>${ui.logImportRows.length > 100 ? `<p class="muted">Показаны первые 100 файлов из ${ui.logImportRows.length}; итоги рассчитаны по всей папке.</p>` : ""}` : ""}
       </section>
       `;
   }
@@ -6820,20 +6932,35 @@
         if (!await ensurePollingOutputPermission(handle)) throw new Error("permission_denied");
         pollingOutputRootHandle = handle;
         ui.pollingOutputFolderName = handle.name || "выбранная папка";
-        selectedPollingRecovery = await findPollingRecovery(handle);
+        const foundRecovery = await findPollingRecovery(handle);
+        if (foundRecovery || selectedPollingRecovery?.manifest.plan.collectJson !== false) selectedPollingRecovery = foundRecovery;
         ui.pollingRecoverySummary = selectedPollingRecovery ? { folder: selectedPollingRecovery.runDirectory.name, remaining: selectedPollingRecovery.manifest.plan.devices.length - selectedPollingRecovery.manifest.savedIndices.length, requiresReview: selectedPollingRecovery.manifest.requiresReview?.length || 0 } : null;
-        if (selectedPollingRecovery?.manifest.jobId && !automaticPollingMonitor) {
-          const active = await runtimeRequest("/api/polling/jobs/active");
-          if (active.activeJobId === selectedPollingRecovery.manifest.jobId) {
-            selectedPollingRecovery.originalIndices = selectedPollingRecovery.manifest.activeOriginalIndices || selectedPollingRecovery.manifest.plan.devices.map((_, index) => index);
-            const monitorToken = Symbol("automatic-polling-reattach");
-            automaticPollingMonitor = monitorToken;
-            void monitorAutomaticPolling(active.activeJobId, monitorToken, selectedPollingRecovery);
-          }
-        }
+        await reattachPollingIfPossible();
         setMessage(selectedPollingRecovery ? `Найден незавершённый опрос в папке ${selectedPollingRecovery.runDirectory.name}. Введите учётные данные и нажмите «Продолжить опрос».` : `Общая папка результатов выбрана: ${ui.pollingOutputFolderName}.`, selectedPollingRecovery ? "warning" : "success");
       } catch (error) {
         if (error?.name !== "AbortError") setMessage("Папка не выбрана или запись в неё не разрешена.", "error");
+      }
+      render();
+      return;
+    }
+    if (event.target.closest("[data-select-log-output]")) {
+      if (launchMode.kind !== "local" || typeof global.showDirectoryPicker !== "function") {
+        setMessage("Автоматический сбор логов доступен только через START_MVP_SPHERE_SR.py.", "error");
+        render();
+        return;
+      }
+      try {
+        const handle = await global.showDirectoryPicker({ id: "mvp-sphere-log-output", mode: "readwrite" });
+        if (!await ensurePollingOutputPermission(handle)) throw new Error("permission_denied");
+        logOutputRootHandle = handle;
+        ui.logOutputFolderName = handle.name || "выбранная папка";
+        const foundRecovery = await findPollingRecovery(handle);
+        if (foundRecovery?.manifest.plan.collectJson === false) selectedPollingRecovery = foundRecovery;
+        ui.pollingRecoverySummary = selectedPollingRecovery ? { folder: selectedPollingRecovery.runDirectory.name, remaining: selectedPollingRecovery.manifest.plan.devices.length - selectedPollingRecovery.manifest.savedIndices.length, requiresReview: selectedPollingRecovery.manifest.requiresReview?.length || 0 } : null;
+        await reattachPollingIfPossible();
+        setMessage("Отдельная папка логов выбрана для текущего сеанса.", "success");
+      } catch (error) {
+        if (error?.name !== "AbortError") setMessage("Папка логов не выбрана или запись в неё не разрешена.", "error");
       }
       render();
       return;
@@ -7245,6 +7372,35 @@
       return;
     }
 
+    const logImportForm = event.target.closest("[data-log-import-form]");
+    if (logImportForm) {
+      event.preventDefault();
+      const files = [...(logImportForm.querySelector('[name="logFiles"]')?.files || [])].filter((file) => file.name !== POLLING_RECOVERY.FILE && !["Thumbs.db", ".DS_Store"].includes(file.name));
+      if (!files.length) { setMessage("Выберите общую папку логов.", "error"); return; }
+      ui.logImportProgress = { processed: 0, total: files.length };
+      ui.logImportRows = [];
+      ui.logImportSummary = null;
+      render();
+      const entries = [];
+      for (let start = 0; start < files.length; start += 64) {
+        const batch = await Promise.all(files.slice(start, start + 64).map(async (file) => {
+          try { return { name: file.name, relativePath: file.webkitRelativePath || file.name, size: file.size, lastModified: file.lastModified, prefix: new Uint8Array(await file.slice(0, 2048).arrayBuffer()) }; }
+          catch { return { name: file.name, relativePath: file.webkitRelativePath || file.name, size: file.size, lastModified: file.lastModified, readError: true, prefix: new Uint8Array() }; }
+        }));
+        entries.push(...batch);
+        ui.logImportProgress = { processed: entries.length, total: files.length };
+        if (entries.length % 256 === 0 || entries.length === files.length) { render(); await new Promise((resolve) => global.setTimeout(resolve, 0)); }
+      }
+      const imported = buildDeviceLogImportRows(entries, state);
+      entries.forEach((entry) => entry.prefix.fill(0));
+      ui.logImportRows = imported.rows;
+      ui.logImportSummary = imported.summary;
+      ui.logImportProgress = null;
+      setMessage(`Метаданные логов загружены: ${imported.summary.files} файлов, сопоставлено ${imported.summary.matched}. Исходные файлы не изменены.`, "success");
+      render();
+      return;
+    }
+
     const pollingImportForm = event.target.closest("[data-polling-import-form]");
     if (pollingImportForm) {
       event.preventDefault();
@@ -7289,7 +7445,10 @@
       ui.pollingPlanSelection.intervalMaxSeconds = String(formData.get("intervalMaxSeconds") ?? "");
       ui.pollingPlanSelection.allowInsecureTls = formData.get("allowInsecureTls") === "on";
       ui.pollingPlanSelection.disableInsecureManagementServices = formData.get("disableInsecureManagementServices") === "on";
+      ui.pollingPlanSelection.collectLogs = formData.get("collectLogs") === "on";
+      ui.pollingPlanSelection.collectJson = formData.get("collectJson") === "on";
       ui.pollingPlanSelection.te20AnswerMode = ["automatic", "manual"].includes(formData.get("te20AnswerMode")) ? String(formData.get("te20AnswerMode")) : "";
+      ui.pollingPlanSelection.teFamilyAnswerMode = ["automatic", "manual"].includes(formData.get("teFamilyAnswerMode")) ? String(formData.get("teFamilyAnswerMode")) : "";
       ui.pollingPlanSelection.te20HttpMode = ["open", "close"].includes(formData.get("te20HttpMode")) ? String(formData.get("te20HttpMode")) : "";
       ui.pollingPlanSelection.te20TelnetMode = ["open", "close"].includes(formData.get("te20TelnetMode")) ? String(formData.get("te20TelnetMode")) : "";
       ui.pollingPlanSelection.te20AutoUpdateMode = formData.get("te20AutoUpdateMode") === "disable" ? "disable" : "";
@@ -7305,11 +7464,13 @@
       ui.zeroIntervalAcknowledged = isZeroIntervalRange(ui.pollingPlanSelection) && formData.get("confirmNoInterval") === "on";
       if (isZeroIntervalRange(ui.pollingPlanSelection) && !ui.zeroIntervalAcknowledged) { setMessage("Подтвердите запуск опроса без интервалов между устройствами.", "warning"); render(); return; }
       if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
-      if (!pollingOutputRootHandle) { setMessage("Сначала выберите общую папку для сохранения результатов.", "error"); render(); return; }
+      if (ui.pollingPlanSelection.collectJson && !pollingOutputRootHandle) { setMessage("Для JSON-опросов выберите общую папку результатов.", "error"); render(); return; }
+      if (ui.pollingPlanSelection.collectLogs && !logOutputRootHandle) { setMessage("Для сбора логов выберите отдельную папку логов.", "error"); render(); return; }
       const result = createPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [], managementTargetSourceSha256: managementTargetListSession?.sourceSha256 || "", credentialsReady: Boolean(credentialPoolSession?.sourceSha256), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
       if (ui.pollingPlanSelection.disableInsecureManagementServices && !global.confirm(`Для точных Huawei TE20/TE30/TE40/TE50/TE60 будут применены подтверждённые настройки HTTP и Telnet; для Bar 310, Box 310 и Box 610 — только HTTP. Отсутствующее управление Telnet на моделях 310 будет отмечено в результате без изменения настройки. HTTP-запись на Box 310/610 ещё не проверена на реальном устройстве: сначала проверьте одну точную модель по IP. Поддерживается целей: ${result.plan.selectionSummary.managementEligible}; будет пропущено: ${result.plan.selectionSummary.managementSkipped}. Продолжить?`)) return;
       if (ui.pollingPlanSelection.te20AnswerMode && !global.confirm(`На выбранном Huawei TE20 будет установлен режим Answer mode «${ui.pollingPlanSelection.te20AnswerMode === "automatic" ? "Автоматически" : "Вручную"}». Это изменит обработку входящих вызовов. Будет выполнено повторное чтение после записи. Продолжить?`)) return;
+      if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm(`На одном Huawei TE30/TE40/TE50/TE60 будет установлен Answer mode «${ui.pollingPlanSelection.teFamilyAnswerMode === "automatic" ? "Автоматически" : "Вручную"}». Это изменит обработку входящих вызовов. Для TE30/TE50/TE60 действие предварительное до вашей проверки. Продолжить?`)) return;
       if ((ui.pollingPlanSelection.te20HttpMode || ui.pollingPlanSelection.te20TelnetMode) && !global.confirm(`На одном выбранном Huawei TE20 будут изменены настройки: HTTP — ${ui.pollingPlanSelection.te20HttpMode === "open" ? "открыть" : ui.pollingPlanSelection.te20HttpMode === "close" ? "закрыть" : "не менять"}; Telnet — ${ui.pollingPlanSelection.te20TelnetMode === "open" ? "открыть" : ui.pollingPlanSelection.te20TelnetMode === "close" ? "закрыть" : "не менять"}. Открытие включает соответствующий сетевой сервис. Каждое выбранное поле будет прочитано повторно после записи; состояние TCP listener этим не проверяется. Продолжить?`)) return;
       if (ui.pollingPlanSelection.te20AutoUpdateMode === "disable" && !global.confirm("На одном выбранном Huawei TE20 будет отключено автообновление. Перед записью и после неё инструмент прочитает значение настройки. Продолжить?")) return;
       if (ui.pollingPlanSelection.te20SshMode && !global.confirm(`На одном выбранном Huawei TE20 SSH будет ${ui.pollingPlanSelection.te20SshMode === "enable" ? "включён" : "отключён"}. Перед записью и после неё инструмент прочитает значение настройки. Отключение SSH может прекратить удалённый доступ. Продолжить?`)) return;
@@ -7448,7 +7609,6 @@
       event.preventDefault();
       const formData = new FormData(baselineForm);
       const projectId = baselineForm.dataset.assignBaseline;
-      ui.pollingPlanSelection.teFamilyAnswerMode = ["automatic", "manual"].includes(formData.get("teFamilyAnswerMode")) ? String(formData.get("teFamilyAnswerMode")) : "";
       const snapshotId = String(formData.get("snapshotId") || "");
       const reason = String(formData.get("reason") || "");
       const active = getActiveBaselineAssignment(state, projectId);
@@ -7470,7 +7630,6 @@
       ui.selectedProjectId = projectId;
       ui.route = "projects";
       commitState(result.state, result.reused ? "Этот snapshot уже является baseline." : active ? "Baseline заменён; история сохранена." : "Baseline назначен.");
-      if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm(`На одном Huawei TE30/TE40/TE50/TE60 будет установлен Answer mode «${ui.pollingPlanSelection.teFamilyAnswerMode === "automatic" ? "Автоматически" : "Вручную"}». Это изменит обработку входящих вызовов. Для TE30/TE50/TE60 действие предварительное до вашей проверки. Продолжить?`)) return;
       return;
     }
 
@@ -7718,6 +7877,10 @@
       ui.pollingPlanSelection.te20AnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
       return;
     }
+    if (pollingPlanForm && event.target.name === "teFamilyAnswerMode") {
+      ui.pollingPlanSelection.teFamilyAnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
+      return;
+    }
     if (pollingPlanForm && ["te20HttpMode", "te20TelnetMode"].includes(event.target.name)) {
       ui.pollingPlanSelection[event.target.name] = ["open", "close"].includes(event.target.value) ? event.target.value : "";
       return;
@@ -7815,6 +7978,11 @@
       render();
       return;
     }
+    if (pollingPlanForm && ["collectLogs", "collectJson"].includes(event.target.name)) {
+      ui.pollingPlanSelection[event.target.name] = event.target.checked === true;
+      ui.pollingPlanResult = null;
+      return;
+    }
     if (!event.target.matches("[data-import-backup]") || !event.target.files?.[0]) return;
     const file = event.target.files[0];
     const reader = new FileReader();
@@ -7877,10 +8045,6 @@
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     const resultContainer = pollingPlanForm.querySelector("[data-polling-ip-result]");
-    if (pollingPlanForm && event.target.name === "teFamilyAnswerMode") {
-      ui.pollingPlanSelection.teFamilyAnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
-      return;
-    }
     if (resultContainer) resultContainer.innerHTML = renderPollingIpTarget(projection);
     const counts = { selected: projection.selectedDevices.length, supported: projection.supportedDevices.length, unsupported: projection.unsupportedDevices.length, "management-eligible": projection.managementEligibleDevices.length, "management-skipped": projection.managementSkippedDevices.length };
     Object.entries(counts).forEach(([name, value]) => {

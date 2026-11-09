@@ -25,6 +25,18 @@
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
   const tests = [];
 
+  if (typeof require === "function") test("Кнопка опроса обрабатывает Answer Mode внутри формы плана", () => {
+    const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    const submit = source.slice(source.indexOf("async function handleSubmit"), source.indexOf("async function handleChange"));
+    const plan = submit.slice(submit.indexOf('const pollingPlanForm = event.target.closest("[data-polling-plan-form]")'));
+    assert(plan.indexOf('formData.get("teFamilyAnswerMode")') >= 0);
+    assert(plan.indexOf('formData.get("teFamilyAnswerMode")') < plan.indexOf("const result = createPollingPlan"));
+    assert(plan.indexOf("if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm") > plan.indexOf("const result = createPollingPlan"));
+    assert(plan.indexOf("if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm") < plan.indexOf("await startAutomaticPolling"));
+    const change = source.slice(source.indexOf("async function handleChange"), source.indexOf("function handleInput"));
+    assert(change.includes('event.target.name === "teFamilyAnswerMode"'));
+  });
+
   test("План показывает первичную настройку и вход, а пароль не сохраняется в state", () => {
     const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
     assert(source.includes('data-admin-access-form'));
@@ -2306,6 +2318,69 @@
     wrong.inventoryDevices = [{ ...state.inventoryDevices[0], modelRaw: "TE40", modelNormalized: "te40" }];
     wrong.srImports = state.srImports;
     assert(!api.createPollingPlan(wrong, { ...base, te20SleepMinutes: "0" }).ok);
+  });
+
+  test("Сбор логов выключен по умолчанию и метаданные импортируются без разбора содержимого", () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = [{ id: "te20-test", category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE20", ipNormalized: "192.0.2.20", nameRaw: "Synthetic TE20", inCurrentSr: true }];
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    const base = { mode: "single_ip", ipAddress: "192.0.2.20", scheduledAt: "2026-11-05T12:00:00Z", intervalMinSeconds: 0, intervalMaxSeconds: 0, credentialsReady: true, credentialSourceSha256: "b".repeat(64) };
+    const ordinary = api.createPollingPlan(state, base);
+    assert(ordinary.ok, ordinary.errors?.join("; "));
+    assertEqual(api.buildPollingPlanExport(ordinary.state, ordinary.plan.id).payload.collectLogs, false);
+    const withLogs = api.createPollingPlan(state, { ...base, collectLogs: true });
+    assert(withLogs.ok, withLogs.errors?.join("; "));
+    assertEqual(api.buildPollingPlanExport(withLogs.state, withLogs.plan.id).payload.collectLogs, true);
+    const logsOnly = api.createPollingPlan(state, { ...base, collectJson: false, collectLogs: true });
+    assert(logsOnly.ok, logsOnly.errors?.join("; "));
+    assertEqual(api.buildPollingPlanExport(logsOnly.state, logsOnly.plan.id).payload.collectJson, false);
+    assert(!api.createPollingPlan(state, { ...base, collectJson: false, collectLogs: false }).ok);
+    const xml = new TextEncoder().encode("<?xml version='1.0'?><LogModule><item>synthetic</item></LogModule>");
+    const rows = api.buildDeviceLogImportRows([
+      { name: "192.0.2.20.xml", relativePath: "logs/2026-11-05_12-00-00/192.0.2.20.xml", size: 9999999, lastModified: Date.UTC(2026, 10, 5), prefix: xml },
+      { name: "archive.zip", relativePath: "logs/2026-11-05_12-00-00/archive.zip", size: 100, prefix: new Uint8Array([0x50, 0x4b, 3, 4]) },
+      { name: "unknown.bin", relativePath: "logs/unknown.bin", size: 10, prefix: new Uint8Array([0, 1, 2]) }
+    ], state);
+    assertEqual(rows.summary.files, 3);
+    assertEqual(rows.summary.bytes, 10000109);
+    assertEqual(rows.rows[0].format, "TE20 XML");
+    assertEqual(rows.rows[0].matchStatus, "Сопоставлено");
+    assertEqual(rows.rows[0].runFolder, "2026-11-05_12-00-00");
+    assertEqual(rows.rows[1].format, "ZIP (без распаковки)");
+    assertEqual(rows.rows[2].format, "Неизвестный формат");
+    const many = Array.from({ length: 1000 }, (_, index) => ({ name: "192.0.2.20.xml", relativePath: `logs/2026-11-05_12-00-00/run-${index}/192.0.2.20.xml`, size: 20, prefix: xml }));
+    const started = Date.now();
+    const bulk = api.buildDeviceLogImportRows(many, state);
+    assertEqual(bulk.summary.files, 1000);
+    assertEqual(bulk.summary.matched, 1000);
+    assert(Date.now() - started < 2000, "Метаданные 1000 логов должны обрабатываться быстро");
+    const ambiguous = api.createDemoState();
+    ambiguous.inventoryDevices = [state.inventoryDevices[0], { ...state.inventoryDevices[0], id: "duplicate" }];
+    assertEqual(api.buildDeviceLogImportRows([{ name: "192.0.2.20.xml", prefix: xml }], ambiguous).rows[0].matchStatus, "Неоднозначный IP");
+    const recovery = pollingRecovery.create(api.buildPollingPlanExport(logsOnly.state, logsOnly.plan.id).payload, false, "2026-11-05T12:00:00Z");
+    recovery.logFolderName = "2026-11-05_12-00-00";
+    assertEqual(pollingRecovery.validate(recovery).plan.collectJson, false);
+  });
+
+  test("Поток лога пишется в выбранную папку без JSON/base64", async () => {
+    const originalFetch = global.fetch;
+    const chunks = [new TextEncoder().encode("<?xml version='1.0'?>"), new TextEncoder().encode("<LogModule/>")];
+    const written = [];
+    let readIndex = 0;
+    let closed = false;
+    let filename = null;
+    global.fetch = async () => ({ ok: true, body: { getReader: () => ({ read: async () => readIndex < chunks.length ? { done: false, value: chunks[readIndex++] } : { done: true }, cancel: async () => {} }) } });
+    const runDirectory = { handle: { getFileHandle: async (name) => { filename = name; return { createWritable: async () => ({ write: async (bytes) => written.push(bytes), close: async () => { closed = true; }, abort: async () => {} }) }; } } };
+    try {
+      await api.writeDeviceLogFile(runDirectory, "synthetic-job", { filename: "192.0.2.20.xml", ip: "192.0.2.20", logId: "synthetic-log" });
+      assertEqual(filename, "192.0.2.20.xml");
+      assertEqual(written.length, 2);
+      assert(closed);
+      let rejected = false;
+      try { await api.writeDeviceLogFile(runDirectory, "synthetic-job", { filename: "../bad.xml", ip: "192.0.2.20", logId: "synthetic-log" }); }
+      catch { rejected = true; }
+      assert(rejected);
+    } finally { global.fetch = originalFetch; }
   });
 
   test("Галочка переключает доменный каскад и точный IP с SR на отдельный список", () => {

@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .polling import PollingCancelled, abortable_wait, run_plan
+from .polling import PollingCancelled, abortable_wait, normalize_ipv4, run_plan
 from .redaction import assert_no_plan_secrets, sanitize_result
 
 
@@ -84,6 +84,8 @@ class PollingJob:
         self._cancel_event = threading.Event()
         self._pending: dict[str, Any] | None = None
         self._ack_decision: bool | None = None
+        self._pending_log: dict[str, Any] | None = None
+        self._log_ack_decision: bool | None = None
         self.id = str(settings.get("id") or secrets.token_urlsafe(18))
         clock: Callable[[], datetime] = settings.get("clock") or (lambda: datetime.now(timezone.utc))
         self._clock = clock
@@ -95,6 +97,8 @@ class PollingJob:
             "startedAt": None,
             "finishedAt": None,
             "allowInsecureTls": settings.get("allow_insecure_tls") is True,
+            "collectLogs": plan.get("collectLogs") is True,
+            "collectJson": plan.get("collectJson") is not False,
             "status": "scheduled",
             "total": len(plan["devices"]),
             "processed": 0,
@@ -103,6 +107,9 @@ class PollingJob:
             "unsupported": 0,
             "saved": 0,
             "saveFailed": 0,
+            "logsSaved": 0,
+            "logsFailed": 0,
+            "logsUnsupported": 0,
             "saveFailureEvents": [],
             "currentDevice": None,
             "safeError": None,
@@ -118,7 +125,9 @@ class PollingJob:
 
     def status(self) -> dict[str, Any]:
         with self._condition:
-            return {**self._state, "currentDevice": copy.deepcopy(self._state["currentDevice"]), "pendingResult": self._pending is not None}
+            pending_log = self._pending_log
+            safe_log = {key: pending_log[key] for key in ("logId", "filename", "ip") } if pending_log else None
+            return {**self._state, "currentDevice": copy.deepcopy(self._state["currentDevice"]), "pendingResult": self._pending is not None, "pendingLog": safe_log}
 
     def result(self) -> dict[str, Any] | None:
         with self._condition:
@@ -131,6 +140,24 @@ class PollingJob:
             if self._pending is None or self._pending.get("resultId") != result_id or self._ack_decision is not None:
                 return False
             self._ack_decision = saved
+            self._condition.notify_all()
+            return True
+
+    def log_stream(self, log_id: str) -> Any | None:
+        with self._condition:
+            pending = self._pending_log
+            if not pending or pending["logId"] != log_id or pending["claimed"]:
+                return None
+            pending["claimed"] = True
+            return pending["stream"]
+
+    def acknowledge_log(self, log_id: str, saved: bool) -> bool:
+        if not isinstance(saved, bool):
+            return False
+        with self._condition:
+            if not self._pending_log or self._pending_log["logId"] != log_id or self._log_ack_decision is not None:
+                return False
+            self._log_ack_decision = saved
             self._condition.notify_all()
             return True
 
@@ -157,6 +184,8 @@ class PollingJob:
             self._cancel_event.set()
             self._pending = None
             self._ack_decision = None
+            self._pending_log = None
+            self._log_ack_decision = None
             for item in self._credentials:
                 item.clear()
             self._credentials.clear()
@@ -196,6 +225,32 @@ class PollingJob:
                     self._state["saveFailureEvents"].append({"index": int(context["index"]), "code": "result_save_failed"})
             self._state["status"] = "running"
 
+    def _wait_for_log(self, stream: Any, context: dict[str, Any]) -> dict[str, Any]:
+        ip = str(context.get("ip") or "")
+        if normalize_ipv4(ip) != ip or context.get("filename") != f"{ip}.xml" or not callable(getattr(stream, "read", None)):
+            return {"status": "failed", "safeError": "log_metadata_invalid"}
+        pending = {"logId": secrets.token_urlsafe(18), "filename": str(context["filename"]), "ip": ip, "stream": stream, "claimed": False}
+        with self._condition:
+            self._pending_log = pending
+            self._log_ack_decision = None
+            self._state["status"] = "waiting_for_log"
+            self._condition.notify_all()
+            deadline = time.monotonic() + max(1, float(self._settings.get("log_ack_timeout_seconds", 1800)))
+            while self._log_ack_decision is None and not self._cancel_event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+            saved = self._log_ack_decision is True and not self._cancel_event.is_set()
+            self._pending_log = None
+            self._log_ack_decision = None
+            self._state["status"] = "running"
+        try:
+            stream.close()
+        except Exception:
+            pass
+        return {"status": "saved" if saved else "failed", **({} if saved else {"safeError": "log_save_failed"})}
+
     def _on_progress(self, progress: dict[str, Any]) -> None:
         with self._condition:
             self._state["currentDevice"] = safe_device(progress.get("device"))
@@ -207,6 +262,10 @@ class PollingJob:
             elif stage == "processed" and isinstance(progress.get("result"), dict):
                 result = progress["result"]
                 self._state["processed"] += 1
+                log_status = (result.get("logCollection") or {}).get("status")
+                if log_status == "saved": self._state["logsSaved"] += 1
+                elif log_status == "failed": self._state["logsFailed"] += 1
+                elif log_status == "protocol_required": self._state["logsUnsupported"] += 1
                 if result.get("ok"):
                     self._state["successful"] += 1
                 elif result.get("networkAttempted") is False:
@@ -246,6 +305,7 @@ class PollingJob:
                 "now": self._settings.get("adapter_now"),
                 "now_ms": self._settings.get("now_ms"),
                 "on_result": self._wait_for_save,
+                "on_log": self._wait_for_log,
                 "on_progress": self._on_progress,
             })
             with self._condition:
@@ -264,6 +324,13 @@ class PollingJob:
                 self._state["currentDevice"] = None
                 self._pending = None
                 self._ack_decision = None
+                if self._pending_log:
+                    try:
+                        self._pending_log["stream"].close()
+                    except Exception:
+                        pass
+                self._pending_log = None
+                self._log_ack_decision = None
                 for item in self._credentials:
                     item.clear()
                 self._credentials.clear()

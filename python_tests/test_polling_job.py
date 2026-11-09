@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import time
 import unittest
 
@@ -18,6 +19,25 @@ def wait_until(predicate, timeout: float = 2.0):
 
 
 class PollingJobTests(unittest.TestCase):
+    def test_log_stream_waits_for_ack_and_exposes_only_safe_metadata(self) -> None:
+        source = io.BytesIO(b"<?xml version='1.0'?><LogModule>synthetic</LogModule>")
+        decisions = []
+        def runner(_plan, options):
+            decisions.append(options["on_log"](source, {"ip": "192.0.2.20", "filename": "192.0.2.20.xml", "index": 0, "total": 1}))
+            options["on_progress"]({"stage": "processed", "result": {"ok": True, "logCollection": decisions[-1]}})
+            return []
+        job = create_polling_job({"plan": {"devices": [{"ip": "192.0.2.20"}], "collectLogs": True}, "credentials": [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "run_plan": runner})
+        pending = wait_until(lambda: job.status()["pendingLog"])
+        self.assertEqual(pending["filename"], "192.0.2.20.xml")
+        self.assertNotIn("SYNTHETIC-SECRET", json.dumps(job.status()))
+        stream = job.log_stream(pending["logId"])
+        self.assertIsNotNone(stream)
+        self.assertIsNone(job.log_stream(pending["logId"]))
+        self.assertTrue(stream.read(128).startswith(b"<?xml"))
+        self.assertTrue(job.acknowledge_log(pending["logId"], True))
+        self.assertEqual(job.join(2)["logsSaved"], 1)
+        self.assertEqual(decisions, [{"status": "saved"}])
+
     def test_result_waits_for_ack_then_completes_and_clears(self) -> None:
         terminal: list[dict] = []
         plan = {"intervalSeconds": 0, "devices": [{"ip": "192.0.2.10", "category": "controller", "manufacturer": "Extron", "model": "Synthetic"}]}

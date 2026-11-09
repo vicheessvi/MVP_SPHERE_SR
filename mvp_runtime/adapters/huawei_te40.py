@@ -11,6 +11,7 @@ import ssl
 import time
 import warnings
 from http.cookies import SimpleCookie
+from urllib.parse import quote
 from typing import Any, Callable
 
 from mvp_runtime.redaction import sanitize_result
@@ -198,6 +199,45 @@ def native_https_request(options: dict[str, Any]) -> dict[str, Any]:
         }
     finally:
         connection.close()
+
+
+class _Te20LogStream:
+    def __init__(self, connection: http.client.HTTPSConnection, response: http.client.HTTPResponse, prefix: bytes):
+        self._connection = connection
+        self._response = response
+        self._prefix = prefix
+
+    def read(self, size: int) -> bytes:
+        if self._prefix:
+            chunk, self._prefix = self._prefix[:size], self._prefix[size:]
+            return chunk
+        return self._response.read(size)
+
+    def close(self) -> None:
+        self._response.close()
+        self._connection.close()
+
+
+def _open_te20_log_stream(options: dict[str, Any]) -> _Te20LogStream:
+    context = _https_context(options["reject_unauthorized"], TE20_TLS_PROFILE)
+    connection = http.client.HTTPSConnection(options["ip"], 443, timeout=30, context=context)
+    path = "/log?actkn=" + quote(options["csrf_token"], safe="") + "?rmd=" + quote(options["nonce"], safe="")
+    try:
+        connection.request("GET", path, headers={
+            "Cookie": options["cookie"], "Referer": f"https://{options['ip']}/desktop.html",
+            "Accept": "*/*", "User-Agent": browser_request_headers(options["ip"])["User-Agent"],
+        })
+        response = connection.getresponse()
+        content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].lower()
+        if response.status != 200 or content_type not in {"application/x-octet-stream", "application/octet-stream", "application/xml", "text/xml"}:
+            raise HuaweiContractError("log_contract_unconfirmed")
+        prefix = response.read(4096)
+        if not prefix.lstrip().startswith(b"<?xml") or b"<LogModule" not in prefix:
+            raise HuaweiContractError("log_contract_unconfirmed")
+        return _Te20LogStream(connection, response, prefix)
+    except Exception:
+        connection.close()
+        raise
 
 
 def _header_values(headers: Any, name: str) -> list[str]:
@@ -1070,6 +1110,30 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized, "tlsProfile": tls_profile or "system_default"},
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
         }
+    log_collection = None
+    if settings.get("collect_logs") is True and planned_model == TE20_MODEL:
+        if not callable(settings.get("on_log")):
+            log_collection = {"status": "failed", "safeError": "log_sink_unavailable"}
+        elif "exportLogFile" not in bundle_text or "actkn" not in bundle_text or not _cookie_header(cookies):
+            log_collection = {"status": "protocol_required"}
+        else:
+            stream = None
+            try:
+                opener = settings.get("log_opener") or _open_te20_log_stream
+                stream = opener({"ip": ip, "cookie": _cookie_header(cookies), "csrf_token": csrf_token,
+                                 "nonce": str(nonce()), "reject_unauthorized": reject_unauthorized})
+                response = settings["on_log"](stream, {"ip": ip, "filename": f"{ip}.xml"})
+                if not isinstance(response, dict) or response.get("status") not in {"saved", "failed"}:
+                    raise HuaweiContractError("log_ack_invalid")
+                log_collection = {"status": response["status"], **({} if response["status"] == "saved" else {"safeError": "log_save_failed"})}
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                log_collection = {"status": "failed", "safeError": error.code if isinstance(error, HuaweiContractError) else "log_download_failed"}
+            finally:
+                if stream is not None:
+                    try: stream.close()
+                    except Exception: pass
     management_actions = []
     site_name = read_site_name(bundle_text, lambda name, payload: action(name, {**(payload or {}), "acCSRFToken": csrf_token}))
     if planned_model in SUPPORTED_MODELS and site_name["status"] == "protocol_required":
@@ -1144,6 +1208,8 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     }
     if site_name["status"] == "read":
         result["webBlocks"]["Device Info"]["Site Name"] = site_name["value"]
+    if log_collection is not None:
+        result["logCollection"] = log_collection
     if management_actions:
         result["managementActions"] = management_actions
         failed_action = next((item for item in management_actions if item.get("status") == "failed"), None)
