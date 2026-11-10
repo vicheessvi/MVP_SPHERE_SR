@@ -1356,17 +1356,19 @@
       webBlocks: getCaseInsensitive(payload, "webBlocks") ?? null
     };
     const observedModel = auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model"));
-    const boxModelProvisional = (projected.adapterKey === "vcs/huawei/box310" && observedModel === "box310")
+    const boxModelExact = (projected.adapterKey === "vcs/huawei/box310" && observedModel === "box310")
       || (projected.adapterKey === "vcs/huawei/box610" && observedModel === "box610");
     const siteName = getCaseInsensitive(payload, "siteName");
     if (siteName !== undefined) {
       const read = isPlainObject(siteName) && normalizeText(getCaseInsensitive(siteName, "status")) === "read";
       const value = read ? normalizedSiteName(getCaseInsensitive(siteName, "value")) : null;
-      const provisional = boxModelProvisional;
-      projected.siteName = provisional && read && value
-        ? { status: "provisional", value, validationStatus: "provisional_user_validation" }
-        : { status: read && value ? "read" : "unavailable", value };
-    } else if (boxModelProvisional) projected.siteName = { status: "unavailable", value: null };
+      const siteValidation = boxModelExact ? getCaseInsensitive(siteName, "validationStatus") : null;
+      projected.siteName = boxModelExact && read && value && siteValidation === "confirmed_user_validation"
+        ? { status: "read", value, validationStatus: "confirmed_user_validation" }
+        : boxModelExact && read && value
+          ? { status: "provisional", value, validationStatus: "provisional_user_validation" }
+          : { status: read && value ? "read" : "unavailable", value };
+    } else if (boxModelExact) projected.siteName = { status: "unavailable", value: null };
     const settingKeys = ["telnet", "http", "snmpV2", "autoUpdate", "autoAnswer", "ntp", "wifi", "ssh", "powerManagement"];
     const suppliedSettings = getCaseInsensitive(payload, "deviceSettings");
     const suppliedFields = getCaseInsensitive(suppliedSettings, "fields");
@@ -1376,7 +1378,8 @@
       && ["te30", "te40", "te50", "te60"].includes(auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")));
     const bar310SettingsConfirmed = projected.adapterKey === "vcs/huawei/bar310"
       && auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")) === "bar310";
-    const boxSettingsProvisional = boxModelProvisional && getCaseInsensitive(suppliedSettings, "validationStatus") === "provisional_user_validation";
+    const boxSettingsValidation = boxModelExact ? getCaseInsensitive(suppliedSettings, "validationStatus") : null;
+    const boxSettingsAccepted = ["provisional_user_validation", "confirmed_user_validation"].includes(boxSettingsValidation);
     const projectedFields = {};
     const approvedReadSources = {
       telnet: new Set(["WEB_GetCfgParamAPI:enabletelnet", "managementActions.after.telnetPort23"]),
@@ -1391,7 +1394,7 @@
       const status = normalizeText(getCaseInsensitive(supplied, "status"));
       const value = getCaseInsensitive(supplied, "value");
       const source = String(getCaseInsensitive(supplied, "source") || "");
-      const exact310SettingsRead = bar310SettingsConfirmed || (boxSettingsProvisional && getCaseInsensitive(supplied, "validationStatus") === "provisional_user_validation");
+      const exact310SettingsRead = bar310SettingsConfirmed || (boxSettingsAccepted && getCaseInsensitive(supplied, "validationStatus") === boxSettingsValidation);
       if (key === "autoUpdate" && exact310SettingsRead && status === "read" && ["enabled", "disabled"].includes(value)
         && ["GET /v1/om/config/service:serverType", "GET /v1/om/config/service+auto-config:serverType"].includes(source)
         && getCaseInsensitive(supplied, "basis") === "server_type_audit_rule"
@@ -1444,7 +1447,7 @@
           projectedFields[key].reason = "capability_absent";
         }
       }
-      if (boxSettingsProvisional && key !== "http" && projectedFields[key]?.status === "read") projectedFields[key].validationStatus = "provisional_user_validation";
+      if (boxSettingsAccepted && key !== "http" && projectedFields[key]?.status === "read") projectedFields[key].validationStatus = boxSettingsValidation;
     }
     if (getCaseInsensitive(payload, "ok") === true) {
       const actions = getCaseInsensitive(payload, "managementActions");
@@ -1456,7 +1459,7 @@
         if (["enabled", "disabled"].includes(legacyValue)) projectedFields[key] = { status: "read", value: legacyValue, source: `managementActions.after.${legacyKey}` };
       }
     }
-    if (Object.keys(projectedFields).length) projected.deviceSettings = { fields: projectedFields };
+    if (Object.keys(projectedFields).length) projected.deviceSettings = { fields: projectedFields, ...(boxSettingsAccepted ? { validationStatus: boxSettingsValidation } : {}) };
     return stableJsonValue(projected);
   }
 

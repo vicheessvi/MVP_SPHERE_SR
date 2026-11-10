@@ -2209,6 +2209,12 @@
       assertEqual(result.deviceSettings.fields.wifi.value.preferredNetworkEnabled, false);
       assertEqual(result.deviceSettings.fields.powerManagement.value.sleepTimeCode, 10);
       assert(!result.deviceSettings.fields.http.validationStatus);
+      const confirmedFields = Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, key === "http" ? field : { ...field, validationStatus: "confirmed_user_validation" }]));
+      const confirmedPayload = { ...payload, siteName: { ...payload.siteName, validationStatus: "confirmed_user_validation" }, deviceSettings: { validationStatus: "confirmed_user_validation", fields: confirmedFields } };
+      const confirmed = api.pollingPayloadProjection(confirmedPayload);
+      assertEqual(confirmed.siteName.status, "read");
+      assertEqual(confirmed.deviceSettings.fields.autoUpdate.validationStatus, "confirmed_user_validation");
+      assertEqual(confirmed.deviceSettings.fields.ntp.value.mode, "manual");
       const withoutMarker = api.pollingPayloadProjection({ ...payload, siteName: undefined, deviceSettings: { fields } });
       assertEqual(withoutMarker.siteName.status, "unavailable");
       assert(!withoutMarker.deviceSettings?.fields?.autoAnswer);
@@ -2226,6 +2232,11 @@
     assert(report.ok);
     assertEqual(report.rows[0][report.headers.indexOf("Автообновление, факт")], "Требует проверки");
     assertEqual(report.withFacts, 0);
+    const confirmedFields = Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, key === "http" ? field : { ...field, validationStatus: "confirmed_user_validation" }]));
+    candidate.pollingResults[0].normalizedData = api.pollingPayloadProjection({ ok: true, adapterKey: "vcs/huawei/box310", webBlocks: { "Device Info": { Model: "Box 310" } }, deviceSettings: { validationStatus: "confirmed_user_validation", fields: confirmedFields } });
+    const confirmedReport = api.buildDeviceSettingsAuditRows({ ...parsed, headers, rows: [row] }, candidate);
+    assertEqual(confirmedReport.rows[0][confirmedReport.headers.indexOf("Автообновление, факт")], "Отключено");
+    assertEqual(confirmedReport.withFacts, 1);
   });
 
   test("Единый Huawei 310 transport не переписывает модельные ключи старых JSON", () => {

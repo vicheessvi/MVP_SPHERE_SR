@@ -423,7 +423,7 @@ def _read_310_settings(
     model: str,
     bundle_text: str,
     json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
-    *, skip_http: bool = False, provisional: bool = False,
+    *, skip_http: bool = False, validation_status: str | None = None,
 ) -> dict[str, Any]:
     settings = unknown_device_settings(model, not_exposed=("telnet", "snmpV2")) if skip_http else _read_device_settings(model, bundle_text, json_request)
     fields = settings["fields"]
@@ -459,11 +459,11 @@ def _read_310_settings(
                 fields[key] = {"status": "read", "value": {"shutdownRestartEnabled": bool(values["suppotReboot"]), "sleepMode": "never" if sleep == 0 else "interval", "sleepTimeCode": sleep, "automaticRestartEnabled": bool(values["autoReboot"]), "automaticRestartIntervalDays": interval, "clearMemoryInSleepEnabled": bool(values["sleepCloseAPP"]), "energySavingEnabled": bool(values["savePowerMode"])}, "source": "POST /v1/om/config:suppotReboot,sleepTime,autoReboot,sleepCloseAPP,autoRebootVal,savePowerMode", "unconfirmedFields": ["scheduledPowerOn", "scheduledPowerOff", "clearMemoryAfterRestart"]}
             else:
                 fields[key] = {"status": "unavailable", "value": None}
-    if provisional:
-        settings["validationStatus"] = "provisional_user_validation"
+    if validation_status:
+        settings["validationStatus"] = validation_status
         for key, field in fields.items():
             if key != "http" and field.get("status") == "read":
-                field["validationStatus"] = "provisional_user_validation"
+                field["validationStatus"] = validation_status
     return settings
 
 
@@ -810,14 +810,14 @@ def poll_huawei_310_family_device(
     settings_profile = str(contract.get("settings_read_profile") or "")
     profile_for_model = {
         "Bar 310": "bar310_confirmed",
-        "Box 310": "box310_provisional",
-        "Box 610": "box610_provisional",
+        "Box 310": "box310_confirmed",
+        "Box 610": "box610_confirmed",
     }.get(contract_model) if contract_id == FAMILY_CONTRACT_ID else None
     if profile_for_model and settings_profile == profile_for_model and site_name["status"] == "protocol_required":
         site_name = _read_bar310_site_name(bundle_text, json_request)
-    provisional_settings = settings_profile in {"box310_provisional", "box610_provisional"} and settings_profile == profile_for_model
-    if provisional_settings and site_name["status"] == "read":
-        site_name["validationStatus"] = "provisional_user_validation"
+    confirmed_box_settings = settings_profile in {"box310_confirmed", "box610_confirmed"} and settings_profile == profile_for_model
+    if confirmed_box_settings and site_name["status"] == "read":
+        site_name["validationStatus"] = "confirmed_user_validation"
     if (
         contract_id in HTTP_ONLY_MANAGEMENT_CONTRACT_IDS
         and contract.get("management_action") == DISABLE_INSECURE_SERVICES_ACTION
@@ -826,7 +826,7 @@ def poll_huawei_310_family_device(
         management_actions.append(_disable_insecure_management_services(bundle_text, json_request, settle, str(contract.get("management_validation_status") or "provisional_user_validation")))
     verified_action = next((item for item in management_actions if item.get("status") in {"applied", "already_compliant"}), None)
     if profile_for_model and settings_profile == profile_for_model:
-        device_settings = _read_310_settings(contract_model, bundle_text, json_request, skip_http=bool(verified_action), provisional=provisional_settings)
+        device_settings = _read_310_settings(contract_model, bundle_text, json_request, skip_http=bool(verified_action), validation_status="confirmed_user_validation" if confirmed_box_settings else None)
     elif verified_action:
         device_settings = unknown_device_settings(contract_model, not_exposed=("telnet", "snmpV2", "autoUpdate"))
     else:

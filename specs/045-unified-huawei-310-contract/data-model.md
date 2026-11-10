@@ -5,3 +5,4 @@
 - `InventoryCapability`: прежний модельный `key` и `normalizerKey`, новый общий transport.
 - `PollingResult`: новый общий contract ID, фактическая модель и собственный validation status; старые файлы не переписываются.
 - `HistoricalResult`: прежний `adapterKey`/contract ID принимается только в рамках точного совпадения модели и IP; неизвестные contract ID не принимаются.
+- Новые read-only результаты Box 310/610 после отдельных пользовательских проверок имеют `confirmed_user_validation`; исторические provisional значения остаются в исходных JSON, а HTTP write status не повышается.

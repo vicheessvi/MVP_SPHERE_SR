@@ -28,7 +28,7 @@
 
 - [x] T007 Обновить AGENTS.md, docs/context-map.md, docs/implementation-log.md, решение docs/decisions/ADR-0046-box-settings-read.md и product-catalog.js
 - [x] T008 Выполнить полный Python/JavaScript прогон и проверку Справочника
-- [ ] T009 Администратор отдельно сверяет реальные JSON Box 310 и Box 610 с web-меню на рабочем ПК; до этого provisional сохраняется
+- [x] T009 Администратор отдельно сверил наименования и значения реальных JSON Box 310 и Box 610 с web-меню; новые read-only результаты подтверждены, исторические provisional сохраняются
 
 ## Dependencies
 

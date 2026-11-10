@@ -30,7 +30,7 @@
 
 - [x] T009 Обновить AGENTS.md, README.md, product-catalog.js, docs/context-map.md, docs/decisions/ADR-0047-unified-huawei-310.md, docs/implementation-log.md
 - [x] T010 Выполнить полный Python/JavaScript прогон, справочник и syntax; проверить чистоту diff
-- [ ] T011 Дождаться отдельных результатов эксплуатации Box 310 и Box 610 от администратора; provisional до этого сохраняется
+- [x] T011 Администратор отдельно подтвердил наименования и фактические значения обоих Box; read-only статус повышен только для новых JSON, исторические provisional не изменяются
 
 ## Dependencies
 

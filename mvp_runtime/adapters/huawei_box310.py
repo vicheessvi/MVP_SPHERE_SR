@@ -18,7 +18,7 @@ BOX310_CONTRACT = {
     "evidence_label": "Huawei Box 310 exact pre-auth model and compatible v1 resource markers found",
     "management_action": DISABLE_INSECURE_SERVICES_ACTION,
     "management_validation_status": "provisional_user_validation",
-    "settings_read_profile": "box310_provisional",
+    "settings_read_profile": "box310_confirmed",
 }
 
 

@@ -200,7 +200,7 @@ class HuaweiBar310Tests(unittest.TestCase):
         self.assertEqual(managed["deviceSettings"]["fields"]["autoUpdate"]["value"], "enabled")
         self.assertFalse(any(call["method"] == "PUT" for call in managed_calls))
 
-    def test_box310_and_box610_share_guarded_provisional_settings_reader(self):
+    def test_box310_and_box610_share_guarded_user_confirmed_settings_reader(self):
         bundle = {"status_code": 200, "headers": [], "body": FULL_SETTINGS_BUNDLE + " " + SERVER_AUDIT_BUNDLE}
         for model, poller in (("Box 310", poll_huawei_box310_device), ("Box 610", poll_huawei_box610_device)):
             calls = []
@@ -211,7 +211,7 @@ class HuaweiBar310Tests(unittest.TestCase):
             )
             self.assertTrue(result["ok"])
             self.assertEqual(result["vendorPolling"]["model"], model)
-            self.assertEqual(result["siteName"]["validationStatus"], "provisional_user_validation")
+            self.assertEqual(result["siteName"]["validationStatus"], "confirmed_user_validation")
             fields = result["deviceSettings"]["fields"]
             self.assertEqual(fields["autoAnswer"]["value"], "enabled")
             self.assertEqual(fields["ntp"]["value"]["mode"], "manual")
@@ -219,7 +219,8 @@ class HuaweiBar310Tests(unittest.TestCase):
             self.assertEqual(fields["ssh"]["value"], "enabled")
             self.assertEqual(fields["powerManagement"]["value"]["sleepTimeCode"], 10)
             self.assertEqual(fields["autoUpdate"]["meaning"], "firmware_update_capability")
-            self.assertTrue(all(field["validationStatus"] == "provisional_user_validation" for key, field in fields.items() if key != "http" and field["status"] == "read"))
+            self.assertEqual(result["deviceSettings"]["validationStatus"], "confirmed_user_validation")
+            self.assertTrue(all(field["validationStatus"] == "confirmed_user_validation" for key, field in fields.items() if key != "http" and field["status"] == "read"))
             self.assertNotIn("validationStatus", fields["http"])
             self.assertFalse(any(call["method"] == "PUT" for call in calls))
             self.assertNotIn("GOOD-SYNTHETIC", json.dumps(result))
