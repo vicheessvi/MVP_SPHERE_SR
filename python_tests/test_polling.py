@@ -16,6 +16,18 @@ HUAWEI_BOX610 = {"category": "vcs", "manufacturer": "Huawei", "model": "Box 610"
 
 
 class PollingTests(unittest.TestCase):
+    def test_te_family_log_collection_reaches_exact_transport(self) -> None:
+        observed = []
+        result = run_plan(
+            {"devices": [{"category": "vcs", "manufacturer": "Huawei", "model": "TE40", "ip": "192.0.2.40"}],
+             "collectJson": False, "collectLogs": True, "intervalMinSeconds": 0, "intervalMaxSeconds": 0},
+            {"ping": lambda *_: {"ok": True, "durationMs": 1},
+             "get_credentials": lambda *_: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
+             "adapters": {"huawei_te_web_cgi_v1": lambda _device, _credentials, options:
+                 observed.append(options["collect_logs"]) or {"ok": True, "logCollection": {"status": "saved"}}}},
+        )
+        self.assertEqual(observed, [True])
+        self.assertEqual(result[0]["logCollection"]["status"], "saved")
     def test_te_family_answer_mode_requires_one_exact_sr_ip_and_no_other_write(self) -> None:
         from mvp_runtime.polling import validate_te20_single_target_tasks
         for model in ("TE30", "TE40", "TE50", "TE60"):

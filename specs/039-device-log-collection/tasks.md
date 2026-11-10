@@ -24,6 +24,10 @@
 
 - [X] T009 Update `AGENTS.md`, `README.md`, `docs/context-map.md`, ADR/log and `product-catalog.js`.
 - [X] T010 Run all checks in `specs/039-device-log-collection/quickstart.md` and mark tasks complete.
+- [X] T011 [US1] Confirm exact TE40 `Token` log URL and XML prefix without full download in `mvp_runtime/adapters/huawei_te40.py` and `research.md`.
+- [X] T012 [US1] Add marker-gated TE30/40/50/60 log stream and routing in `mvp_runtime/adapters/huawei_te40.py` and `mvp_runtime/polling.py`.
+- [X] T013 [US1] Add synthetic exact-model, missing-marker and token-path tests in `python_tests/test_huawei_te40.py` and `python_tests/test_polling.py`.
+- [ ] T014 [US1] Confirm complete folder/ACK workflow on TE40 and separate TE30/50/60 exports on user's workstation.
 
 ## Dependencies
 

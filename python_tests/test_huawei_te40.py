@@ -4,6 +4,7 @@ import json
 import io
 import ssl
 import unittest
+from unittest.mock import patch
 
 from mvp_runtime.adapters.huawei_te40 import DISABLE_INSECURE_SERVICES_ACTION, DISABLE_TE20_AUTO_UPDATE_ACTION, SET_TE20_AUTO_ANSWER_ACTION, SET_TE20_MANUAL_ANSWER_ACTION, SET_TE20_NTP_ACTION, SET_TE20_POWER_ACTION, TE20_TLS_PROFILE, TE20_PORT_ACTIONS, TE20_SSH_ACTIONS, HuaweiTransportError, _disable_te20_auto_update, _https_context, _read_te20_extra_settings, _read_device_settings, _set_te20_auto_answer_automatic, _set_te20_auto_answer_manual, _set_te20_ntp_settings, _set_te20_power_settings, _set_te20_port_setting, _set_te20_ssh, TE20_READONLY_SETTING_IDS, TE20_POWER_DETAIL_IDS, MANAGEMENT_ACTION_MARKERS, build_web_blocks, poll_huawei_te_device
 from mvp_runtime.adapters.device_settings import unknown_device_settings
@@ -33,6 +34,34 @@ def synthetic_resources(model="TE40"):
 
 
 class HuaweiTe40Tests(unittest.TestCase):
+    def test_te_family_log_transport_uses_exact_token_path_and_default_tls_profile(self):
+        from mvp_runtime.adapters.huawei_te40 import _open_te_family_log_stream
+        observed = {}
+        class Response:
+            status = 200
+            def getheader(self, name):
+                return "application/x-octet-stream" if name == "Content-Type" else None
+            def read(self, _size):
+                return b"<?xml version='1.0'?><LogModule/>"
+            def close(self):
+                pass
+        class Connection:
+            def __init__(self, ip, port, timeout, context):
+                observed.update({"ip": ip, "port": port, "timeout": timeout, "context": context})
+            def request(self, method, path, headers):
+                observed.update({"method": method, "path": path, "headers": headers})
+            def getresponse(self):
+                return Response()
+            def close(self):
+                pass
+        with patch("mvp_runtime.adapters.huawei_te40._https_context", return_value="synthetic-context") as context, patch("mvp_runtime.adapters.huawei_te40.http.client.HTTPSConnection", Connection):
+            stream = _open_te_family_log_stream({"ip": "192.0.2.40", "reject_unauthorized": False, "cookie": "SyntheticSession=1", "csrf_token": "SYNTHETIC-TOKEN", "nonce": "0.25"})
+            self.assertEqual(stream.read(128), b"<?xml version='1.0'?><LogModule/>")
+            stream.close()
+        context.assert_called_once_with(False, None)
+        self.assertEqual(observed["path"], "/log?Token=SYNTHETIC-TOKEN?rmd=0.25")
+        self.assertEqual(observed["method"], "GET")
+        self.assertEqual(observed["port"], 443)
     def test_te_family_readonly_settings_are_independent_and_redacted(self):
         from mvp_runtime.adapters.huawei_te40 import _read_te_family_extra_settings
         settings = unknown_device_settings("TE40")
@@ -118,7 +147,7 @@ class HuaweiTe40Tests(unittest.TestCase):
         calls = []
         opened = []
         received = []
-        bundle = RESOURCE_MARKERS + " exportLogFile actkn"
+        bundle = RESOURCE_MARKERS + " exportLogFile '?actkn='"
         request = self.success_request(calls, terminal_model="Huawei TE20", preauth_legacy=True,
             overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
         result = poll_huawei_te_device(
@@ -140,6 +169,35 @@ class HuaweiTe40Tests(unittest.TestCase):
              "log_opener": lambda _options: self.fail("log must not open")},
         )
         self.assertNotIn("logCollection", without)
+
+    def test_te_family_log_export_is_exact_marker_gated_and_opt_in(self):
+        for model in ("TE30", "TE40", "TE50", "TE60"):
+            with self.subTest(model=model):
+                calls, opened, saved = [], [], []
+                bundle = RESOURCE_MARKERS + ' exportLogFile "?Token="'
+                request = self.success_request(calls, terminal_model=model,
+                    overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": bundle}})
+                result = poll_huawei_te_device(
+                    {"ip": "192.0.2.40", "model": model, "allowInsecureTls": True},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+                    {"request": request, "collect_logs": True,
+                     "log_opener": lambda options: opened.append(options["ip"]) or io.BytesIO(b"<?xml version='1.0'?><LogModule/>"),
+                     "on_log": lambda stream, metadata: saved.append((metadata["filename"], stream.read())) or {"status": "saved"}},
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["logCollection"], {"status": "saved"})
+                self.assertEqual(opened, ["192.0.2.40"])
+                self.assertEqual(saved[0][0], "192.0.2.40.xml")
+                self.assertNotIn("LogModule", json.dumps(result))
+                no_marker = poll_huawei_te_device(
+                    {"ip": "192.0.2.40", "model": model, "allowInsecureTls": True},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-PASSWORD"}],
+                    {"request": self.success_request([], terminal_model=model,
+                        overrides={"/system/web_all.js": {"status_code": 200, "headers": [], "body": RESOURCE_MARKERS + " exportLogFile"}}),
+                     "collect_logs": True, "log_opener": lambda _options: self.fail("unknown contract must not download"),
+                     "on_log": lambda *_: self.fail("unknown contract must not stream")},
+                )
+                self.assertEqual(no_marker["logCollection"], {"status": "protocol_required"})
 
     def test_te20_power_writes_only_changed_fields_and_verifies(self):
         state = {"suppotReboot": 0, "sleepTime": 0, "enableTimeReboot": 0, "rebootHour": 4, "rebootMinute": 0}

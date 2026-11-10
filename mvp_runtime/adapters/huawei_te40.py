@@ -201,7 +201,7 @@ def native_https_request(options: dict[str, Any]) -> dict[str, Any]:
         connection.close()
 
 
-class _Te20LogStream:
+class _HuaweiLogStream:
     def __init__(self, connection: http.client.HTTPSConnection, response: http.client.HTTPResponse, prefix: bytes):
         self._connection = connection
         self._response = response
@@ -218,10 +218,12 @@ class _Te20LogStream:
         self._connection.close()
 
 
-def _open_te20_log_stream(options: dict[str, Any]) -> _Te20LogStream:
-    context = _https_context(options["reject_unauthorized"], TE20_TLS_PROFILE)
+def _open_huawei_log_stream(options: dict[str, Any], token_parameter: str, tls_profile: str | None) -> _HuaweiLogStream:
+    if token_parameter not in ("actkn", "Token"):
+        raise HuaweiContractError("log_contract_unconfirmed")
+    context = _https_context(options["reject_unauthorized"], tls_profile)
     connection = http.client.HTTPSConnection(options["ip"], 443, timeout=30, context=context)
-    path = "/log?actkn=" + quote(options["csrf_token"], safe="") + "?rmd=" + quote(options["nonce"], safe="")
+    path = "/log?" + token_parameter + "=" + quote(options["csrf_token"], safe="") + "?rmd=" + quote(options["nonce"], safe="")
     try:
         connection.request("GET", path, headers={
             "Cookie": options["cookie"], "Referer": f"https://{options['ip']}/desktop.html",
@@ -234,10 +236,18 @@ def _open_te20_log_stream(options: dict[str, Any]) -> _Te20LogStream:
         prefix = response.read(4096)
         if not prefix.lstrip().startswith(b"<?xml") or b"<LogModule" not in prefix:
             raise HuaweiContractError("log_contract_unconfirmed")
-        return _Te20LogStream(connection, response, prefix)
+        return _HuaweiLogStream(connection, response, prefix)
     except Exception:
         connection.close()
         raise
+
+
+def _open_te20_log_stream(options: dict[str, Any]) -> _HuaweiLogStream:
+    return _open_huawei_log_stream(options, "actkn", TE20_TLS_PROFILE)
+
+
+def _open_te_family_log_stream(options: dict[str, Any]) -> _HuaweiLogStream:
+    return _open_huawei_log_stream(options, "Token", None)
 
 
 def _header_values(headers: Any, name: str) -> list[str]:
@@ -1129,15 +1139,17 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
         }
     log_collection = None
-    if settings.get("collect_logs") is True and planned_model == TE20_MODEL:
+    if settings.get("collect_logs") is True and planned_model in SUPPORTED_MODELS:
         if not callable(settings.get("on_log")):
             log_collection = {"status": "failed", "safeError": "log_sink_unavailable"}
-        elif "exportLogFile" not in bundle_text or "actkn" not in bundle_text or not _cookie_header(cookies):
+        elif ("exportLogFile" not in bundle_text or not _cookie_header(cookies)
+              or (planned_model == TE20_MODEL and "?actkn=" not in bundle_text)
+              or (planned_model in TE_FAMILY_MODELS and "?Token=" not in bundle_text)):
             log_collection = {"status": "protocol_required"}
         else:
             stream = None
             try:
-                opener = settings.get("log_opener") or _open_te20_log_stream
+                opener = settings.get("log_opener") or (_open_te20_log_stream if planned_model == TE20_MODEL else _open_te_family_log_stream)
                 stream = opener({"ip": ip, "cookie": _cookie_header(cookies), "csrf_token": csrf_token,
                                  "nonce": str(nonce()), "reject_unauthorized": reject_unauthorized})
                 response = settings["on_log"](stream, {"ip": ip, "filename": f"{ip}.xml"})
