@@ -66,6 +66,30 @@ class HuaweiTe40Tests(unittest.TestCase):
         _read_te_family_extra_settings(service_off, "WEB_GetSnmpCfgAPI", "csrf", lambda *_: ({"success": 1}, {"snmpv2": 1, "IsEnableSnmp": 0}))
         self.assertEqual(service_off["fields"]["snmpV2"]["value"], "disabled")
         self.assertEqual(service_off["fields"]["snmpV2"]["configuredEnabled"], True)
+
+    def test_te_family_power_schedule_reads_only_verified_fields(self):
+        from mvp_runtime.adapters.huawei_te40 import _read_te_family_extra_settings
+        ids = ("sleepTime", "rp_shutdown", "enable_poweron", "enable_poweroff", "poweron_hour", "poweron_minute", "poweroff_hour", "poweroff_minute")
+        bundle = "WEB_GetCfgParamAPI 'enableTimeReboot' " + " ".join(f"'{key}'" for key in ids)
+        values = {"sleepTime": 10, "rp_shutdown": 1, "enable_poweron": 1, "enable_poweroff": 0,
+                  "poweron_hour": 6, "poweron_minute": 25, "poweroff_hour": 23, "poweroff_minute": 15}
+        calls = []
+        def action(name, payload):
+            calls.append((name, payload))
+            return {"success": 1}, values
+        settings = unknown_device_settings("TE40")
+        _read_te_family_extra_settings(settings, bundle, "synthetic-csrf", action)
+        power = settings["fields"]["powerManagement"]["value"]
+        self.assertEqual(power["shutDownEnabled"], True)
+        self.assertEqual(power["scheduledPowerOn"], {"enabled": True, "time": "06:25"})
+        self.assertEqual(power["scheduledPowerOff"], {"enabled": False, "time": None})
+        self.assertNotIn("scheduledRestartCode", power)
+        self.assertEqual(calls[0][1]["CfgIDString"], list(ids))
+        self.assertNotIn("enableTimeReboot", calls[0][1]["CfgIDString"])
+        values["poweron_hour"] = 25
+        uncertain = unknown_device_settings("TE40")
+        _read_te_family_extra_settings(uncertain, bundle, "synthetic-csrf", action)
+        self.assertEqual(uncertain["fields"]["powerManagement"]["value"]["scheduledPowerOn"], {"enabled": True, "time": None, "status": "unavailable"})
     def test_te_family_answer_mode_one_field_write_and_postread(self):
         from mvp_runtime.adapters.huawei_te40 import _set_te_family_answer_mode
         bundle = "WEB_GetCfgParamAPI WEB_SaveCfgParamAPI autoreply data: [[1, this.objStrings.displayTx.TXT_CONFIG_CALL_COMM_MANNED_REPLY], [0, this.objStrings.displayTx.TXT_CONFIG_CALL_COMM_AUTO_REPLY]]"

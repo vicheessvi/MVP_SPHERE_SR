@@ -1395,8 +1395,17 @@
         projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, mode: value.modeCode === 1 ? "manual" : "automatic", server: value.server }, source };
       } else if (status === "read" && teFamilySettingsConfirmed && key === "wifi" && source === "WEB_GetWifiStatModeAPI:ucWifiMode" && isPlainObject(value) && [0, 1, 2, 3].includes(value.modeCode) && value.clientEnabled === [2, 3].includes(value.modeCode) && value.accessPointEnabled === [1, 3].includes(value.modeCode)) {
         projectedFields[key] = { status: "read", value: { modeCode: value.modeCode, clientEnabled: value.clientEnabled, accessPointEnabled: value.accessPointEnabled }, source };
-      } else if (status === "read" && teFamilySettingsConfirmed && key === "powerManagement" && source === "WEB_GetCfgParamAPI:sleepTime" && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && value.sleepMode === (value.sleepTimeCode === 0 ? "never" : "interval") && (value.scheduledRestartCode === undefined || [0, 1].includes(value.scheduledRestartCode))) {
-        projectedFields[key] = { status: "read", value: { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, ...(value.scheduledRestartCode === undefined ? {} : { scheduledRestartCode: value.scheduledRestartCode }) }, source };
+      } else if (status === "read" && teFamilySettingsConfirmed && key === "powerManagement" && source === "WEB_GetCfgParamAPI:sleepTime" && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && value.sleepMode === (value.sleepTimeCode === 0 ? "never" : "interval")) {
+        const power = { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode };
+        if (typeof value.shutDownEnabled === "boolean") power.shutDownEnabled = value.shutDownEnabled;
+        for (const key of ["scheduledPowerOn", "scheduledPowerOff"]) {
+          const schedule = value[key];
+          if (!isPlainObject(schedule) || typeof schedule.enabled !== "boolean") continue;
+          if (schedule.enabled === false && schedule.time === null) power[key] = { enabled: false, time: null };
+          else if (schedule.enabled === true && typeof schedule.time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.time)) power[key] = { enabled: true, time: schedule.time };
+          else if (schedule.enabled === true && schedule.time === null && schedule.status === "unavailable") power[key] = { enabled: true, time: null, status: "unavailable" };
+        }
+        projectedFields[key] = { status: "read", value: power, source };
       } else if (status === "read" && te20SettingsConfirmed && key === "powerManagement" && ["WEB_GetCfgParamAPI:sleepTime,enableTimeReboot", "WEB_GetCfgParamAPI:sleepTime,enableTimeReboot,suppotReboot,rebootHour,rebootMinute"].includes(source) && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && [0, 1].includes(value.scheduledRestartCode)) {
         const projectedPower = { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, scheduledRestartCode: value.scheduledRestartCode };
         if (source.endsWith("suppotReboot,rebootHour,rebootMinute") && typeof value.shutdownRestartEnabled === "boolean" && Number.isInteger(value.restartHour) && value.restartHour >= 0 && value.restartHour <= 23 && Number.isInteger(value.restartMinute) && value.restartMinute >= 0 && value.restartMinute <= 59) {

@@ -457,7 +457,11 @@ def _read_te_site_name_config(
         return {"status": "unavailable", "value": None}
 
 
-TE_FAMILY_READ_IDS = ("enable_ssh", "isenableautoupgrade", "synSerTime", "ntpGetMode", "timeServer", "sleepTime", "enableTimeReboot", "autoreply")
+TE_FAMILY_READ_IDS = (
+    "enable_ssh", "isenableautoupgrade", "synSerTime", "ntpGetMode", "timeServer", "sleepTime",
+    "autoreply", "rp_shutdown", "enable_poweron", "enable_poweroff",
+    "poweron_hour", "poweron_minute", "poweroff_hour", "poweroff_minute",
+)
 
 
 def _read_te_family_extra_settings(
@@ -487,9 +491,23 @@ def _read_te_family_extra_settings(
                 sleep = values.get("sleepTime")
                 if type(sleep) is int and 0 <= sleep <= 100000:
                     power = {"sleepMode": "never" if sleep == 0 else "interval", "sleepTimeCode": sleep}
-                    scheduled = values.get("enableTimeReboot")
-                    if "enableTimeReboot" in ids and type(scheduled) is int and scheduled in (0, 1):
-                        power["scheduledRestartCode"] = scheduled
+                    shutdown = values.get("rp_shutdown")
+                    if "rp_shutdown" in ids and type(shutdown) is int and shutdown in (0, 1):
+                        power["shutDownEnabled"] = bool(shutdown)
+                    for prefix in ("poweron", "poweroff"):
+                        flag_key = f"enable_{prefix}"
+                        flag = values.get(flag_key)
+                        if flag_key not in ids or type(flag) is not int or flag not in (0, 1):
+                            continue
+                        label = "scheduledPowerOn" if prefix == "poweron" else "scheduledPowerOff"
+                        schedule = {"enabled": bool(flag), "time": None}
+                        if flag:
+                            hour, minute = values.get(f"{prefix}_hour"), values.get(f"{prefix}_minute")
+                            if (type(hour) is int and 0 <= hour <= 23 and type(minute) is int and 0 <= minute <= 59):
+                                schedule["time"] = f"{hour:02d}:{minute:02d}"
+                            else:
+                                schedule["status"] = "unavailable"
+                        power[label] = schedule
                     fields["powerManagement"] = {"status": "read", "value": power, "source": "WEB_GetCfgParamAPI:sleepTime"}
                 else:
                     fields["powerManagement"] = {"status": "unavailable", "value": None}

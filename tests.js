@@ -2182,7 +2182,7 @@
       ntp: { status: "read", value: { enabled: false, modeCode: 1, server: "" }, source: "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" },
       wifi: { status: "read", value: { modeCode: 3, clientEnabled: true, accessPointEnabled: true }, source: "WEB_GetWifiStatModeAPI:ucWifiMode" },
       ssh: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:enable_ssh" },
-      powerManagement: { status: "read", value: { sleepMode: "interval", sleepTimeCode: 10 }, source: "WEB_GetCfgParamAPI:sleepTime" }
+      powerManagement: { status: "read", value: { sleepMode: "interval", sleepTimeCode: 10, scheduledRestartCode: 1, shutDownEnabled: true, scheduledPowerOn: { enabled: true, time: "06:25" }, scheduledPowerOff: { enabled: false, time: null } }, source: "WEB_GetCfgParamAPI:sleepTime" }
     };
     for (const model of ["TE30", "TE40", "TE50", "TE60"]) {
       const payload = { ok: true, adapterKey: "vcs/huawei/te-family", webBlocks: { "Device Info": { Model: `Huawei ${model}` } }, deviceSettings: { fields } };
@@ -2190,6 +2190,10 @@
       assertEqual(result.deviceSettings.fields.snmpV2.value, "disabled");
       assertEqual(result.deviceSettings.fields.wifi.value.modeCode, 3);
       assertEqual(result.deviceSettings.fields.powerManagement.value.sleepTimeCode, 10);
+      assertEqual(result.deviceSettings.fields.powerManagement.value.shutDownEnabled, true);
+      assertEqual(result.deviceSettings.fields.powerManagement.value.scheduledPowerOn.time, "06:25");
+      assertEqual(result.deviceSettings.fields.powerManagement.value.scheduledPowerOff.enabled, false);
+      assert(!Object.hasOwn(result.deviceSettings.fields.powerManagement.value, "scheduledRestartCode"));
       assert(!JSON.stringify(result).includes("SYNTHETIC-SECRET"));
     }
     const wrong = api.pollingPayloadProjection({ ok: true, adapterKey: "vcs/huawei/te-family", webBlocks: { "Device Info": { Model: "Huawei TE20" } }, deviceSettings: { fields } });
