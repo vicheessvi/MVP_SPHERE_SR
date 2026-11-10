@@ -24,6 +24,7 @@ MAIN_BUNDLE = " ".join([
     "enable_http",
 ])
 FULL_SETTINGS_BUNDLE = MAIN_BUNDLE + ' reqGetCfgUrl="/v1/om/config" CfgIDString:["sitename"] CfgIDString:["autoreply" "synSerTime","ntpServerAddr","ntpGetMode" CfgIDString:["PSWD0","SSID" CfgIDString:["enabletelnet","enable_ssh" CfgIDString:["suppotReboot","sleepTime"'
+SERVER_AUDIT_BUNDLE = MAIN_BUNDLE + ' reqTMSorEsightParamUrl="/v1/om/config/service" get("v1/om/config/auto-config" UI_CLOUDTYPE_MANUAL:255 UI_CLOUDTYPE_SMC3:0 UI_CLOUDTYPE_SMC:3'
 SYNTHETIC_SETTINGS = {
     "sitename": "Synthetic site", "autoreply": 1, "synSerTime": 1, "ntpGetMode": 1,
     "ntpServerAddr": "ntp.example.test", "enableWifi": 0, "apEnable": 0,
@@ -106,6 +107,9 @@ class HuaweiBar310Tests(unittest.TestCase):
         http_value=1,
         verify_http_value=0,
         configuration_values=None,
+        service_type=-1,
+        auto_service_type=-1,
+        server_list=None,
     ):
         resources = synthetic_resources(model, identity)
         overrides = overrides or {}
@@ -150,9 +154,44 @@ class HuaweiBar310Tests(unittest.TestCase):
                 if logout_error:
                     raise logout_error
                 return envelope({})
+            if path == "/v1/om/config/service" and options["method"] == "GET":
+                return envelope({"serverType": service_type, "serverList": [0, 3] if server_list is None else server_list, "serverAddress": "SYNTHETIC-INTERNAL"})
+            if path == "/v1/om/config/auto-config" and options["method"] == "GET":
+                return envelope({"serverType": auto_service_type, "serverAddress": "SYNTHETIC-INTERNAL"})
             return envelope(resources[path])
 
         return request
+
+    def test_bar310_server_type_audit_rule_is_separate_from_firmware_update(self):
+        bundle = {"status_code": 200, "headers": [], "body": SERVER_AUDIT_BUNDLE}
+        for service_type, auto_service_type, expected in ((-1, -1, "disabled"), (255, -1, "disabled"), (3, -1, "enabled"), (0, -1, "enabled"), (-1, 3, "enabled"), (-1, 0, "enabled")):
+            calls = []
+            result = poll_huawei_bar310_device(
+                {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+                [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+                {"request": self.success_request(calls, overrides={"/static/js/main.synthetic.chunk.js": bundle}, service_type=service_type, auto_service_type=auto_service_type)},
+            )
+            self.assertTrue(result["ok"])
+            field = result["deviceSettings"]["fields"]["autoUpdate"]
+            self.assertEqual(field["value"], expected)
+            self.assertEqual(field["basis"], "server_type_audit_rule")
+            self.assertFalse(any(call["method"] == "PUT" for call in calls))
+            self.assertNotIn("SYNTHETIC-INTERNAL", json.dumps(result))
+        calls = []
+        unknown = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(calls, overrides={"/static/js/main.synthetic.chunk.js": bundle}, service_type=42)},
+        )
+        self.assertEqual(unknown["deviceSettings"]["fields"]["autoUpdate"], {"status": "unavailable", "value": None})
+        managed_calls = []
+        managed = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(managed_calls, overrides={"/static/js/main.synthetic.chunk.js": bundle}, service_type=4, server_list=[0, 3, 4])},
+        )
+        self.assertEqual(managed["deviceSettings"]["fields"]["autoUpdate"]["value"], "enabled")
+        self.assertFalse(any(call["method"] == "PUT" for call in managed_calls))
 
     def test_bar310_reads_exact_new_settings_without_secrets_or_write(self):
         calls = []
@@ -174,6 +213,7 @@ class HuaweiBar310Tests(unittest.TestCase):
         self.assertFalse(fields["powerManagement"]["value"]["automaticRestartEnabled"])
         self.assertEqual(fields["powerManagement"]["unconfirmedFields"], ["scheduledPowerOn", "scheduledPowerOff", "clearMemoryAfterRestart"])
         self.assertEqual(fields["telnet"]["status"], "not_exposed")
+        self.assertEqual(fields["autoUpdate"], {"status": "protocol_required", "value": None})
         config_reads = [json.loads(call["body"])["CfgIDString"] for call in calls if call["path"] == "/v1/om/config" and call["method"] == "POST"]
         self.assertEqual(len(config_reads), 7)
         self.assertFalse(any("PSWD0" in names or "SSID" in names for names in config_reads))

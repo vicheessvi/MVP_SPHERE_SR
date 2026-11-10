@@ -2157,6 +2157,7 @@
 
   test("Новые настройки Bar 310 проходят только при точном контракте и без секретов", () => {
     const fields = {
+      autoUpdate: { status: "read", value: "disabled", source: "GET /v1/om/config/service+auto-config:serverType", basis: "server_type_audit_rule", ruleVersion: "bar310-server-type-audit-v1" },
       autoAnswer: { status: "read", value: "enabled", source: "POST /v1/om/config:autoreply" },
       ntp: { status: "read", value: { enabled: true, modeCode: 1, server: "ntp.example.test" }, source: "POST /v1/om/config:synSerTime,ntpGetMode,ntpServerAddr" },
       wifi: { status: "read", value: { clientEnabled: false, accessPointEnabled: false, preferredNetworkEnabled: false }, source: "POST /v1/om/config:enableWifi,apEnable,isWifiPriority", password: "SYNTHETIC-SECRET" },
@@ -2166,6 +2167,8 @@
     const payload = { ok: true, adapterKey: "vcs/huawei/bar310", webBlocks: { "Device Info": { Model: "Bar 310" } }, deviceSettings: { fields }, siteName: { status: "read", value: "Synthetic site" } };
     const projected = api.pollingPayloadProjection(payload);
     assertEqual(projected.deviceSettings.fields.autoAnswer.value, "enabled");
+    assertEqual(projected.deviceSettings.fields.autoUpdate.value, "disabled");
+    assertEqual(projected.deviceSettings.fields.autoUpdate.basis, "server_type_audit_rule");
     assertEqual(projected.deviceSettings.fields.ntp.value.mode, "manual");
     assertEqual(projected.deviceSettings.fields.wifi.value.preferredNetworkEnabled, false);
     assertEqual(projected.deviceSettings.fields.ssh.value, "enabled");
@@ -2175,10 +2178,13 @@
     for (const wrong of [{ ...payload, adapterKey: "vcs/huawei/box310" }, { ...payload, webBlocks: { "Device Info": { Model: "Box 310" } } }]) {
       const excluded = api.pollingPayloadProjection(wrong);
       assert(!excluded.deviceSettings?.fields?.autoAnswer);
+      assert(!excluded.deviceSettings?.fields?.autoUpdate);
       assert(!excluded.deviceSettings?.fields?.ntp);
     }
     const invalid = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { wifi: { ...fields.wifi, value: { clientEnabled: true, accessPointEnabled: false, preferredNetworkEnabled: "yes" } } } } });
     assert(!invalid.deviceSettings?.fields?.wifi);
+    const unproven = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { autoUpdate: { ...fields.autoUpdate, basis: "firmware_update" } } } });
+    assert(!unproven.deviceSettings?.fields?.autoUpdate);
   });
 
   test("Включение автоответа TE20 создаёт только отдельный план одного IP", () => {

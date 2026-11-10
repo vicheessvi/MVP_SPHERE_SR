@@ -5,7 +5,8 @@
 | Поле | Подтверждённый источник сейчас | Статус |
 | --- | --- | --- |
 | HTTP | management config `enable_http` в `{0,1}` | `read` при валидном ответе |
-| Telnet, SNMP v2, автообновление | модельный статус отсутствия из текущего контракта | `not_exposed`, не измерение порта |
+| Telnet, SNMP v2 | модельный статус отсутствия из текущего контракта | `not_exposed`, не измерение порта |
+| Автообновление — аудиторский признак | `GET /v1/om/config/service`; при `serverType=-1` также `GET /v1/om/config/auto-config`. UI «Вручную» (`-1` fallback или `255`) = `disabled`; доступный в текущем bundle иной сервер (SMC `0`, SMC2.0 `3`, IdeaManager `4`) = `enabled`. `basis=server_type_audit_rule`, `ruleVersion=bar310-server-type-audit-v1`. Это не подтверждает обновление прошивки. | `read` только при точных bundle/schema/visible-option gates; иначе `protocol_required`/`unavailable` |
 | Site name | `POST /v1/om/config`, `CfgIDString=["sitename"]`, строка до 256 символов | `read` при точной схеме |
 | Автоответ | `CfgIDString=["autoreply"]`, 1=автоматически, 0=вручную по подтверждённому циклу на exact Bar 310 | `read` при точной схеме |
 | NTP | `synSerTime`, `ntpGetMode`, `ntpServerAddr`; 0/1, 0=авто/1=вручную, строка | `read` при точной схеме всех трёх |

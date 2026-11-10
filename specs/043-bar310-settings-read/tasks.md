@@ -31,6 +31,10 @@
 - [x] T009 Обновить contract, README, product-catalog.js, docs/context-map.md, docs/decisions и docs/implementation-log.md
 - [x] T010 Выполнить Python/JavaScript тесты, проверку Справочника и локальный read-only acceptance на Bar 310
 - [x] T011 По скриншоту администратора уточнить отсутствие отдельных расписания включения/выключения и очистки после перезагрузки на текущем экране в specs/043-bar310-settings-read/research.md; не подменять их autoReboot
+- [x] T012 [US1] Установить по текущему bundle и скриншоту варианты «Тип сервера» и утвердить аудиторскую семантику autoUpdate в specs/043-bar310-settings-read/research.md
+- [x] T013 [US1] Добавить exact Bar 310 read-only `server_type_audit_rule` с проверкой видимых кодов и provenance в mvp_runtime/adapters/huawei_bar310.py и app.js
+- [x] T014 [US1] Проверить ручную и управляемые ветки, модельные gates и отсутствие адресов сервера в python_tests/test_huawei_bar310.py и tests.js
+- [x] T015 Обновить Справочник и ADR-0045, затем выполнить read-only acceptance текущего режима и регрессии в product-catalog.js, docs/decisions/ADR-0045-bar310-settings-read.md и specs/043-bar310-settings-read/quickstart.md
 
 ## Dependencies & Execution Order
 

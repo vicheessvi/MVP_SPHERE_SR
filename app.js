@@ -1384,7 +1384,12 @@
       const status = normalizeText(getCaseInsensitive(supplied, "status"));
       const value = getCaseInsensitive(supplied, "value");
       const source = String(getCaseInsensitive(supplied, "source") || "");
-      if (status === "read" && approvedReadSources[key]?.has(source) && ["enabled", "disabled"].includes(value)
+      if (key === "autoUpdate" && bar310SettingsConfirmed && status === "read" && ["enabled", "disabled"].includes(value)
+        && ["GET /v1/om/config/service:serverType", "GET /v1/om/config/service+auto-config:serverType"].includes(source)
+        && getCaseInsensitive(supplied, "basis") === "server_type_audit_rule"
+        && getCaseInsensitive(supplied, "ruleVersion") === "bar310-server-type-audit-v1") {
+        projectedFields[key] = { status: "read", value, source, basis: "server_type_audit_rule", ruleVersion: "bar310-server-type-audit-v1" };
+      } else if (status === "read" && approvedReadSources[key]?.has(source) && ["enabled", "disabled"].includes(value)
         && (["telnet", "http"].includes(key) || te20SettingsConfirmed || (teFamilySettingsConfirmed && ["ssh", "autoUpdate", "autoAnswer", "snmpV2"].includes(key)) || (bar310SettingsConfirmed && ["ssh", "autoAnswer"].includes(key)))) {
         projectedFields[key] = { status: "read", value, source };
         if (key === "snmpV2" && teFamilySettingsConfirmed) {

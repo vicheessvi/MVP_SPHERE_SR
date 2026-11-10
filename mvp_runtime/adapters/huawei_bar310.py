@@ -69,6 +69,14 @@ BAR310_SETTING_GROUPS = {
     "powerManagement": (("suppotReboot", "sleepTime", "autoReboot", "sleepCloseAPP", "autoRebootVal", "savePowerMode"), 'CfgIDString:["suppotReboot","sleepTime"'),
 }
 BAR310_SLEEP_CODES = frozenset({0, 1, 5, 10, 15, 30, 60})
+BAR310_SERVER_AUDIT_MARKERS = (
+    'reqTMSorEsightParamUrl="/v1/om/config/service"',
+    'get("v1/om/config/auto-config"',
+    'UI_CLOUDTYPE_MANUAL:255',
+    'UI_CLOUDTYPE_SMC3:0',
+    'UI_CLOUDTYPE_SMC:3',
+)
+BAR310_VISIBLE_MANAGED_SERVER_TYPES = frozenset({0, 3, 4})
 
 RESOURCE_FIELDS: dict[str, dict[str, tuple[type, ...]]] = {
     "version": {
@@ -330,7 +338,7 @@ def _read_device_settings(
     bundle_text: str,
     json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
 ) -> dict[str, Any]:
-    settings = unknown_device_settings(model, not_exposed=("telnet", "snmpV2", "autoUpdate"))
+    settings = unknown_device_settings(model, not_exposed=("telnet", "snmpV2") if model == CONTRACT_MODEL else ("telnet", "snmpV2", "autoUpdate"))
     if not all(marker in bundle_text for marker in MANAGEMENT_BUNDLE_MARKERS):
         return settings
     try:
@@ -373,13 +381,49 @@ def _read_bar310_site_name(
     return {"status": "read", "value": value, "source": "POST /v1/om/config:sitename"}
 
 
+def _read_bar310_auto_update_audit(
+    bundle_text: str,
+    json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    """User-defined server-type audit rule, not a firmware update switch."""
+    unknown = {"status": "protocol_required", "value": None}
+    if not all(marker in bundle_text for marker in BAR310_SERVER_AUDIT_MARKERS):
+        return unknown
+    try:
+        outer, service = json_request("GET", "/v1/om/config/service", token=True)
+        if outer.get("success") != 1 or not isinstance(service, dict):
+            return {"status": "unavailable", "value": None}
+        current_type = service.get("serverType")
+        server_list = service.get("serverList")
+        if type(current_type) is not int or not isinstance(server_list, list) or len(server_list) > 64 or any(type(item) is not int for item in server_list):
+            return {"status": "unavailable", "value": None}
+        source = "GET /v1/om/config/service:serverType"
+        if current_type == -1:
+            outer, auto_config = json_request("GET", "/v1/om/config/auto-config", token=True)
+            if outer.get("success") != 1 or not isinstance(auto_config, dict) or type(auto_config.get("serverType")) is not int:
+                return {"status": "unavailable", "value": None}
+            current_type = auto_config["serverType"]
+            source = "GET /v1/om/config/service+auto-config:serverType"
+        if current_type in (-1, 255):
+            value = "disabled"
+        elif current_type in BAR310_VISIBLE_MANAGED_SERVER_TYPES and current_type in server_list:
+            value = "enabled"
+        else:
+            return {"status": "unavailable", "value": None}
+        return {"status": "read", "value": value, "source": source,
+                "basis": "server_type_audit_rule", "ruleVersion": "bar310-server-type-audit-v1"}
+    except Exception:
+        return {"status": "unavailable", "value": None}
+
+
 def _read_bar310_settings(
     bundle_text: str,
     json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
     *, skip_http: bool = False,
 ) -> dict[str, Any]:
-    settings = unknown_device_settings(CONTRACT_MODEL, not_exposed=("telnet", "snmpV2", "autoUpdate")) if skip_http else _read_device_settings(CONTRACT_MODEL, bundle_text, json_request)
+    settings = unknown_device_settings(CONTRACT_MODEL, not_exposed=("telnet", "snmpV2")) if skip_http else _read_device_settings(CONTRACT_MODEL, bundle_text, json_request)
     fields = settings["fields"]
+    fields["autoUpdate"] = _read_bar310_auto_update_audit(bundle_text, json_request)
     for key, (ids, marker) in BAR310_SETTING_GROUPS.items():
         status, values = _read_bar310_config_group(bundle_text, json_request, ids, marker)
         if status != "read":
