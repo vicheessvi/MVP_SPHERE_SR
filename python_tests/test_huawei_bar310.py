@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import io
 import ssl
 import unittest
+from unittest.mock import patch
 
 from mvp_runtime.adapters.huawei_bar310 import (
     BAR310_RESOURCE_PATHS,
@@ -10,6 +12,8 @@ from mvp_runtime.adapters.huawei_bar310 import (
     Bar310TransportError,
     DISABLE_INSECURE_SERVICES_ACTION,
     FAMILY_CONTRACT_ID,
+    _open_huawei_310_log_stream,
+    Bar310ContractError,
     poll_huawei_bar310_device,
     poll_huawei_310_device,
     poll_huawei_310_family_device,
@@ -32,6 +36,7 @@ MAIN_BUNDLE = " ".join([
 FULL_SETTINGS_BUNDLE = MAIN_BUNDLE + ' reqGetCfgUrl="/v1/om/config" CfgIDString:["sitename"] CfgIDString:["autoreply" "synSerTime","ntpServerAddr","ntpGetMode" CfgIDString:["PSWD0","SSID" CfgIDString:["enabletelnet","enable_ssh" CfgIDString:["suppotReboot","sleepTime"'
 ANSWER_WRITE_BUNDLE = FULL_SETTINGS_BUNDLE + ' reqSaveCfgUrl="/v1/om/config" CfgItemID:"autoreply"'
 SERVER_AUDIT_BUNDLE = MAIN_BUNDLE + ' reqTMSorEsightParamUrl="/v1/om/config/service" get("v1/om/config/auto-config" UI_CLOUDTYPE_MANUAL:255 UI_CLOUDTYPE_SMC3:0 UI_CLOUDTYPE_SMC:3'
+LOG_EXPORT_BUNDLE = MAIN_BUNDLE + ' reqExportLogUrl="v1/om/log/export" a.post(a.reqExportLogUrl,null,{})'
 SYNTHETIC_SETTINGS = {
     "sitename": "Synthetic site", "autoreply": 1, "synSerTime": 1, "ntpGetMode": 1,
     "ntpServerAddr": "ntp.example.test", "enableWifi": 0, "apEnable": 0,
@@ -102,6 +107,125 @@ def synthetic_resources(model="Bar 310", identity=True):
 
 
 class HuaweiBar310Tests(unittest.TestCase):
+    def test_log_stream_uses_exact_export_and_rejects_unexpected_content(self):
+        payload = b'<?xml version="1.0"?><LogModule><Synthetic/></LogModule>'
+
+        class Response:
+            status = 200
+
+            def __init__(self, mime):
+                self.mime = mime
+                self.source = io.BytesIO(payload)
+
+            def getheader(self, name):
+                return self.mime if name == "Content-Type" else None
+
+            def read(self, size):
+                return self.source.read(size)
+
+            def close(self):
+                self.source.close()
+
+        class Connection:
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                self.calls = []
+                self.response = Response("application/x-octet-stream")
+                self.closed = False
+                self.instances.append(self)
+
+            def request(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+
+            def getresponse(self):
+                return self.response
+
+            def close(self):
+                self.closed = True
+
+        options = {"ip": "192.0.2.31", "headers": {"X-Access-Token": "SYNTHETIC-ACCESS-TOKEN"}, "reject_unauthorized": True}
+        with patch("mvp_runtime.adapters.huawei_bar310.http.client.HTTPSConnection", Connection):
+            stream = _open_huawei_310_log_stream(options)
+            self.assertEqual(stream.read(9) + stream.read(65536), payload)
+            stream.close()
+            self.assertEqual(Connection.instances[-1].calls[0][0][:2], ("POST", "/v1/om/log/export"))
+            self.assertTrue(Connection.instances[-1].closed)
+
+            original_response = Connection.getresponse
+            Connection.getresponse = lambda self: Response("text/html")
+            try:
+                with self.assertRaises(Bar310ContractError):
+                    _open_huawei_310_log_stream(options)
+                self.assertTrue(Connection.instances[-1].closed)
+            finally:
+                Connection.getresponse = original_response
+
+    def test_log_export_is_gated_by_exact_model_and_bundle(self):
+        fixture = b'<?xml version="1.0"?><LogModule><Synthetic/></LogModule>'
+        for model in ("Bar 310", "Box 310", "Box 610"):
+            with self.subTest(model=model):
+                calls, opened, saved = [], [], []
+                bundle = {"status_code": 200, "headers": [], "body": LOG_EXPORT_BUNDLE}
+
+                def opener(options):
+                    opened.append(options)
+                    return io.BytesIO(fixture)
+
+                def sink(stream, metadata):
+                    saved.append((stream.read(65536), metadata))
+                    return {"status": "saved"}
+
+                result = poll_huawei_310_device(
+                    {"ip": "192.0.2.31", "model": model, "allowInsecureTls": True},
+                    [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+                    {"request": self.success_request(calls, model=model, overrides={"/static/js/main.synthetic.chunk.js": bundle}),
+                     "collect_logs": True, "log_opener": opener, "on_log": sink},
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["logCollection"]["status"], "saved")
+                self.assertEqual(result["logCollection"]["validationStatus"], "confirmed_local_validation" if model == "Bar 310" else "provisional_user_validation")
+                self.assertEqual(len(opened), 1)
+                self.assertEqual(opened[0]["ip"], "192.0.2.31")
+                self.assertEqual(opened[0]["headers"]["X-Access-Token"], "SYNTHETIC-ACCESS-TOKEN")
+                self.assertEqual(saved, [(fixture, {"ip": "192.0.2.31", "filename": "192.0.2.31.xml"})])
+                self.assertNotIn("Synthetic", json.dumps(result))
+                self.assertFalse(any(call["method"] == "PUT" for call in calls))
+
+        calls, opened = [], []
+        missing = poll_huawei_310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310"},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(calls), "collect_logs": True,
+             "log_opener": lambda options: opened.append(options), "on_log": lambda stream, metadata: {"status": "saved"}},
+        )
+        self.assertEqual(missing["logCollection"], {"status": "protocol_required"})
+        self.assertEqual(opened, [])
+
+        calls.clear()
+        wrong = poll_huawei_310_device(
+            {"ip": "192.0.2.31", "model": "Box 310"},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(calls, model="Bar 310", overrides={"/static/js/main.synthetic.chunk.js": {"status_code": 200, "headers": [], "body": LOG_EXPORT_BUNDLE}}),
+             "collect_logs": True, "log_opener": lambda options: opened.append(options), "on_log": lambda stream, metadata: {"status": "saved"}},
+        )
+        self.assertEqual(wrong["safeError"], "target_model_mismatch")
+        self.assertEqual(opened, [])
+        self.assertFalse(any(call["path"] == "/v1/login/account" for call in calls))
+
+    def test_log_save_failure_does_not_fail_json_poll(self):
+        calls = []
+        result = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310"},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(calls, overrides={"/static/js/main.synthetic.chunk.js": {"status_code": 200, "headers": [], "body": LOG_EXPORT_BUNDLE}}),
+             "collect_logs": True, "log_opener": lambda options: io.BytesIO(b"synthetic"),
+             "on_log": lambda stream, metadata: {"status": "failed", "unsafe": "never-expose"}},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["logCollection"]["safeError"], "log_save_failed")
+        self.assertNotIn("never-expose", json.dumps(result))
+
     def success_request(
         self,
         calls,
@@ -334,8 +458,8 @@ class HuaweiBar310Tests(unittest.TestCase):
     def test_huawei_310_answer_mode_uses_one_minimal_write_and_post_read(self):
         bundle = {"status_code": 200, "headers": [], "body": ANSWER_WRITE_BUNDLE}
         for model, poller, validation in (("Bar 310", poll_huawei_bar310_device, "confirmed_local_validation"),
-                                          ("Box 310", poll_huawei_box310_device, "provisional_user_validation"),
-                                          ("Box 610", poll_huawei_box610_device, "provisional_user_validation")):
+                                          ("Box 310", poll_huawei_box310_device, "confirmed_user_validation"),
+                                          ("Box 610", poll_huawei_box610_device, "confirmed_user_validation")):
             for action_id, initial, expected in (("set_huawei_310_auto_answer_manual", 1, "manual"),
                                                  ("set_huawei_310_auto_answer_automatic", 0, "automatic")):
                 calls = []

@@ -659,7 +659,8 @@ def _set_te20_answer_mode(
         raise ValueError("unsupported_answer_target")
     action_id = SET_TE20_AUTO_ANSWER_ACTION if target == 0 else SET_TE20_MANUAL_ANSWER_ACTION
     label = lambda value: "automatic" if value == 0 else "manual"
-    base = {"id": action_id, "transport": "https/443", "changed": False, "writeAttempted": False}
+    base = {"id": action_id, "transport": "https/443", "changed": False, "writeAttempted": False,
+            "validationStatus": "confirmed_user_validation"}
     if not all(marker in bundle_text for marker in ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "autoreply")):
         return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
 
@@ -710,7 +711,8 @@ def _set_te_family_answer_mode(action_id: str, planned_model: str, bundle_text: 
     if action_id not in TE_FAMILY_ANSWER_ACTIONS or planned_model not in TE_FAMILY_MODELS:
         raise ValueError("unsupported_answer_action")
     target = TE_FAMILY_ANSWER_ACTIONS[action_id]
-    base = {"id": action_id, "transport": "https/443", "changed": False, "writeAttempted": False}
+    base = {"id": action_id, "transport": "https/443", "changed": False, "writeAttempted": False,
+            "validationStatus": "confirmed_user_validation"}
     if not all(marker in bundle_text for marker in ("WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "autoreply")):
         return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
     # The current TE web form maps 0 to automatic and 1 to manual.

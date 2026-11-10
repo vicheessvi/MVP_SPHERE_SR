@@ -1,16 +1,21 @@
 # Карта контекста
 
+## Feature 048 — логи Huawei Bar 310 / Box 310 / Box 610
+
+- Текущий Bar 310 web-bundle и контролируемый read-only экспорт подтвердили `POST /v1/om/log/export`, HTTP 200 и полный XML `LogModule` поток; браузерное сохранение ещё ждёт проверки. Для Box 310/610 тот же путь включается лишь при собственных exact model/identity/bundle gates и остаётся предварительным.
+- Поток `mvp_runtime/adapters/huawei_bar310.py` → `mvp_runtime/polling.py` → существующий `polling_job.py`/same-origin browser сохраняет `<IP>.xml` в выбранную папку без spool. Событийный разбор 310-логов не включён. Тесты: `python_tests/test_huawei_bar310.py`, `python_tests/test_polling.py`; решение ADR-0050.
+
 ## Feature 047 — массовый Answer mode по фильтрам SR
 
 - Для exact TE20, TE30/40/50/60 и Bar 310/Box 310/Box 610 Answer mode допускает один IP либо фильтры текущей SR; все выбранные модели должны поддерживать один action ID: `app.js`, повторный gate в `mvp_runtime/polling.py` и `mvp_runtime/server.py`.
 - Перед массовым запуском UI показывает число целей и требует согласия; per-device guarded write/результат/восстановление остаются прежними. Тесты: `tests.js`, `python_tests/test_polling.py`, `python_tests/test_server.py`. Решение ADR-0049.
-- Реальная массовая запись не проводилась; Bar 310 проверен только одиночным контролируемым циклом, Box write остаётся provisional.
+- Администратор подтвердил оба направления в одиночном и массовом режимах на TE20/30/40/50/60 и Bar 310/Box 310/Box 610. HTTP write и другие задачи этим не подтверждены.
 
 ## Feature 046 — Answer mode Huawei Bar 310 / Box 310 / Box 610
 
 - Выбор «Не менять / Автоматически / Вручную»: `app.js`, `runtime/device-catalog.json`, повторные gates `mvp_runtime/polling.py` и `mvp_runtime/server.py`; с feature 047 доступен один IP или совместимый набор по фильтрам SR.
 - Guarded pre-read/one-write/post-read только `autoreply`: `mvp_runtime/adapters/huawei_bar310.py`; синтетические проверки в `python_tests/test_huawei_bar310.py`, `python_tests/test_polling.py`, `tests.js`.
-- На Bar 310 обе стороны проверены контролируемой записью и web-меню, исходный automatic восстановлен. Box 310/610 остаются provisional для write, несмотря на подтверждённые read-only опросы. Решение ADR-0048.
+- На Bar 310 обе стороны проверены контролируемой записью и web-меню, исходный automatic восстановлен. Администратор позднее подтвердил обе стороны на Box 310/610 в одиночном и массовом режимах; Answer mode write повышен отдельно от HTTP write. Решения ADR-0048/0049.
 
 ## Feature 045 — единый контракт Huawei 310
 
@@ -48,8 +53,8 @@
 
 ## Feature 040 — Answer Mode Huawei TE30/40/50/60
 
-- Exact one-IP action и контракт: `specs/040-te40-answer-mode/`, `runtime/device-catalog.json`, `app.js`, `mvp_runtime/polling.py`.
-- Guarded pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; TE40 переход в автоматический режим подтверждён контролируемым опросом, остальные модели предварительны.
+- Exact model action и контракт: `specs/040-te40-answer-mode/`, `runtime/device-catalog.json`, `app.js`, `mvp_runtime/polling.py`; feature 047 допускает один IP или совместимую группу фильтров SR.
+- Guarded pre-read/one-write/post-read: `mvp_runtime/adapters/huawei_te40.py`; администратор подтвердил оба направления одиночно и массово на TE30/40/50/60.
 - Тесты: `python_tests/test_huawei_te40.py`, `python_tests/test_polling.py`, `tests.js`.
 
 ## Feature 039 — локальный сбор и импорт логов

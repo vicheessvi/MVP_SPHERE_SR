@@ -67,6 +67,11 @@ MANAGEMENT_BUNDLE_MARKERS = (
 )
 MANAGEMENT_CONFIG_PATH = "/v1/om/config"
 MANAGEMENT_HTTP_TARGET = 0
+LOG_EXPORT_PATH = "/v1/om/log/export"
+LOG_EXPORT_BUNDLE_MARKERS = (
+    'reqExportLogUrl="v1/om/log/export"',
+    'a.post(a.reqExportLogUrl,null,{})',
+)
 BAR310_READ_CONFIG_MARKER = 'reqGetCfgUrl="/v1/om/config"'
 BAR310_SETTING_GROUPS = {
     "autoAnswer": (("autoreply",), 'CfgIDString:["autoreply"'),
@@ -229,6 +234,43 @@ def native_https_request(options: dict[str, Any]) -> dict[str, Any]:
         }
     finally:
         connection.close()
+
+
+class _Huawei310LogStream:
+    def __init__(self, connection: http.client.HTTPSConnection, response: http.client.HTTPResponse, prefix: bytes):
+        self._connection = connection
+        self._response = response
+        self._prefix = prefix
+
+    def read(self, size: int) -> bytes:
+        if self._prefix:
+            chunk, self._prefix = self._prefix[:size], self._prefix[size:]
+            return chunk
+        return self._response.read(size)
+
+    def close(self) -> None:
+        self._response.close()
+        self._connection.close()
+
+
+def _open_huawei_310_log_stream(options: dict[str, Any]) -> _Huawei310LogStream:
+    """Stream the exact bundle-confirmed export; never buffer the full log."""
+    ip = str(options["ip"])
+    context = _https_context(options["reject_unauthorized"])
+    connection = http.client.HTTPSConnection(ip, 443, timeout=30, context=context)
+    try:
+        connection.request("POST", LOG_EXPORT_PATH, body=None, headers=dict(options["headers"]))
+        response = connection.getresponse()
+        content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if response.status != 200 or content_type not in {"application/x-octet-stream", "application/octet-stream"}:
+            raise Bar310ContractError("log_contract_unconfirmed")
+        prefix = response.read(4096)
+        if not prefix.lstrip().startswith(b"<?xml") or b"<LogModule" not in prefix:
+            raise Bar310ContractError("log_contract_unconfirmed")
+        return _Huawei310LogStream(connection, response, prefix)
+    except Exception:
+        connection.close()
+        raise
 
 
 def _header_values(headers: Any, name: str) -> list[str]:
@@ -864,6 +906,38 @@ def poll_huawei_310_family_device(
             "webInterface": interface,
             "diagnostics": diagnostics,
         })
+    log_collection = None
+    if settings.get("collect_logs") is True:
+        if not callable(settings.get("on_log")):
+            log_collection = {"status": "failed", "safeError": "log_sink_unavailable"}
+        elif not all(marker in bundle_text for marker in LOG_EXPORT_BUNDLE_MARKERS):
+            log_collection = {"status": "protocol_required"}
+        else:
+            stream = None
+            try:
+                log_headers = headers("application/octet-stream, */*", token=True)
+                log_headers["Content-Type"] = "application/json;charset=UTF-8"
+                cookie = _cookie_header(cookies)
+                if cookie:
+                    log_headers["Cookie"] = cookie
+                opener = settings.get("log_opener") or _open_huawei_310_log_stream
+                stream = opener({"ip": ip, "headers": log_headers, "reject_unauthorized": reject_unauthorized})
+                response = settings["on_log"](stream, {"ip": ip, "filename": f"{ip}.xml"})
+                if not isinstance(response, dict) or response.get("status") not in {"saved", "failed"}:
+                    raise Bar310ContractError("log_ack_invalid")
+                log_collection = {"status": response["status"], "validationStatus": "confirmed_local_validation" if contract_model == "Bar 310" else "provisional_user_validation"}
+                if response["status"] == "failed":
+                    log_collection["safeError"] = "log_save_failed"
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                log_collection = {"status": "failed", "safeError": error.code if isinstance(error, Bar310ContractError) else "log_download_failed"}
+            finally:
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
     management_actions = []
     site_name = read_site_name(
         bundle_text,
@@ -909,6 +983,8 @@ def poll_huawei_310_family_device(
         "readMode": "targeted",
         "diagnostics": diagnostics,
     }
+    if log_collection is not None:
+        result["logCollection"] = log_collection
     if site_name["status"] == "read":
         result["webBlocks"]["Device Info"]["Site Name"] = site_name["value"]
     if management_actions:

@@ -134,6 +134,7 @@ class HuaweiTe40Tests(unittest.TestCase):
                     return {"success": 1}, {}
                 result = _set_te_family_answer_mode("set_te_family_auto_answer_automatic", model, bundle, "synthetic-csrf", action)
                 self.assertEqual(result["status"], "applied")
+                self.assertEqual(result["validationStatus"], "confirmed_user_validation")
                 self.assertEqual(result["after"], "automatic")
                 self.assertEqual([name for name, _ in calls], ["WEB_GetCfgParamAPI", "WEB_SaveCfgParamAPI", "WEB_GetCfgParamAPI"])
                 self.assertEqual(calls[1][1]["CfgItemInt"], [{"CfgItemID": "autoreply", "CfgItemInfo": 0}])

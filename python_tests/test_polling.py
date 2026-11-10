@@ -16,6 +16,30 @@ HUAWEI_BOX610 = {"category": "vcs", "manufacturer": "Huawei", "model": "Box 610"
 
 
 class PollingTests(unittest.TestCase):
+    def test_310_family_log_collection_reaches_exact_transport(self) -> None:
+        for model in ("Bar 310", "Box 310", "Box 610"):
+            with self.subTest(model=model):
+                observed = []
+                result = run_plan(
+                    {"devices": [{"category": "vcs", "manufacturer": "Huawei", "model": model, "ip": "192.0.2.31"}],
+                     "collectJson": False, "collectLogs": True, "intervalMinSeconds": 0, "intervalMaxSeconds": 0},
+                    {"ping": lambda *_: {"ok": True, "durationMs": 1},
+                     "get_credentials": lambda *_: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
+                     "adapters": {"huawei_310_rest_v1": lambda _device, _credentials, options:
+                         observed.append((options["collect_logs"], callable(options["on_log"]))) or
+                         {"ok": True, "logCollection": {"status": "saved"}}},
+                     "on_log": lambda _stream, _metadata: {"status": "saved"}},
+                )
+                self.assertEqual(observed, [(True, True)])
+                self.assertEqual(result[0]["logCollection"]["status"], "saved")
+
+                unreachable = run_plan(
+                    {"devices": [{"category": "vcs", "manufacturer": "Huawei", "model": model, "ip": "192.0.2.31"}],
+                     "collectJson": False, "collectLogs": True, "intervalMinSeconds": 0, "intervalMaxSeconds": 0},
+                    {"ping": lambda *_: {"ok": False, "durationMs": 1}},
+                )
+                self.assertEqual(unreachable[0]["logCollection"]["status"], "not_started")
+
     def test_te_family_log_collection_reaches_exact_transport(self) -> None:
         observed = []
         result = run_plan(
