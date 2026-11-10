@@ -60,6 +60,15 @@ MANAGEMENT_BUNDLE_MARKERS = (
 )
 MANAGEMENT_CONFIG_PATH = "/v1/om/config"
 MANAGEMENT_HTTP_TARGET = 0
+BAR310_READ_CONFIG_MARKER = 'reqGetCfgUrl="/v1/om/config"'
+BAR310_SETTING_GROUPS = {
+    "autoAnswer": (("autoreply",), 'CfgIDString:["autoreply"'),
+    "ntp": (("synSerTime", "ntpGetMode", "ntpServerAddr"), '"synSerTime","ntpServerAddr","ntpGetMode"'),
+    "wifi": (("enableWifi", "apEnable", "isWifiPriority"), 'CfgIDString:["PSWD0","SSID"'),
+    "ssh": (("enable_ssh",), 'CfgIDString:["enabletelnet","enable_ssh"'),
+    "powerManagement": (("suppotReboot", "sleepTime", "autoReboot", "sleepCloseAPP", "autoRebootVal", "savePowerMode"), 'CfgIDString:["suppotReboot","sleepTime"'),
+}
+BAR310_SLEEP_CODES = frozenset({0, 1, 5, 10, 15, 30, 60})
 
 RESOURCE_FIELDS: dict[str, dict[str, tuple[type, ...]]] = {
     "version": {
@@ -331,6 +340,77 @@ def _read_device_settings(
         settings["fields"]["http"] = binary_setting(_management_http_value(data), "POST /v1/om/config:enable_http")
     except Exception:
         settings["fields"]["http"] = {"status": "unavailable", "value": None}
+    return settings
+
+
+def _read_bar310_config_group(
+    bundle_text: str,
+    json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
+    ids: tuple[str, ...],
+    marker: str,
+) -> tuple[str, dict[str, Any] | None]:
+    if BAR310_READ_CONFIG_MARKER not in bundle_text or marker not in bundle_text:
+        return "protocol_required", None
+    try:
+        outer, data = json_request("POST", MANAGEMENT_CONFIG_PATH, {"CfgIDString": list(ids)}, True)
+        if outer.get("success") != 1 or not isinstance(data, dict) or any(key not in data for key in ids):
+            return "unavailable", None
+        return "read", {key: data[key] for key in ids}
+    except Exception:
+        return "unavailable", None
+
+
+def _read_bar310_site_name(
+    bundle_text: str,
+    json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    status, values = _read_bar310_config_group(bundle_text, json_request, ("sitename",), 'CfgIDString:["sitename"]')
+    if status != "read":
+        return {"status": status, "value": None}
+    value = values["sitename"]
+    if not isinstance(value, str) or len(value) > 256 or any(ord(char) < 32 for char in value):
+        return {"status": "unavailable", "value": None}
+    return {"status": "read", "value": value, "source": "POST /v1/om/config:sitename"}
+
+
+def _read_bar310_settings(
+    bundle_text: str,
+    json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
+    *, skip_http: bool = False,
+) -> dict[str, Any]:
+    settings = unknown_device_settings(CONTRACT_MODEL, not_exposed=("telnet", "snmpV2", "autoUpdate")) if skip_http else _read_device_settings(CONTRACT_MODEL, bundle_text, json_request)
+    fields = settings["fields"]
+    for key, (ids, marker) in BAR310_SETTING_GROUPS.items():
+        status, values = _read_bar310_config_group(bundle_text, json_request, ids, marker)
+        if status != "read":
+            fields[key] = {"status": status, "value": None}
+            continue
+        if key == "autoAnswer":
+            code = values["autoreply"]
+            fields[key] = binary_setting(code, "POST /v1/om/config:autoreply", disabled_value=0)
+        elif key == "ntp":
+            enabled, mode, server = values["synSerTime"], values["ntpGetMode"], values["ntpServerAddr"]
+            if type(enabled) is int and enabled in (0, 1) and type(mode) is int and mode in (0, 1) and isinstance(server, str) and len(server) <= 255 and not any(ord(char) < 32 for char in server):
+                fields[key] = {"status": "read", "value": {"enabled": bool(enabled), "modeCode": mode, "mode": "manual" if mode == 1 else "automatic", "server": server}, "source": "POST /v1/om/config:synSerTime,ntpGetMode,ntpServerAddr"}
+            else:
+                fields[key] = {"status": "unavailable", "value": None}
+        elif key == "wifi":
+            client, ap, priority = (values[name] for name in ids)
+            if all(type(value) is int and value in (0, 1) for value in (client, ap, priority)):
+                fields[key] = {"status": "read", "value": {"clientEnabled": bool(client), "accessPointEnabled": bool(ap), "preferredNetworkEnabled": bool(priority)}, "source": "POST /v1/om/config:enableWifi,apEnable,isWifiPriority"}
+            else:
+                fields[key] = {"status": "unavailable", "value": None}
+        elif key == "ssh":
+            code = values["enable_ssh"]
+            fields[key] = {"status": "read", "value": "enabled" if code == 1 else "disabled", "source": "POST /v1/om/config:enable_ssh"} if type(code) is int and code in (1, 2) else {"status": "unavailable", "value": None}
+        elif key == "powerManagement":
+            binary_names = ("suppotReboot", "autoReboot", "sleepCloseAPP", "savePowerMode")
+            sleep = values["sleepTime"]
+            interval = values["autoRebootVal"]
+            if all(type(values[name]) is int and values[name] in (0, 1) for name in binary_names) and type(sleep) is int and sleep in BAR310_SLEEP_CODES and type(interval) is int and 0 <= interval <= 3650:
+                fields[key] = {"status": "read", "value": {"shutdownRestartEnabled": bool(values["suppotReboot"]), "sleepMode": "never" if sleep == 0 else "interval", "sleepTimeCode": sleep, "automaticRestartEnabled": bool(values["autoReboot"]), "automaticRestartIntervalDays": interval, "clearMemoryInSleepEnabled": bool(values["sleepCloseAPP"]), "energySavingEnabled": bool(values["savePowerMode"])}, "source": "POST /v1/om/config:suppotReboot,sleepTime,autoReboot,sleepCloseAPP,autoRebootVal,savePowerMode", "unconfirmedFields": ["scheduledPowerOn", "scheduledPowerOff", "clearMemoryAfterRestart"]}
+            else:
+                fields[key] = {"status": "unavailable", "value": None}
     return settings
 
 
@@ -674,6 +754,8 @@ def poll_huawei_310_family_device(
         bundle_text,
         lambda name, payload: json_request("POST", f"/action.cgi?ActionID={name}", payload, token=True),
     )
+    if contract_id == CONTRACT_ID and site_name["status"] == "protocol_required":
+        site_name = _read_bar310_site_name(bundle_text, json_request)
     if (
         contract_id in HTTP_ONLY_MANAGEMENT_CONTRACT_IDS
         and contract.get("management_action") == DISABLE_INSECURE_SERVICES_ACTION
@@ -681,11 +763,14 @@ def poll_huawei_310_family_device(
     ):
         management_actions.append(_disable_insecure_management_services(bundle_text, json_request, settle, str(contract.get("management_validation_status") or "provisional_user_validation")))
     verified_action = next((item for item in management_actions if item.get("status") in {"applied", "already_compliant"}), None)
-    if verified_action:
+    if contract_id == CONTRACT_ID:
+        device_settings = _read_bar310_settings(bundle_text, json_request, skip_http=bool(verified_action))
+    elif verified_action:
         device_settings = unknown_device_settings(contract_model, not_exposed=("telnet", "snmpV2", "autoUpdate"))
-        device_settings["fields"]["http"] = {"status": "read", "value": verified_action["after"]["httpPort80"], "source": "managementActions.after.httpPort80"}
     else:
         device_settings = _read_device_settings(contract_model, bundle_text, json_request)
+    if verified_action:
+        device_settings["fields"]["http"] = {"status": "read", "value": verified_action["after"]["httpPort80"], "source": "managementActions.after.httpPort80"}
     result = {
         **base,
         "ok": True,

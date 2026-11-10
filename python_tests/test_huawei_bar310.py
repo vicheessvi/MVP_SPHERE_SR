@@ -23,6 +23,13 @@ MAIN_BUNDLE = " ".join([
     'reqSaveCfgUrl="/v1/om/config"',
     "enable_http",
 ])
+FULL_SETTINGS_BUNDLE = MAIN_BUNDLE + ' reqGetCfgUrl="/v1/om/config" CfgIDString:["sitename"] CfgIDString:["autoreply" "synSerTime","ntpServerAddr","ntpGetMode" CfgIDString:["PSWD0","SSID" CfgIDString:["enabletelnet","enable_ssh" CfgIDString:["suppotReboot","sleepTime"'
+SYNTHETIC_SETTINGS = {
+    "sitename": "Synthetic site", "autoreply": 1, "synSerTime": 1, "ntpGetMode": 1,
+    "ntpServerAddr": "ntp.example.test", "enableWifi": 0, "apEnable": 0,
+    "isWifiPriority": 0, "enable_ssh": 1, "suppotReboot": 1, "sleepTime": 10,
+    "autoReboot": 0, "sleepCloseAPP": 0, "autoRebootVal": 1, "savePowerMode": 0,
+}
 
 
 def envelope(data=None, success=1, error_id=None):
@@ -98,10 +105,11 @@ class HuaweiBar310Tests(unittest.TestCase):
         logout_error=None,
         http_value=1,
         verify_http_value=0,
+        configuration_values=None,
     ):
         resources = synthetic_resources(model, identity)
         overrides = overrides or {}
-        configuration = {"enable_http": http_value}
+        configuration = {"enable_http": http_value, **(configuration_values or {})}
 
         def request(options):
             calls.append(options)
@@ -130,10 +138,10 @@ class HuaweiBar310Tests(unittest.TestCase):
                 return envelope({})
             if path == "/v1/om/config" and options["method"] == "POST":
                 payload = json.loads(options["body"])
-                field = payload["CfgIDString"][0]
-                if field == "enable_http":
-                    return envelope({"enable_http": configuration["enable_http"]})
-                raise AssertionError("Only the HTTP configuration field may be read")
+                fields = payload["CfgIDString"]
+                if all(field in configuration for field in fields):
+                    return envelope({field: configuration[field] for field in fields})
+                raise AssertionError("Unconfirmed configuration field requested")
             if path == "/v1/om/config" and options["method"] == "PUT":
                 payload = json.loads(options["body"])
                 configuration["enable_http"] = verify_http_value
@@ -145,6 +153,49 @@ class HuaweiBar310Tests(unittest.TestCase):
             return envelope(resources[path])
 
         return request
+
+    def test_bar310_reads_exact_new_settings_without_secrets_or_write(self):
+        calls = []
+        bundle = {"status_code": 200, "headers": [], "body": FULL_SETTINGS_BUNDLE}
+        result = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(calls, overrides={"/static/js/main.synthetic.chunk.js": bundle}, configuration_values=SYNTHETIC_SETTINGS)},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["siteName"]["value"], "Synthetic site")
+        fields = result["deviceSettings"]["fields"]
+        self.assertEqual(fields["autoAnswer"]["value"], "enabled")
+        self.assertEqual(fields["ntp"]["value"], {"enabled": True, "modeCode": 1, "mode": "manual", "server": "ntp.example.test"})
+        self.assertEqual(fields["wifi"]["value"], {"clientEnabled": False, "accessPointEnabled": False, "preferredNetworkEnabled": False})
+        self.assertEqual(fields["ssh"]["value"], "enabled")
+        self.assertEqual(fields["powerManagement"]["value"]["sleepTimeCode"], 10)
+        self.assertFalse(fields["powerManagement"]["value"]["clearMemoryInSleepEnabled"])
+        self.assertFalse(fields["powerManagement"]["value"]["automaticRestartEnabled"])
+        self.assertEqual(fields["powerManagement"]["unconfirmedFields"], ["scheduledPowerOn", "scheduledPowerOff", "clearMemoryAfterRestart"])
+        self.assertEqual(fields["telnet"]["status"], "not_exposed")
+        config_reads = [json.loads(call["body"])["CfgIDString"] for call in calls if call["path"] == "/v1/om/config" and call["method"] == "POST"]
+        self.assertEqual(len(config_reads), 7)
+        self.assertFalse(any("PSWD0" in names or "SSID" in names for names in config_reads))
+        self.assertFalse(any(call["method"] == "PUT" for call in calls))
+        self.assertNotIn("GOOD-SYNTHETIC", json.dumps(result))
+
+    def test_bar310_new_setting_schema_drift_is_field_local(self):
+        calls = []
+        bundle = {"status_code": 200, "headers": [], "body": FULL_SETTINGS_BUNDLE}
+        bad = {**SYNTHETIC_SETTINGS, "autoreply": 0, "enable_ssh": 0, "sleepTime": 999, "ntpServerAddr": "bad\nserver"}
+        result = poll_huawei_bar310_device(
+            {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(calls, overrides={"/static/js/main.synthetic.chunk.js": bundle}, configuration_values=bad)},
+        )
+        self.assertTrue(result["ok"])
+        fields = result["deviceSettings"]["fields"]
+        self.assertEqual(fields["http"]["status"], "read")
+        self.assertEqual(fields["autoAnswer"]["value"], "disabled")
+        self.assertEqual(fields["ssh"]["status"], "unavailable")
+        self.assertEqual(fields["ntp"]["status"], "unavailable")
+        self.assertEqual(fields["powerManagement"]["status"], "unavailable")
 
     def test_bar310_reads_site_name_from_guarded_mailbox(self):
         calls = []

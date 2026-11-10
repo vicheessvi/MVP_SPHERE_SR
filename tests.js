@@ -2155,6 +2155,32 @@
     assert(!unverified.deviceSettings);
   });
 
+  test("Новые настройки Bar 310 проходят только при точном контракте и без секретов", () => {
+    const fields = {
+      autoAnswer: { status: "read", value: "enabled", source: "POST /v1/om/config:autoreply" },
+      ntp: { status: "read", value: { enabled: true, modeCode: 1, server: "ntp.example.test" }, source: "POST /v1/om/config:synSerTime,ntpGetMode,ntpServerAddr" },
+      wifi: { status: "read", value: { clientEnabled: false, accessPointEnabled: false, preferredNetworkEnabled: false }, source: "POST /v1/om/config:enableWifi,apEnable,isWifiPriority", password: "SYNTHETIC-SECRET" },
+      ssh: { status: "read", value: "enabled", source: "POST /v1/om/config:enable_ssh" },
+      powerManagement: { status: "read", value: { shutdownRestartEnabled: true, sleepMode: "interval", sleepTimeCode: 10, automaticRestartEnabled: false, automaticRestartIntervalDays: 1, clearMemoryInSleepEnabled: false, energySavingEnabled: false }, source: "POST /v1/om/config:suppotReboot,sleepTime,autoReboot,sleepCloseAPP,autoRebootVal,savePowerMode" }
+    };
+    const payload = { ok: true, adapterKey: "vcs/huawei/bar310", webBlocks: { "Device Info": { Model: "Bar 310" } }, deviceSettings: { fields }, siteName: { status: "read", value: "Synthetic site" } };
+    const projected = api.pollingPayloadProjection(payload);
+    assertEqual(projected.deviceSettings.fields.autoAnswer.value, "enabled");
+    assertEqual(projected.deviceSettings.fields.ntp.value.mode, "manual");
+    assertEqual(projected.deviceSettings.fields.wifi.value.preferredNetworkEnabled, false);
+    assertEqual(projected.deviceSettings.fields.ssh.value, "enabled");
+    assertEqual(projected.deviceSettings.fields.powerManagement.value.sleepTimeCode, 10);
+    assertEqual(projected.siteName.value, "Synthetic site");
+    assert(!JSON.stringify(projected).includes("SYNTHETIC-SECRET"));
+    for (const wrong of [{ ...payload, adapterKey: "vcs/huawei/box310" }, { ...payload, webBlocks: { "Device Info": { Model: "Box 310" } } }]) {
+      const excluded = api.pollingPayloadProjection(wrong);
+      assert(!excluded.deviceSettings?.fields?.autoAnswer);
+      assert(!excluded.deviceSettings?.fields?.ntp);
+    }
+    const invalid = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { wifi: { ...fields.wifi, value: { clientEnabled: true, accessPointEnabled: false, preferredNetworkEnabled: "yes" } } } } });
+    assert(!invalid.deviceSettings?.fields?.wifi);
+  });
+
   test("Включение автоответа TE20 создаёт только отдельный план одного IP", () => {
     const state = api.createDemoState();
     state.inventoryDevices = [{ id: "te20-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE20", modelNormalized: "te20", ipNormalized: "192.0.2.20", inCurrentSr: true }];

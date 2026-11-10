@@ -1368,13 +1368,15 @@
       && auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")) === "te20";
     const teFamilySettingsConfirmed = projected.adapterKey === "vcs/huawei/te-family"
       && ["te30", "te40", "te50", "te60"].includes(auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")));
+    const bar310SettingsConfirmed = projected.adapterKey === "vcs/huawei/bar310"
+      && auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")) === "bar310";
     const projectedFields = {};
     const approvedReadSources = {
       telnet: new Set(["WEB_GetCfgParamAPI:enabletelnet", "managementActions.after.telnetPort23"]),
       http: new Set(["WEB_GetCfgParamAPI:enable_http", "POST /v1/om/config:enable_http", "managementActions.after.httpPort80"]),
-      ssh: new Set(["WEB_GetCfgParamAPI:enable_ssh"]),
+      ssh: new Set(["WEB_GetCfgParamAPI:enable_ssh", "POST /v1/om/config:enable_ssh"]),
       autoUpdate: new Set(["WEB_GetCfgParamAPI:isenableautoupgrade"]),
-      autoAnswer: new Set(["WEB_GetCfgParamAPI:autoreply"]),
+      autoAnswer: new Set(["WEB_GetCfgParamAPI:autoreply", "POST /v1/om/config:autoreply"]),
       snmpV2: new Set(["WEB_GetSnmpCfgAPI:snmpv2,IsEnableSnmp"])
     };
     for (const key of settingKeys) {
@@ -1383,7 +1385,7 @@
       const value = getCaseInsensitive(supplied, "value");
       const source = String(getCaseInsensitive(supplied, "source") || "");
       if (status === "read" && approvedReadSources[key]?.has(source) && ["enabled", "disabled"].includes(value)
-        && (["telnet", "http"].includes(key) || te20SettingsConfirmed || (teFamilySettingsConfirmed && ["ssh", "autoUpdate", "autoAnswer", "snmpV2"].includes(key)))) {
+        && (["telnet", "http"].includes(key) || te20SettingsConfirmed || (teFamilySettingsConfirmed && ["ssh", "autoUpdate", "autoAnswer", "snmpV2"].includes(key)) || (bar310SettingsConfirmed && ["ssh", "autoAnswer"].includes(key)))) {
         projectedFields[key] = { status: "read", value, source };
         if (key === "snmpV2" && teFamilySettingsConfirmed) {
           if (typeof getCaseInsensitive(supplied, "configuredEnabled") !== "boolean" || typeof getCaseInsensitive(supplied, "serviceEnabled") !== "boolean" || value !== (supplied.configuredEnabled && supplied.serviceEnabled ? "enabled" : "disabled")) {
@@ -1395,8 +1397,12 @@
         }
       } else if (status === "read" && (te20SettingsConfirmed || teFamilySettingsConfirmed) && key === "ntp" && source === "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
         projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, mode: value.modeCode === 1 ? "manual" : "automatic", server: value.server }, source };
+      } else if (status === "read" && bar310SettingsConfirmed && key === "ntp" && source === "POST /v1/om/config:synSerTime,ntpGetMode,ntpServerAddr" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
+        projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, mode: value.modeCode === 1 ? "manual" : "automatic", server: value.server }, source };
       } else if (status === "read" && teFamilySettingsConfirmed && key === "wifi" && source === "WEB_GetWifiStatModeAPI:ucWifiMode" && isPlainObject(value) && [0, 1, 2, 3].includes(value.modeCode) && value.clientEnabled === [2, 3].includes(value.modeCode) && value.accessPointEnabled === [1, 3].includes(value.modeCode)) {
         projectedFields[key] = { status: "read", value: { modeCode: value.modeCode, clientEnabled: value.clientEnabled, accessPointEnabled: value.accessPointEnabled }, source };
+      } else if (status === "read" && bar310SettingsConfirmed && key === "wifi" && source === "POST /v1/om/config:enableWifi,apEnable,isWifiPriority" && isPlainObject(value) && typeof value.clientEnabled === "boolean" && typeof value.accessPointEnabled === "boolean" && typeof value.preferredNetworkEnabled === "boolean") {
+        projectedFields[key] = { status: "read", value: { clientEnabled: value.clientEnabled, accessPointEnabled: value.accessPointEnabled, preferredNetworkEnabled: value.preferredNetworkEnabled }, source };
       } else if (status === "read" && teFamilySettingsConfirmed && key === "powerManagement" && source === "WEB_GetCfgParamAPI:sleepTime" && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && value.sleepMode === (value.sleepTimeCode === 0 ? "never" : "interval")) {
         const power = { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode };
         if (typeof value.shutDownEnabled === "boolean") power.shutDownEnabled = value.shutDownEnabled;
@@ -1414,6 +1420,8 @@
           Object.assign(projectedPower, { shutdownRestartEnabled: value.shutdownRestartEnabled, restartHour: value.restartHour, restartMinute: value.restartMinute });
         }
         projectedFields[key] = { status: "read", value: projectedPower, source };
+      } else if (status === "read" && bar310SettingsConfirmed && key === "powerManagement" && source === "POST /v1/om/config:suppotReboot,sleepTime,autoReboot,sleepCloseAPP,autoRebootVal,savePowerMode" && isPlainObject(value) && [0, 1, 5, 10, 15, 30, 60].includes(value.sleepTimeCode) && value.sleepMode === (value.sleepTimeCode === 0 ? "never" : "interval") && ["shutdownRestartEnabled", "automaticRestartEnabled", "clearMemoryInSleepEnabled", "energySavingEnabled"].every((field) => typeof value[field] === "boolean") && Number.isInteger(value.automaticRestartIntervalDays) && value.automaticRestartIntervalDays >= 0 && value.automaticRestartIntervalDays <= 3650) {
+        projectedFields[key] = { status: "read", value: { shutdownRestartEnabled: value.shutdownRestartEnabled, sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, automaticRestartEnabled: value.automaticRestartEnabled, automaticRestartIntervalDays: value.automaticRestartIntervalDays, clearMemoryInSleepEnabled: value.clearMemoryInSleepEnabled, energySavingEnabled: value.energySavingEnabled }, source, unconfirmedFields: ["scheduledPowerOn", "scheduledPowerOff", "clearMemoryAfterRestart"] };
       } else if (["protocol_required", "unavailable", "not_exposed"].includes(status)) {
         projectedFields[key] = { status, value: null };
         if (te20SettingsConfirmed && key === "snmpV2" && status === "not_exposed" && getCaseInsensitive(supplied, "reason") === "version_not_supported") {
@@ -3218,7 +3226,7 @@
       return `${value.enabled ? "Включено" : "Отключено"}; тип: ${value.modeCode === 1 ? "Вручную" : "Автоматически"}; сервер: ${value.server || "не указан"}`;
     }
     if (field === "wifi" && isPlainObject(value) && typeof value.clientEnabled === "boolean" && typeof value.accessPointEnabled === "boolean") {
-      return `Клиент: ${value.clientEnabled ? "включён" : "отключён"}; точка доступа: ${value.accessPointEnabled ? "включена" : "отключена"}`;
+      return `Клиент: ${value.clientEnabled ? "включён" : "отключён"}; точка доступа: ${value.accessPointEnabled ? "включена" : "отключена"}${typeof value.preferredNetworkEnabled === "boolean" ? `; приоритет Wi-Fi: ${value.preferredNetworkEnabled ? "включён" : "отключён"}` : ""}`;
     }
     return typeof value === "string" && value.trim() ? value.trim() : "Нет данных";
   }
