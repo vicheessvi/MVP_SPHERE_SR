@@ -2085,20 +2085,26 @@
     const locations = new Map((currentState?.locations || []).map((item) => [item.id, item]));
     const events = new Map();
     const sourceKeys = new Map();
-    const coverage = { files: (scannedEntries || []).length, scannedFiles: 0, excludedFiles: 0, ambiguousFiles: 0, invalidFiles: 0, unknownStarts: 0, confirmedReboots: 0, powerOffs: 0 };
+    const coverage = { files: (scannedEntries || []).length, scannedFiles: 0, te20Files: 0, excludedFiles: 0, ambiguousFiles: 0, invalidFiles: 0, unknownStarts: 0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
     for (const entry of scannedEntries || []) {
       const row = entry?.row || {};
       if (row.matchStatus !== "Сопоставлено") { coverage.excludedFiles += 1; if (row.matchStatus === "Неоднозначный IP") coverage.ambiguousFiles += 1; continue; }
       const device = devices.get(row.deviceId);
       const model = auditModelToken(device?.modelRaw);
-      if (!device || row.ip !== normalizeIpv4(device.ipNormalized || device.ipRaw) || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei" || !["te30", "te40", "te50", "te60"].includes(model) || row.format !== "Huawei TE XML") { coverage.excludedFiles += 1; continue; }
+      if (!device || row.ip !== normalizeIpv4(device.ipNormalized || device.ipRaw) || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei" || !["te20", "te30", "te40", "te50", "te60"].includes(model) || row.format !== "Huawei TE XML") { coverage.excludedFiles += 1; continue; }
       if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; continue; }
       coverage.scannedFiles += 1;
+      if (model === "te20") coverage.te20Files += 1;
       const location = locations.get(device.locationId);
+      const gapsByBoot = new Map((entry.scan.bootGaps || []).map((gap) => [gap.bootLocalAt, gap]));
       for (const parsed of TE_LOG_EVENTS.deriveEvents(entry.scan.markers)) {
         const family = parsed.kind === "power_off" ? "power_off" : "start";
         const key = `${device.id}|${family}|${parsed.localAt}`;
         const source = { path: String(row.path || "").slice(0, 512), line: parsed.lineNumber, markerLines: (parsed.markerLineNumbers || []).filter(Number.isSafeInteger).slice(0, 16) };
+        const gap = parsed.kind === "unknown_start" ? gapsByBoot.get(parsed.localAt) : null;
+        const silenceGap = gap && Number.isSafeInteger(gap.gapSeconds) && gap.gapSeconds > 0
+          ? { seconds: gap.gapSeconds, minutes: gap.gapMinutes, fromLocalAt: gap.fromLocalAt, toLocalAt: gap.toLocalAt,
+              knownAction: gap.knownAction === true, clockAnomalyOrLongGap: gap.clockAnomalyOrLongGap === true } : null;
         const prior = events.get(key);
         if (prior) {
           const reference = JSON.stringify([source.path, source.line]);
@@ -2109,7 +2115,14 @@
           }
           if (prior.kind === "unknown_start" && parsed.kind === "confirmed_reboot") {
             prior.kind = "confirmed_reboot";
-            prior.ruleVersion = TE_LOG_EVENTS.RULE_VERSION;
+            prior.ruleVersion = model === "te20" ? TE_LOG_EVENTS.TE20_RULE_VERSION : TE_LOG_EVENTS.RULE_VERSION;
+          }
+          if (!prior.shutdownMethod && parsed.method) prior.shutdownMethod = parsed.method;
+          if (silenceGap && prior.kind === "unknown_start") {
+            const previous = prior.silenceGap;
+            prior.silenceGap = previous && previous.seconds <= silenceGap.seconds ? previous : silenceGap;
+            if (previous?.knownAction || silenceGap.knownAction) prior.silenceGap.knownAction = true;
+            if (previous?.clockAnomalyOrLongGap || silenceGap.clockAnomalyOrLongGap) prior.silenceGap.clockAnomalyOrLongGap = true;
           }
           continue;
         }
@@ -2118,7 +2131,8 @@
           mac: device.macNormalized || device.macRaw || "Не указано", vip: Boolean(device.deviceVip || location?.vip),
           locationId: location?.id || device.locationId || null, locationName: location?.name || "Не указано", address: location?.address || "Не указано",
           estimatedAt: new Date(parsed.timeMs).toISOString(), deviceLocalTime: parsed.localAt, timeBasis: "device_local_unknown_timezone",
-          ruleVersion: TE_LOG_EVENTS.RULE_VERSION, sources: [source] });
+          ruleVersion: model === "te20" ? TE_LOG_EVENTS.TE20_RULE_VERSION : TE_LOG_EVENTS.RULE_VERSION,
+          shutdownMethod: parsed.method || null, silenceGap, sources: [source] });
         sourceKeys.set(key, new Set([JSON.stringify([source.path, source.line])]));
       }
     }
@@ -2126,6 +2140,7 @@
     coverage.confirmedReboots = ordered.filter((item) => item.kind === "confirmed_reboot").length;
     coverage.powerOffs = ordered.filter((item) => item.kind === "power_off").length;
     coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
+    coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
     return { events: ordered, coverage, sourceSrSha256: currentState?.srImports?.at(-1)?.rawSha256 || null };
   }
 
@@ -2875,10 +2890,12 @@
     const filters = { period: "all", ...(inputFilters || {}) };
     const period = rebootPeriodScope(filters, options?.now);
     if (!period.valid) return { valid: false, errors: period.errors, groups: {} };
+    const silenceMinutes = Number(filters.logSilenceMinutes ?? 60);
+    if (!Number.isSafeInteger(silenceMinutes) || silenceMinutes < 15 || silenceMinutes > 10080) return { valid: false, errors: ["Укажите порог тишины логов от 15 до 10080 минут"], groups: {} };
     const currentDigest = candidateState?.srImports?.at(-1)?.rawSha256 || null;
     const stale = Boolean(index?.sourceSrSha256 && currentDigest && index.sourceSrSha256 !== currentDigest);
     const currentDevices = new Map((candidateState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
-    const events = stale ? [] : (index?.events || []).filter((event) => {
+    const scopedEvents = stale ? [] : (index?.events || []).filter((event) => {
       const device = currentDevices.get(event.deviceId);
       return device && normalizeIpv4(device.ipNormalized || device.ipRaw) === event.ip
         && period.includes(event.estimatedAt, event.timeBasis)
@@ -2888,8 +2905,11 @@
         && (!filters.locationId || event.locationId === filters.locationId)
         && (!filters.address || normalizeText(event.address) === normalizeText(filters.address));
     });
+    const events = scopedEvents.map((event) => event.kind === "unknown_start" && event.silenceGap
+      && event.silenceGap.seconds >= silenceMinutes * 60 && !event.silenceGap.knownAction && !event.silenceGap.clockAnomalyOrLongGap
+      ? { ...event, kind: "suspected_power_loss", confidence: "low" } : event);
     const groups = {};
-    for (const kind of ["confirmed_reboot", "power_off", "unknown_start"]) {
+    for (const kind of ["confirmed_reboot", "power_off", "suspected_power_loss", "unknown_start"]) {
       const selected = events.filter((item) => item.kind === kind);
       const dates = new Map(); const hours = new Map(); const devices = new Map(); const locations = new Map(); const addresses = new Map();
       for (const event of selected) {
@@ -2904,7 +2924,7 @@
         byHour: Array.from({ length: 24 }, (_, hour) => ({ label: String(hour).padStart(2, "0"), count: hours.get(String(hour).padStart(2, "0")) || 0 })),
         topDevices: ranking(devices).slice(0, 5), topLocations: ranking(locations).slice(0, 5), topAddresses: ranking(addresses).slice(0, 5) };
     }
-    return { valid: true, errors: [], stale, coverage: index?.coverage || null, groups };
+    return { valid: true, errors: [], stale, coverage: index?.coverage || null, silenceMinutes, groups };
   }
 
   function getVersionAnalysis(candidateState, kind) {
@@ -5585,7 +5605,7 @@
     inventoryBusy: false,
     equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
-    rebootFilters: { period: "all" },
+    rebootFilters: { period: "all", logSilenceMinutes: "60" },
     rebootView: null,
     analyticsPage: { rebootEvents: 0, project: 0, firmware: 0, authorization: 0, network: 0 },
     helpQuery: "",
@@ -6116,6 +6136,7 @@
     return `<section class="card reboot-filters"><div class="section-heading"><div><p class="eyebrow">Область анализа</p><h2>Фильтры перезагрузок</h2></div><button class="button secondary" type="button" data-clear-reboot-filters>Сбросить фильтры</button></div><form class="filter-grid reboot-filter-grid" data-reboot-filters>
       <div class="field"><label>Период событий</label><select name="period"><option value="all"${filters.period === "all" || !filters.period ? " selected" : ""}>Вся история</option><option value="today"${filters.period === "today" ? " selected" : ""}>Сегодня</option><option value="7d"${filters.period === "7d" ? " selected" : ""}>7 дней</option><option value="30d"${filters.period === "30d" ? " selected" : ""}>30 дней</option><option value="custom"${filters.period === "custom" ? " selected" : ""}>Произвольный</option></select></div>
       <div class="field"><label>Дата от</label><input type="date" name="dateFrom" value="${escapeHtml(filters.dateFrom || "")}"></div><div class="field"><label>Дата до</label><input type="date" name="dateTo" value="${escapeHtml(filters.dateTo || "")}"></div>
+      <div class="field"><label>Порог тишины логов, минут<input type="number" name="logSilenceMinutes" min="15" max="10080" step="1" value="${escapeHtml(filters.logSilenceMinutes ?? "60")}" required></label></div>
       <div class="field"><label>Категория</label><select name="category"><option value="">Все</option>${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<option value="${item.id}"${filters.category === item.id ? " selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}</select></div>
       <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(values("manufacturerRaw"), filters.manufacturer)}</select></div><div class="field"><label>Модель</label><select name="model">${filterOptions(values("modelRaw"), filters.model)}</select></div>
       <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${locations.map((item) => `<option value="${escapeHtml(item.id)}"${filters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
@@ -6201,12 +6222,13 @@
     const coverage = analytics.coverage;
     if (!coverage?.files) return `<section class="card section-gap"><h2>Терминалы ВКС Huawei: события из логов</h2><p class="muted">Импортируйте общую папку логов в разделе «Загрузка данных и опрос устройств».</p></section>`;
     if (analytics.stale) return `<section class="card section-gap"><h2>Терминалы ВКС Huawei: события из логов</h2><p class="warning-panel">Выгрузка SR изменилась. Импортируйте папку логов повторно для точного сопоставления устройств.</p></section>`;
-    const eventRows = (events) => events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${escapeHtml(event.sources.map((source) => `${source.path}:${source.line}${source.markerLines.length ? ` (признак: ${source.markerLines.join(", ")})` : ""}`).join("; "))}</td></tr>`);
-    const table = (group) => `${renderRebootTable(["Локальное время терминала", "Устройство", "Модель", "IP", "Локация", "Адрес", "Файл и строка"], eventRows(group.events))}${group.events.length > 100 ? `<p class="muted">Показаны первые 100 событий из ${group.events.length}; итоги рассчитаны по всем событиям.</p>` : ""}`;
+    const eventRows = (events) => events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${event.shutdownMethod === "remote_control" ? "Пульт ДУ" : event.shutdownMethod === "web" ? "Web" : "—"}</td><td>${event.kind === "suspected_power_loss" ? `${escapeHtml(event.silenceGap.minutes)} мин; ${escapeHtml(event.silenceGap.fromLocalAt)}–${escapeHtml(event.silenceGap.toLocalAt)}` : "—"}</td><td>${event.confidence === "low" ? "Низкая" : "—"}</td><td>${escapeHtml(event.sources.map((source) => `${source.path}:${source.line}${source.markerLines.length ? ` (признак: ${source.markerLines.join(", ")})` : ""}`).join("; "))}</td></tr>`);
+    const table = (group) => `${renderRebootTable(["Локальное время терминала", "Устройство", "Модель", "IP", "Локация", "Адрес", "Способ выключения", "Пауза без логов", "Достоверность", "Файл и строка"], eventRows(group.events))}${group.events.length > 100 ? `<p class="muted">Показаны первые 100 событий из ${group.events.length}; итоги рассчитаны по всем событиям.</p>` : ""}`;
     const section = (title, group, note) => `<section class="card section-gap"><div class="section-heading"><div><p class="eyebrow">Терминалы ВКС Huawei</p><h2>${escapeHtml(title)}</h2></div></div><p class="muted">${escapeHtml(note)}</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${group.count}</strong></div><div class="card"><span>Устройств</span><strong>${group.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${group.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", group.byDate, { limit: 31 })}${renderRebootChart("По часам", group.byHour, { limit: 24 })}</div><div class="reboot-leader-grid section-gap">${renderRebootChart("TOP 5 устройств", group.topDevices, { limit: 5 })}${renderRebootChart("TOP 5 локаций", group.topLocations, { limit: 5 })}${renderRebootChart("TOP 5 адресов", group.topAddresses, { limit: 5 })}</div>${table(group)}</section>`;
-    return `<section class="section-gap"><p class="muted">Проверено файлов: ${coverage.scannedFiles} из ${coverage.files}; исключено: ${coverage.excludedFiles}; ошибки разбора: ${coverage.invalidFiles}. Время показано как локальное время терминала без подтверждённого часового пояса.</p>
-      ${section("Подтверждённые перезагрузки терминалов ВКС", analytics.groups.confirmed_reboot, "Считаются только запуски с явным признаком normal reboot; повторные выгрузки объединяются.")}
-      ${section("Зафиксированные отключения питания терминалов ВКС", analytics.groups.power_off, "Учитывается только явная запись Terminal powered off. Она не доказывает аварийную потерю электропитания.")}
+    return `<section class="section-gap"><p class="muted">Проверено файлов: ${coverage.scannedFiles} из ${coverage.files}; исключено: ${coverage.excludedFiles}; ошибки разбора: ${coverage.invalidFiles}. Время показано как локальное время терминала без подтверждённого часового пояса. Порог предположения: ${analytics.silenceMinutes} мин.</p>${coverage.te20Files ? `<p class="info-panel">Для TE20 подтверждённая перезагрузка требует пары «web reboots → System boot»; штатное выключение определяется отдельной web-записью или записью пульта ДУ.</p>` : ""}
+      ${section("Подтверждённые перезагрузки терминалов ВКС", analytics.groups.confirmed_reboot, "TE20: web reboots и последующий System boot; TE30/40/50/60: System start с явным normal reboot. Повторные выгрузки объединяются.")}
+      ${section("Зафиксированные отключения питания терминалов ВКС", analytics.groups.power_off, "Учитываются только отдельные записи о выключении: для TE20 — web или пульт ДУ, для TE30/40/50/60 — Terminal powered off. Они не доказывают аварийную потерю электропитания.")}
+      ${section("Предполагаемые отключения питания терминалов ВКС", analytics.groups.suspected_power_loss, "Низкая достоверность: после длительной паузы в логе появился запуск без подтверждённой команды перезагрузки или выключения. Время события — время возобновления лога, не доказанный момент потери питания. Пауза может объясняться отсутствием событий, неполным логом или изменением часов; эти случаи не входят в подтверждённые итоги.")}
       <details class="card section-gap"><summary>Запуски с неустановленной причиной — ${analytics.groups.unknown_start.count}</summary><p class="muted">Эти запуски не прибавляются к подтверждённым перезагрузкам.</p>${table(analytics.groups.unknown_start)}</details></section>`;
   }
 
@@ -7172,7 +7194,7 @@
     }
 
     if (event.target.closest("[data-clear-reboot-filters]")) {
-      ui.rebootFilters = { period: "all" };
+      ui.rebootFilters = { period: "all", logSilenceMinutes: "60" };
       render();
       return;
     }
@@ -7465,7 +7487,7 @@
     if (rebootFilterForm) {
       event.preventDefault();
       const formData = new FormData(rebootFilterForm);
-      ui.rebootFilters = Object.fromEntries(["period", "dateFrom", "dateTo", "category", "manufacturer", "model", "locationId", "address"].map((key) => [key, String(formData.get(key) || "")]));
+      ui.rebootFilters = Object.fromEntries(["period", "dateFrom", "dateTo", "category", "manufacturer", "model", "locationId", "address", "logSilenceMinutes"].map((key) => [key, String(formData.get(key) || "")]));
       render();
       return;
     }
@@ -7517,13 +7539,13 @@
         const device = currentDevices.get(row.deviceId);
         const eligible = row.matchStatus === "Сопоставлено" && row.format === "Huawei TE XML" && device?.category === "vcs"
           && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei"
-          && ["te30", "te40", "te50", "te60"].includes(auditModelToken(device.modelRaw));
+          && ["te20", "te30", "te40", "te50", "te60"].includes(auditModelToken(device.modelRaw));
         let scan = null;
         if (eligible) {
-          try { scan = await TE_LOG_EVENTS.scanFile(files[index]); }
+          try { scan = await TE_LOG_EVENTS.scanFile(files[index], { model: auditModelToken(device.modelRaw) }); }
           catch { scan = { ok: false, reason: "read_failed", markers: [] }; }
         }
-        row.analysisStatus = !eligible ? "Вне анализа TE30/40/50/60" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
+        row.analysisStatus = !eligible ? "Вне анализа Huawei TE" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
         scans.push({ row, scan });
         ui.logImportProgress = { processed: index + 1, total: files.length };
         if ((index + 1) % 8 === 0 || index + 1 === files.length) { render(); await new Promise((resolve) => global.setTimeout(resolve, 0)); }

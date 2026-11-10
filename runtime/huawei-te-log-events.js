@@ -2,9 +2,16 @@
   "use strict";
 
   const RULE_VERSION = "huawei-te-log-v1";
+  const TE20_RULE_VERSION = "huawei-te20-log-v1";
   const MAX_LINE = 8192;
   const CHUNK_BYTES = 65536;
+  const BOOT_WINDOW_MS = 10 * 60 * 1000;
+  const MAX_SUSPECT_GAP_MS = 30 * 24 * 60 * 60 * 1000;
+  const ACTIVITY_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+LOG_MOD_[A-Z0-9_]{2,32}\b/;
   const EVENT_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_[A-Z0-9_]{2,32})\s+\d{1,8}\s+(.{0,4096})$/;
+  const TE20_EVENT_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_MC)\s+\d{1,9}\s+\d{1,9}\[[A-Za-z]:\d{1,6}\s+[A-Za-z]:\d{1,6}\]\s+(.{0,4096})$/;
+  const TE20_WEB_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_WEB)\s+\d{1,9}\s+(.{0,4096})$/;
+  const TE20_REMOTE_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_RC)\s+\d{1,9}\s+(.{0,4096})$/;
 
   function localTimeValue(raw) {
     const parts = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)$/.exec(raw || "");
@@ -16,33 +23,44 @@
       && date.getUTCHours() === hour && date.getUTCMinutes() === minute && date.getUTCSeconds() === second ? value : null;
   }
 
-  function parseEventLine(rawLine, lineNumber) {
+  function parseEventLine(rawLine, lineNumber, model) {
     const line = String(rawLine || "").replace(/\r$/, "");
     if (!line || line.length > MAX_LINE || line.includes("\uFFFD")) return null;
-    const match = EVENT_LINE.exec(line);
+    const te20 = model === "te20";
+    const match = te20 ? (TE20_EVENT_LINE.exec(line) || TE20_WEB_LINE.exec(line) || TE20_REMOTE_LINE.exec(line)) : EVENT_LINE.exec(line);
     if (!match) return null;
     const timeMs = localTimeValue(match[1]);
     if (timeMs === null) return null;
     const module = match[2];
     const message = match[3];
     let kind = null;
-    if (module === "LOG_MOD_MC" && /\bsystem\s+start\b/i.test(message)) kind = "system_start";
+    if (te20) {
+      if (module === "LOG_MOD_MC" && /\bsystem\b.{0,70}\bboot\b/i.test(message)) kind = "system_start";
+      else if (module === "LOG_MOD_WEB" && /\breboots\b/i.test(message) && !/\b(?:fail|failed|error|denied)\b/i.test(message)) kind = "reboot_marker";
+      else if (module === "LOG_MOD_WEB" && /\bshut\b.{0,80}\bdown\b.{0,80}\bterminal\b/i.test(message) && !/\b(?:fail|failed|error|denied)\b/i.test(message)) kind = "power_off";
+      else if (module === "LOG_MOD_RC" && /\buser\b.{0,120}\bshut\b.{0,80}\bdown\b.{0,80}\bterminal\b/i.test(message) && !/\b(?:fail|failed|error|denied)\b/i.test(message)) kind = "power_off";
+    } else if (module === "LOG_MOD_MC" && /\bsystem\s+start\b/i.test(message)) kind = "system_start";
     else if (module === "LOG_MOD_MC" && /\bnormal\b.{0,80}\breboot\b/i.test(message)) kind = "reboot_marker";
     else if (module === "LOG_MOD_BSP" && /\bterminal\b.{0,50}\bpowered\b.{0,30}\boff\b/i.test(message)) kind = "power_off";
-    return kind ? { kind, localAt: match[1], timeMs, lineNumber } : null;
+    return kind ? { kind, localAt: match[1], timeMs, lineNumber, model: te20 ? "te20" : null,
+      method: kind === "power_off" ? module === "LOG_MOD_RC" ? "remote_control" : module === "LOG_MOD_WEB" ? "web" : null : null } : null;
   }
 
-  function collector() {
+  function collector(model) {
     const markers = [];
+    const activityTimes = [];
     const coverage = { lines: 0, oversizedLines: 0, malformedCandidates: 0 };
     let pending = "";
     let dropping = false;
     function process(line) {
       coverage.lines += 1;
       if (dropping || line.length > MAX_LINE) { coverage.oversizedLines += 1; dropping = false; return; }
-      const marker = parseEventLine(line, coverage.lines);
+      const activity = ACTIVITY_LINE.exec(line);
+      const activityMs = activity ? localTimeValue(activity[1]) : null;
+      if (activityMs !== null) activityTimes.push(activityMs);
+      const marker = parseEventLine(line, coverage.lines, model);
       if (marker) markers.push(marker);
-      else if (/system\s+start|\bnormal\b.{0,80}\breboot\b|terminal.{0,50}powered.{0,30}off/i.test(line)) coverage.malformedCandidates += 1;
+      else if (/system\s+start|\bsystem\b.{0,70}\bboot\b|\breboots\b|\bshut\b.{0,80}\bdown\b.{0,80}\bterminal\b|\bnormal\b.{0,80}\breboot\b|terminal.{0,50}powered.{0,30}off/i.test(line)) coverage.malformedCandidates += 1;
     }
     return {
       feed(text) {
@@ -51,7 +69,29 @@
         for (const line of parts) process(line);
         if (pending.length > MAX_LINE) { pending = ""; dropping = true; }
       },
-      finish() { if (pending && !dropping) process(pending); else if (dropping) coverage.oversizedLines += 1; return { markers, coverage }; }
+      finish() {
+        if (pending && !dropping) process(pending); else if (dropping) coverage.oversizedLines += 1;
+        const sorted = [...new Set(activityTimes)].sort((a, b) => a - b);
+        const bootGaps = [];
+        for (const boot of markers.filter((item) => item.kind === "system_start")) {
+          let low = 0; let high = sorted.length;
+          while (low < high) { const middle = (low + high) >>> 1; if (sorted[middle] < boot.timeMs) low = middle + 1; else high = middle; }
+          let best = null;
+          for (let index = low - 1; index >= 0 && sorted[index + 1] >= boot.timeMs - BOOT_WINDOW_MS; index -= 1) {
+            const fromMs = sorted[index]; const toMs = sorted[index + 1];
+            if (toMs > boot.timeMs || toMs <= fromMs) continue;
+            if (!best || toMs - fromMs > best.toMs - best.fromMs) best = { fromMs, toMs };
+          }
+          if (!best) continue;
+          const knownAction = markers.some((item) => ["reboot_marker", "power_off"].includes(item.kind)
+            && item.timeMs >= best.fromMs - 120000 && item.timeMs <= boot.timeMs);
+          bootGaps.push({ bootLocalAt: boot.localAt, gapSeconds: Math.round((best.toMs - best.fromMs) / 1000), gapMinutes: Math.round((best.toMs - best.fromMs) / 6000) / 10,
+            fromLocalAt: new Date(best.fromMs).toISOString().slice(0, 19).replace("T", " "),
+            toLocalAt: new Date(best.toMs).toISOString().slice(0, 19).replace("T", " "),
+            knownAction, clockAnomalyOrLongGap: best.toMs - best.fromMs > MAX_SUSPECT_GAP_MS });
+        }
+        return { markers, coverage, bootGaps };
+      }
     };
   }
 
@@ -59,19 +99,19 @@
     return /^\uFEFF?\s*<\?xml\b[\s\S]{0,512}<LogModule(?:\s|>)/i.test(String(prefix || ""));
   }
 
-  function scanText(text) {
+  function scanText(text, options) {
     if (!isHuaweiTeLogPrefix(String(text).slice(0, 2048))) return { ok: false, reason: "unsupported_log_format", markers: [], coverage: null };
-    const parser = collector();
+    const parser = collector(options?.model);
     parser.feed(String(text));
     return { ok: true, ...parser.finish() };
   }
 
-  async function scanFile(file) {
+  async function scanFile(file, options) {
     if (!file || !Number.isSafeInteger(file.size) || file.size < 0 || typeof file.slice !== "function") return { ok: false, reason: "invalid_file", markers: [], coverage: null };
     const decoder = new TextDecoder("utf-8", { fatal: false });
     const prefixBytes = new Uint8Array(await file.slice(0, 2048).arrayBuffer());
     if (!isHuaweiTeLogPrefix(decoder.decode(prefixBytes))) return { ok: false, reason: "unsupported_log_format", markers: [], coverage: null };
-    const parser = collector();
+    const parser = collector(options?.model);
     for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
       const bytes = new Uint8Array(await file.slice(offset, Math.min(file.size, offset + CHUNK_BYTES)).arrayBuffer());
       parser.feed(decoder.decode(bytes, { stream: true }));
@@ -89,6 +129,7 @@
       let low = 0; let high = sortedStarts.length;
       while (low < high) { const middle = (low + high) >>> 1; if (sortedStarts[middle].timeMs < marker.timeMs) low = middle + 1; else high = middle; }
       const nearest = [sortedStarts[low - 1], sortedStarts[low]].filter(Boolean)
+        .filter((item) => marker.model !== "te20" || (item.model === "te20" && item.timeMs >= marker.timeMs))
         .sort((a, b) => Math.abs(a.timeMs - marker.timeMs) - Math.abs(b.timeMs - marker.timeMs) || a.lineNumber - b.lineNumber)[0];
       if (!nearest || Math.abs(nearest.timeMs - marker.timeMs) > 120000) continue;
       if (!paired.has(nearest.lineNumber)) paired.set(nearest.lineNumber, []);
@@ -99,7 +140,7 @@
       return { kind: corroborating.length ? "confirmed_reboot" : "unknown_start", localAt: start.localAt,
         timeMs: start.timeMs, lineNumber: start.lineNumber, markerLineNumbers: corroborating };
     });
-    markers.filter((item) => item.kind === "power_off").forEach((item) => events.push({ kind: "power_off", localAt: item.localAt, timeMs: item.timeMs, lineNumber: item.lineNumber, markerLineNumbers: [] }));
+    markers.filter((item) => item.kind === "power_off").forEach((item) => events.push({ kind: "power_off", localAt: item.localAt, timeMs: item.timeMs, lineNumber: item.lineNumber, markerLineNumbers: [], method: item.method }));
     const unique = new Map();
     for (const event of events) {
       const key = `${event.kind === "power_off" ? "power_off" : "start"}|${event.localAt}`;
@@ -109,7 +150,7 @@
     return [...unique.values()].sort((a, b) => b.timeMs - a.timeMs || a.kind.localeCompare(b.kind));
   }
 
-  const api = Object.freeze({ RULE_VERSION, parseEventLine, isHuaweiTeLogPrefix, scanText, scanFile, deriveEvents });
+  const api = Object.freeze({ RULE_VERSION, TE20_RULE_VERSION, parseEventLine, isHuaweiTeLogPrefix, scanText, scanFile, deriveEvents });
   if (typeof module === "object" && module.exports) module.exports = api;
   global.MVP_HUAWEI_TE_LOG_EVENTS = api;
 })(typeof window !== "undefined" ? window : globalThis);

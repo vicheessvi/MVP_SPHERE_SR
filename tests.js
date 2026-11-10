@@ -2390,6 +2390,92 @@
     assertEqual(teLogEvents.deriveEvents((await teLogEvents.scanFile(file)).markers).length, 3);
   });
 
+  test("Длинная пауза перед запуском остаётся лишь кандидатом отключения питания", () => {
+    const header = "<?xml version='1.0'?><LogModule>\n";
+    const activity = (time) => `[Debug][Main] ${time} LOG_MOD_AUDIO 9 Synthetic activity\n`;
+    const boot = "[Debug][Main] 2026-01-01 10:06:00 LOG_MOD_MC 10 Synthetic System start: boot time\n";
+    const scanned = teLogEvents.scanText(header + activity("2026-01-01 09:00:00") + activity("2026-01-01 09:01:00") + activity("2026-01-01 10:05:00") + boot);
+    assert(scanned.ok);
+    assertEqual(scanned.bootGaps.length, 1);
+    assertEqual(scanned.bootGaps[0].gapSeconds, 64 * 60);
+    assertEqual(scanned.bootGaps[0].knownAction, false);
+    const withOff = teLogEvents.scanText(header + activity("2026-01-01 09:00:00") + "[Debug][Main] 2026-01-01 09:01:00 LOG_MOD_BSP 11 Terminal powered off\n" + activity("2026-01-01 10:05:00") + boot);
+    assertEqual(withOff.bootGaps[0].knownAction, true);
+    const withClockJump = teLogEvents.scanText(header + activity("2025-01-01 09:00:00") + activity("2026-01-01 10:05:00") + boot);
+    assertEqual(withClockJump.bootGaps[0].clockAnomalyOrLongGap, true);
+  });
+
+  test("Предполагаемое отключение питания отделено от подтверждённых событий и зависит от порога", () => {
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [{ id: "te40-gap", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE40", ipNormalized: "192.0.2.40", inCurrentSr: true }];
+    const header = "<?xml version='1.0'?><LogModule>\n";
+    const activity = (time) => `[Debug][Main] ${time} LOG_MOD_AUDIO 9 Synthetic activity\n`;
+    const boot = "[Debug][Main] 2026-01-01 10:06:00 LOG_MOD_MC 10 Synthetic System start: boot time\n";
+    const row = (path) => ({ path, ip: "192.0.2.40", format: "Huawei TE XML", matchStatus: "Сопоставлено", deviceId: "te40-gap" });
+    const scan = teLogEvents.scanText(header + activity("2026-01-01 09:01:00") + activity("2026-01-01 10:05:00") + boot);
+    const index = api.buildHuaweiTeLogEventIndex([{ row: row("first.xml"), scan }, { row: row("second.xml"), scan }], state);
+    const result = api.getHuaweiTeLogAnalytics(index, state, { period: "all", logSilenceMinutes: "60" });
+    assertEqual(result.groups.suspected_power_loss.count, 1);
+    assertEqual(result.groups.suspected_power_loss.events[0].confidence, "low");
+    assertEqual(result.groups.confirmed_reboot.count, 0);
+    assertEqual(result.groups.power_off.count, 0);
+    assertEqual(api.getHuaweiTeLogAnalytics(index, state, { period: "all", logSilenceMinutes: "120" }).groups.unknown_start.count, 1);
+    assertEqual(api.getHuaweiTeLogAnalytics(index, state, { period: "all", logSilenceMinutes: "120" }).groups.suspected_power_loss.count, 0);
+    const withOff = teLogEvents.scanText(header + "[Debug][Main] 2026-01-01 09:01:00 LOG_MOD_BSP 11 Terminal powered off\n" + activity("2026-01-01 10:05:00") + boot);
+    const offIndex = api.buildHuaweiTeLogEventIndex([{ row: row("off.xml"), scan: withOff }], state);
+    assertEqual(api.getHuaweiTeLogAnalytics(offIndex, state, { period: "all" }).groups.suspected_power_loss.count, 0);
+    const noBoot = api.buildHuaweiTeLogEventIndex([{ row: row("idle.xml"), scan: teLogEvents.scanText(header + activity("2026-01-01 09:01:00") + activity("2026-01-01 10:05:00")) }], state);
+    assertEqual(api.getHuaweiTeLogAnalytics(noBoot, state, { period: "all" }).groups.suspected_power_loss.count, 0);
+  });
+
+  test("TE20 имеет отдельную схему строк и не объявляет загрузку перезагрузкой", async () => {
+    const log = [
+      "<?xml version='1.0' encoding='UTF-8'?>", "<LogModule>",
+      "[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_MC 101 2048[A:111 B:222] Synthetic:System is boot successful",
+      "[Info][Main] 2026-01-01 09:59:00 LOG_MOD_MC 102 2048[A:111 B:222] User command: reboot terminal",
+      "[Debug][Main] 2026-01-02 12:00:00 LOG_MOD_MC 103 2048[A:111 B:222] Synthetic:System is boot successful",
+      "</LogModule>"
+    ].join("\n");
+    const scanned = teLogEvents.scanText(log, { model: "te20" });
+    assert(scanned.ok);
+    assertEqual(scanned.markers.length, 2);
+    assertEqual(teLogEvents.deriveEvents(scanned.markers).filter((item) => item.kind === "unknown_start").length, 2);
+    assertEqual(teLogEvents.deriveEvents(scanned.markers).filter((item) => item.kind === "confirmed_reboot").length, 0);
+    assertEqual(teLogEvents.scanText(log).markers.length, 0);
+    const file = new Blob([log]);
+    assertEqual((await teLogEvents.scanFile(file, { model: "te20" })).markers.length, 2);
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [{ id: "te20-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE20", ipNormalized: "192.0.2.20", inCurrentSr: true }];
+    const index = api.buildHuaweiTeLogEventIndex([{ row: { path: "run/192.0.2.20.xml", ip: "192.0.2.20", format: "Huawei TE XML", matchStatus: "Сопоставлено", deviceId: "te20-test" }, scan: scanned }], state);
+    assertEqual(index.coverage.te20Files, 1);
+    assertEqual(index.coverage.confirmedReboots, 0);
+    assertEqual(index.coverage.powerOffs, 0);
+    assertEqual(index.coverage.unknownStarts, 2);
+    assertEqual(index.events[0].ruleVersion, teLogEvents.TE20_RULE_VERSION);
+    const confirmedLog = log.replace("[Info][Main] 2026-01-01 09:59:00 LOG_MOD_MC 102 2048[A:111 B:222] User command: reboot terminal", "[Info][Main] 2026-01-01 09:59:32 LOG_MOD_WEB 102 2048[A:111 B:222] Web user reboots terminal");
+    const confirmed = teLogEvents.deriveEvents(teLogEvents.scanText(confirmedLog, { model: "te20" }).markers);
+    assertEqual(confirmed.filter((item) => item.kind === "confirmed_reboot").length, 1);
+    assertEqual(confirmed.filter((item) => item.kind === "unknown_start").length, 1);
+    assertEqual(confirmed.filter((item) => item.kind === "power_off").length, 0);
+    const shutDown = "[Info][Main] 2026-01-03 11:58:00 LOG_MOD_WEB 104 2048[A:111 B:222] Web user shut down terminal";
+    const powerOn = "[Debug][Main] 2026-01-03 12:00:00 LOG_MOD_MC 105 2048[A:111 B:222] Synthetic:System is boot successful";
+    const offline = "[Info][Main] 2026-01-03 11:59:00 LOG_MOD_WEB 106 2048[A:111 B:222] Terminal OFFLINE";
+    const powerCycle = confirmedLog.replace("</LogModule>", `${shutDown}\n${offline}\n${powerOn}\n</LogModule>`);
+    const powerEvents = teLogEvents.deriveEvents(teLogEvents.scanText(powerCycle, { model: "te20" }).markers);
+    assertEqual(powerEvents.filter((item) => item.kind === "power_off").length, 1);
+    assertEqual(powerEvents.filter((item) => item.kind === "confirmed_reboot").length, 1);
+    assertEqual(powerEvents.filter((item) => item.kind === "unknown_start").length, 2);
+    const remoteShut = "[Info][Main] 2026-01-04 11:58:34 LOG_MOD_RC 107 2048[A:111 B:222] User shut down terminal via remote";
+    const remoteBoot = "[Debug][Main] 2026-01-04 12:00:00 LOG_MOD_MC 108 2048[A:111 B:222] Synthetic:System is boot successful";
+    const remoteLog = powerCycle.replace("</LogModule>", `${remoteShut}\n${remoteBoot}\n</LogModule>`);
+    const remoteEvents = teLogEvents.deriveEvents(teLogEvents.scanText(remoteLog, { model: "te20" }).markers);
+    assertEqual(remoteEvents.filter((item) => item.kind === "power_off").length, 2);
+    assert(remoteEvents.some((item) => item.kind === "power_off" && item.method === "remote_control"));
+    assertEqual(remoteEvents.filter((item) => item.kind === "confirmed_reboot").length, 1);
+  });
+
   test("Импорт логов Huawei TE не смешивает IP и не удваивает события повторных выгрузок", () => {
     const state = api.createDemoState();
     state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
