@@ -77,29 +77,22 @@ def validate_power_changes(plan: dict[str, Any], requested_tasks: list[str]) -> 
 
 
 def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: list[str]) -> None:
-    family_answer = TE_FAMILY_ANSWER_TASKS.intersection(requested_tasks)
-    if family_answer:
+    answer_tasks = (TE20_ANSWER_TASKS | TE_FAMILY_ANSWER_TASKS | HUAWEI_310_ANSWER_TASKS).intersection(requested_tasks)
+    if answer_tasks:
         selection = plan.get("selection") or {}
         devices = plan.get("devices") or []
         digest = str(plan.get("targetSourceSha256") or "").casefold()
-        if (len(family_answer) != 1 or len(requested_tasks) != 1 or plan.get("targetSource") != "sr"
+        mode = selection.get("mode") if isinstance(selection, dict) else None
+        ips = [normalize_ipv4(device.get("ipNormalized") or device.get("ip")) if isinstance(device, dict) else None for device in devices] if isinstance(devices, list) else []
+        if (len(answer_tasks) != 1 or len(requested_tasks) != 1 or plan.get("targetSource") != "sr"
                 or not re.fullmatch(r"[0-9a-f]{64}", digest) or not isinstance(selection, dict)
-                or selection.get("mode") != "single_ip" or not isinstance(devices, list) or len(devices) != 1
-                or not isinstance(devices[0], dict)
-                or not resolve_management_action(devices[0], next(iter(family_answer))).get("supported")):
-            raise PollingError("TE family Answer Mode requires one exact SR target selected by IP")
-    answer_310 = HUAWEI_310_ANSWER_TASKS.intersection(requested_tasks)
-    if answer_310:
-        selection = plan.get("selection") or {}
-        devices = plan.get("devices") or []
-        digest = str(plan.get("targetSourceSha256") or "").casefold()
-        if (len(answer_310) != 1 or len(requested_tasks) != 1 or plan.get("targetSource") != "sr"
-                or not re.fullmatch(r"[0-9a-f]{64}", digest) or not isinstance(selection, dict)
-                or selection.get("mode") != "single_ip" or not isinstance(devices, list) or len(devices) != 1
-                or not isinstance(devices[0], dict)
-                or not resolve_management_action(devices[0], next(iter(answer_310))).get("supported")):
-            raise PollingError("Huawei 310 Answer Mode requires one exact SR target selected by IP")
-    answer = TE20_ANSWER_TASKS.intersection(requested_tasks)
+                or mode not in {"single_ip", "filters"} or not isinstance(devices, list) or not devices
+                or plan.get("ntpChanges") is not None or plan.get("powerChanges") is not None
+                or (mode == "single_ip" and len(devices) != 1)
+                or any(ip is None for ip in ips) or len(set(ips)) != len(ips)
+                or any(not isinstance(device, dict) or not resolve_management_action(device, next(iter(answer_tasks))).get("supported") for device in devices)):
+            raise PollingError("Answer Mode requires exact compatible devices from the current SR")
+        return
     port = TE20_PORT_TASKS.intersection(requested_tasks)
     auto_update = TE20_AUTO_UPDATE_TASK in requested_tasks
     ssh = TE20_SSH_TASKS.intersection(requested_tasks)
@@ -107,9 +100,9 @@ def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: lis
     power = TE20_POWER_TASK in requested_tasks
     validate_ntp_changes(plan, requested_tasks)
     validate_power_changes(plan, requested_tasks)
-    if not answer and not port and not auto_update and not ssh and not ntp and not power:
+    if not port and not auto_update and not ssh and not ntp and not power:
         return
-    if (len(answer) > 1 or len(ssh) > 1 or ((answer or auto_update or ssh or ntp or power) and len(requested_tasks) != 1)
+    if (len(ssh) > 1 or ((auto_update or ssh or ntp or power) and len(requested_tasks) != 1)
             or len(TE20_HTTP_TASKS.intersection(port)) > 1
             or len(TE20_TELNET_TASKS.intersection(port)) > 1
             or (port and any(task not in TE20_PORT_TASKS for task in requested_tasks))):

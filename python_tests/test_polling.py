@@ -28,7 +28,7 @@ class PollingTests(unittest.TestCase):
         )
         self.assertEqual(observed, [True])
         self.assertEqual(result[0]["logCollection"]["status"], "saved")
-    def test_te_family_answer_mode_requires_one_exact_sr_ip_and_no_other_write(self) -> None:
+    def test_te_family_answer_mode_accepts_compatible_sr_filters_only(self) -> None:
         from mvp_runtime.polling import validate_te20_single_target_tasks
         for model in ("TE30", "TE40", "TE50", "TE60"):
             task = "set_te_family_auto_answer_automatic"
@@ -36,12 +36,15 @@ class PollingTests(unittest.TestCase):
                     "managementTasks": [task], "targetSource": "sr", "targetSourceSha256": "a" * 64,
                     "selection": {"mode": "single_ip"}}
             validate_te20_single_target_tasks(plan, [task])
-            for invalid in ({**plan, "selection": {"mode": "filters"}},
+            bulk = {**plan, "selection": {"mode": "filters"}, "devices": [plan["devices"][0], {**plan["devices"][0], "ip": "192.0.2.41"}]}
+            validate_te20_single_target_tasks(bulk, [task])
+            for invalid in ({**plan, "selection": {"mode": "filters"}, "devices": [plan["devices"][0], {**plan["devices"][0], "model": "TE20", "ip": "192.0.2.41"}]},
+                            {**plan, "selection": {"mode": "filters"}, "devices": [plan["devices"][0], {**plan["devices"][0], "ip": "192.0.2.41"}], "ntpChanges": {"enabled": True}},
                             {**plan, "managementTasks": [task, "disable_insecure_management_services"]},
                             {**plan, "devices": [{**plan["devices"][0], "model": "TE20"}]}):
                 with self.assertRaises(PollingError):
                     validate_te20_single_target_tasks(invalid, invalid["managementTasks"])
-    def test_huawei_310_answer_mode_requires_one_exact_sr_ip_and_no_other_write(self) -> None:
+    def test_huawei_310_answer_mode_accepts_compatible_sr_filters_only(self) -> None:
         from mvp_runtime.polling import validate_te20_single_target_tasks
         for model in ("Bar 310", "Box 310", "Box 610"):
             for task in ("set_huawei_310_auto_answer_automatic", "set_huawei_310_auto_answer_manual"):
@@ -49,7 +52,9 @@ class PollingTests(unittest.TestCase):
                         "managementTasks": [task], "targetSource": "sr", "targetSourceSha256": "a" * 64,
                         "selection": {"mode": "single_ip"}}
                 validate_te20_single_target_tasks(plan, [task])
-                for invalid in ({**plan, "selection": {"mode": "filters"}},
+                bulk = {**plan, "selection": {"mode": "filters"}, "devices": [plan["devices"][0], {**plan["devices"][0], "ip": "192.0.2.32"}]}
+                validate_te20_single_target_tasks(bulk, [task])
+                for invalid in ({**plan, "selection": {"mode": "filters"}, "devices": [plan["devices"][0], {**plan["devices"][0], "model": "TE40", "ip": "192.0.2.32"}]},
                                 {**plan, "managementTasks": [task, "disable_insecure_management_services"]},
                                 {**plan, "devices": [{**plan["devices"][0], "model": "Box 610-S"}]}):
                     with self.assertRaises(PollingError):
@@ -149,10 +154,9 @@ class PollingTests(unittest.TestCase):
         self.assertTrue(results[0]["ok"])
         self.assertEqual(seen, [["set_te20_http_open", "set_te20_telnet_closed"]])
 
-    def test_te20_auto_answer_action_requires_one_exact_sr_ip_target(self) -> None:
+    def test_te20_auto_answer_action_accepts_compatible_sr_filters(self) -> None:
         plan = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "managementTasks": ["set_te20_auto_answer_automatic"], "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": {"mode": "single_ip"}}
         for invalid in (
-            {**plan, "selection": {"mode": "filters"}},
             {**plan, "targetSource": "port_closure_list"},
             {**plan, "devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}, {**HUAWEI_TE20, "ip": "192.0.2.21"}]},
             {**plan, "devices": [{**HUAWEI_MODELS[0], "ip": "192.0.2.20"}]},
@@ -166,12 +170,36 @@ class PollingTests(unittest.TestCase):
                                  "adapters": {"huawei_te20_web_cgi_v1": lambda _device, _credentials, options: seen.append(options["management_tasks"]) or {"ok": True}}})
         self.assertEqual(seen, [["set_te20_auto_answer_automatic"]])
         self.assertTrue(result[0]["ok"])
+        bulk_plan = {**plan, "selection": {"mode": "filters"}, "devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}, {**HUAWEI_TE20, "ip": "192.0.2.21"}], "intervalMinSeconds": 0, "intervalMaxSeconds": 1}
+        bulk_result = run_plan(bulk_plan, {"ping": lambda *_args: {"ok": True, "durationMs": 1}, "get_credentials": lambda *_args: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "wait": lambda *_args: None,
+                                             "adapters": {"huawei_te20_web_cgi_v1": lambda _device, _credentials, options: seen.append(options["management_tasks"]) or {"ok": True}}})
+        self.assertEqual(len(bulk_result), 2)
+        self.assertEqual(seen[-2:], [["set_te20_auto_answer_automatic"], ["set_te20_auto_answer_automatic"]])
         manual_plan = {**plan, "managementTasks": ["set_te20_auto_answer_manual"]}
         manual_result = run_plan(manual_plan, {"ping": lambda *_args: {"ok": True, "durationMs": 1},
                                              "get_credentials": lambda *_args: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
                                              "adapters": {"huawei_te20_web_cgi_v1": lambda _device, _credentials, options: seen.append(options["management_tasks"]) or {"ok": True}}})
         self.assertEqual(seen[-1], ["set_te20_auto_answer_manual"])
         self.assertTrue(manual_result[0]["ok"])
+
+    def test_bulk_answer_mode_keeps_device_results_separate_after_one_failure(self) -> None:
+        attempts = []
+        plan = {"devices": [{**HUAWEI_BAR310, "ip": "192.0.2.31"}, {**HUAWEI_BOX310, "ip": "192.0.2.32"}],
+                "managementTasks": ["set_huawei_310_auto_answer_manual"], "targetSource": "sr",
+                "targetSourceSha256": "a" * 64, "selection": {"mode": "filters"},
+                "intervalMinSeconds": 0, "intervalMaxSeconds": 1}
+        def adapter(device, _credentials, options):
+            attempts.append(device["ip"])
+            if device["ip"] == "192.0.2.31":
+                return {"ok": False, "failedStage": "management_action", "safeError": "synthetic_failure",
+                        "managementActions": [{"id": options["management_tasks"][0], "status": "failed", "writeAttempted": True}]}
+            return {"ok": True, "managementActions": [{"id": options["management_tasks"][0], "status": "applied", "writeAttempted": True}]}
+        results = run_plan(plan, {"ping": lambda *_args: {"ok": True, "durationMs": 1},
+                                  "get_credentials": lambda *_args: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
+                                  "wait": lambda *_args: None, "adapters": {"huawei_310_rest_v1": adapter}})
+        self.assertEqual(attempts, ["192.0.2.31", "192.0.2.32"])
+        self.assertFalse(results[0]["ok"])
+        self.assertTrue(results[1]["ok"])
 
     def test_probe_requires_exact_ip_allowlist(self) -> None:
         with self.assertRaises(PollingError):

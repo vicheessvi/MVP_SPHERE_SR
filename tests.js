@@ -2257,7 +2257,7 @@
     }
   });
 
-  test("Включение автоответа TE20 создаёт только отдельный план одного IP", () => {
+  test("Автоответ TE20 допускает один IP и совместимую группу фильтров", () => {
     const state = api.createDemoState();
     state.inventoryDevices = [{ id: "te20-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE20", modelNormalized: "te20", ipNormalized: "192.0.2.20", inCurrentSr: true }];
     state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
@@ -2269,7 +2269,12 @@
     const manual = api.createPollingPlan(state, { ...input, te20AnswerMode: "manual" });
     assert(manual.ok, manual.errors?.join("; "));
     assertEqual(manual.plan.managementTasks.join(","), "set_te20_auto_answer_manual");
-    assert(!api.createPollingPlan(state, { ...input, mode: "filters" }).ok);
+    state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "te20-second", ipNormalized: "192.0.2.21" });
+    const bulk = api.createPollingPlan(state, { ...input, mode: "filters", ipAddress: "", categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], intervalMaxSeconds: 1 });
+    assert(bulk.ok, bulk.errors?.join("; "));
+    assertEqual(bulk.plan.deviceIds.length, 2);
+    state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "mixed-te40", modelRaw: "TE40", modelNormalized: "te40", ipNormalized: "192.0.2.22" });
+    assert(!api.createPollingPlan(state, { ...input, mode: "filters", ipAddress: "", categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], intervalMaxSeconds: 1 }).ok);
     assert(!api.createPollingPlan(state, { ...input, disableInsecureManagementServices: true }).ok);
     const wrong = api.createDemoState();
     wrong.inventoryDevices = [{ ...state.inventoryDevices[0], modelRaw: "TE40", modelNormalized: "te40" }];
@@ -2305,7 +2310,7 @@
     assert(!bad.deviceSettings?.fields?.wifi);
   });
 
-  test("Answer Mode TE30/TE40/TE50/TE60 требует один точный IP из SR", () => {
+  test("Answer Mode TE30/TE40/TE50/TE60 допускает совместимую группу SR", () => {
     for (const model of ["TE30", "TE40", "TE50", "TE60"]) {
       const state = api.createDemoState();
       state.inventoryDevices = [{ id: "te-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: model, modelNormalized: model.toLowerCase(), ipNormalized: "192.0.2.40", inCurrentSr: true }];
@@ -2318,11 +2323,16 @@
         assertEqual(result.plan.managementTasks.join(","), `set_te_family_auto_answer_${mode}`);
       }
       assert(!api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "automatic", disableInsecureManagementServices: true }).ok);
-      assert(!api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "automatic", mode: "filters" }).ok);
+      state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "te-second", ipNormalized: "192.0.2.41" });
+      const bulk = api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "automatic", mode: "filters", ipAddress: "", categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], intervalMaxSeconds: 1 });
+      assert(bulk.ok, bulk.errors?.join("; "));
+      assertEqual(bulk.plan.deviceIds.length, 2);
+      state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "mixed-te20", modelRaw: "TE20", modelNormalized: "te20", ipNormalized: "192.0.2.42" });
+      assert(!api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "automatic", mode: "filters", ipAddress: "", categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], intervalMaxSeconds: 1 }).ok);
     }
   });
 
-  test("Answer Mode Bar 310/Box 310/Box 610 требует один точный IP из SR", () => {
+  test("Answer Mode Bar 310/Box 310/Box 610 допускает совместимую группу SR", () => {
     for (const model of ["Bar 310", "Box 310", "Box 610"]) {
       const state = api.createDemoState();
       state.inventoryDevices = [{ id: "310-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: model, modelNormalized: model.toLowerCase(), ipNormalized: "192.0.2.31", inCurrentSr: true }];
@@ -2333,7 +2343,13 @@
         const result = api.createPollingPlan(state, { ...base, huawei310AnswerMode: mode });
         assert(result.ok, result.errors?.join("; "));
         assertEqual(result.plan.managementTasks.join(","), `set_huawei_310_auto_answer_${mode}`);
-        assert(!api.createPollingPlan(state, { ...base, huawei310AnswerMode: mode, mode: "filters" }).ok);
+        state.inventoryDevices = [{ ...state.inventoryDevices[0] }, { ...state.inventoryDevices[0], id: "310-second", ipNormalized: "192.0.2.32" }];
+        const bulk = api.createPollingPlan(state, { ...base, huawei310AnswerMode: mode, mode: "filters", ipAddress: "", categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], intervalMaxSeconds: 1 });
+        assert(bulk.ok, bulk.errors?.join("; "));
+        assertEqual(bulk.plan.deviceIds.length, 2);
+        state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "mixed-te", modelRaw: "TE40", modelNormalized: "te40", ipNormalized: "192.0.2.33" });
+        assert(!api.createPollingPlan(state, { ...base, huawei310AnswerMode: mode, mode: "filters", ipAddress: "", categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], intervalMaxSeconds: 1 }).ok);
+        state.inventoryDevices = state.inventoryDevices.slice(0, 1);
         assert(!api.createPollingPlan(state, { ...base, huawei310AnswerMode: mode, disableInsecureManagementServices: true }).ok);
       }
       assert(!api.createPollingPlan(state, { ...base, huawei310AnswerMode: "invalid" }).ok);
