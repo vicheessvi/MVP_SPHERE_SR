@@ -36,6 +36,10 @@
     assert(plan.indexOf("if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm") < plan.indexOf("await startAutomaticPolling"));
     const change = source.slice(source.indexOf("async function handleChange"), source.indexOf("function handleInput"));
     assert(change.includes('event.target.name === "teFamilyAnswerMode"'));
+    assert(source.includes('name="huawei310AnswerMode"'));
+    assert(plan.includes('formData.get("huawei310AnswerMode")'));
+    assert(plan.includes('if (ui.pollingPlanSelection.huawei310AnswerMode && !global.confirm'));
+    assert(change.includes('event.target.name === "huawei310AnswerMode"'));
   });
 
   test("План показывает первичную настройку и вход, а пароль не сохраняется в state", () => {
@@ -360,7 +364,7 @@
     assertEqual(panel.transport, "extron_web_dynamic_resources_v1");
   });
 
-  test("Huawei TE20, TE-family, Bar 310 и Box-контракты используют отдельные transport", () => {
+  test("Huawei TE20, TE-family и Huawei 310 маршрутизируются по точным transport", () => {
     const supported = ["TE30", "TE40", "TE50", "TE60"].map((modelRaw) => api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw }));
     const te20 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE20" });
     const tx50 = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TX50" });
@@ -381,13 +385,13 @@
     bar310Aliases.forEach((item) => {
       assertEqual(item.support, "implemented");
       assertEqual(item.transport, "huawei_310_rest_v1");
-      assertEqual((item.managementTasks || []).join(","), "disable_insecure_management_services");
+      assertEqual((item.managementTasks || []).join(","), "disable_insecure_management_services,set_huawei_310_auto_answer_automatic,set_huawei_310_auto_answer_manual");
       assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === item.modelNormalized).length, 2);
     });
     [...box310Aliases, ...box610Aliases].forEach((item) => {
       assertEqual(item.support, "implemented");
       assertEqual(item.transport, "huawei_310_rest_v1");
-      assertEqual((item.managementTasks || []).join(","), "disable_insecure_management_services");
+      assertEqual((item.managementTasks || []).join(","), "disable_insecure_management_services,set_huawei_310_auto_answer_automatic,set_huawei_310_auto_answer_manual");
       assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === item.modelNormalized).length, 2);
     });
     assertEqual(tx50.support, "not_implemented");
@@ -2316,6 +2320,28 @@
       assert(!api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "automatic", disableInsecureManagementServices: true }).ok);
       assert(!api.createPollingPlan(state, { ...base, teFamilyAnswerMode: "automatic", mode: "filters" }).ok);
     }
+  });
+
+  test("Answer Mode Bar 310/Box 310/Box 610 требует один точный IP из SR", () => {
+    for (const model of ["Bar 310", "Box 310", "Box 610"]) {
+      const state = api.createDemoState();
+      state.inventoryDevices = [{ id: "310-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: model, modelNormalized: model.toLowerCase(), ipNormalized: "192.0.2.31", inCurrentSr: true }];
+      state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+      const base = { mode: "single_ip", ipAddress: "192.0.2.31", scheduledAt: "2026-11-10T12:00:00Z", intervalMinSeconds: 0, intervalMaxSeconds: 0, credentialsReady: true, credentialSourceSha256: "b".repeat(64) };
+      assertEqual(api.createPollingPlan(state, { ...base, huawei310AnswerMode: "" }).plan.managementTasks.length, 0);
+      for (const mode of ["automatic", "manual"]) {
+        const result = api.createPollingPlan(state, { ...base, huawei310AnswerMode: mode });
+        assert(result.ok, result.errors?.join("; "));
+        assertEqual(result.plan.managementTasks.join(","), `set_huawei_310_auto_answer_${mode}`);
+        assert(!api.createPollingPlan(state, { ...base, huawei310AnswerMode: mode, mode: "filters" }).ok);
+        assert(!api.createPollingPlan(state, { ...base, huawei310AnswerMode: mode, disableInsecureManagementServices: true }).ok);
+      }
+      assert(!api.createPollingPlan(state, { ...base, huawei310AnswerMode: "invalid" }).ok);
+    }
+    const wrong = api.createDemoState();
+    wrong.inventoryDevices = [{ id: "wrong", category: "vcs", manufacturerRaw: "Huawei", modelRaw: "Box 610-S", ipNormalized: "192.0.2.31", inCurrentSr: true }];
+    wrong.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    assert(!api.createPollingPlan(wrong, { mode: "single_ip", ipAddress: "192.0.2.31", scheduledAt: "2026-11-10T12:00:00Z", intervalMinSeconds: 0, intervalMaxSeconds: 0, credentialsReady: true, credentialSourceSha256: "b".repeat(64), huawei310AnswerMode: "manual" }).ok);
   });
 
   test("HTTP и Telnet TE20 имеют независимые открыть, закрыть и не менять", () => {

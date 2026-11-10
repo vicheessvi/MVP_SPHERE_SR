@@ -1,5 +1,11 @@
 # Карта контекста
 
+## Feature 046 — Answer mode Huawei Bar 310 / Box 310 / Box 610
+
+- Отдельный single-IP выбор «Не менять / Автоматически / Вручную»: `app.js`, `runtime/device-catalog.json`, повторные gates `mvp_runtime/polling.py` и `mvp_runtime/server.py`.
+- Guarded pre-read/one-write/post-read только `autoreply`: `mvp_runtime/adapters/huawei_bar310.py`; синтетические проверки в `python_tests/test_huawei_bar310.py`, `python_tests/test_polling.py`, `tests.js`.
+- На Bar 310 обе стороны проверены контролируемой записью и web-меню, исходный automatic восстановлен. Box 310/610 остаются provisional для write, несмотря на подтверждённые read-only опросы. Решение ADR-0048.
+
 ## Feature 045 — единый контракт Huawei 310
 
 - Exact Bar 310, Box 310 и Box 610 используют общий `huawei_310_rest_v1` / `huawei-310-rest-v1` при сохранении трёх модельных key и pre/post-auth identity gates: `mvp_runtime/adapters/huawei_bar310.py`, `mvp_runtime/polling.py`, `runtime/device-catalog.json`, `app.js`.

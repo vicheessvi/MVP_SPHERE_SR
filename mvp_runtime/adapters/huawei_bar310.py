@@ -29,6 +29,7 @@ BAR310_CONTRACT = {
     "evidence_label": "Huawei Bar 310 pre-auth model and v1 resource markers found",
     "management_action": "disable_insecure_management_services",
     "management_validation_status": "confirmed_local_validation",
+    "answer_mode_validation_status": "confirmed_local_validation",
     "settings_read_profile": "bar310_confirmed",
 }
 MAIN_BUNDLE_PATTERN = re.compile(r"^/static/js/main\.[A-Za-z0-9._~-]{1,120}\.chunk\.js$")
@@ -54,6 +55,10 @@ BUNDLE_MARKERS = (
 )
 
 DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
+HUAWEI_310_ANSWER_ACTIONS = {
+    "set_huawei_310_auto_answer_automatic": 1,
+    "set_huawei_310_auto_answer_manual": 0,
+}
 HTTP_ONLY_MANAGEMENT_CONTRACT_IDS = frozenset({FAMILY_CONTRACT_ID})
 MANAGEMENT_BUNDLE_MARKERS = (
     'reqGetCfgUrl="/v1/om/config"',
@@ -467,6 +472,60 @@ def _read_310_settings(
     return settings
 
 
+def _set_huawei_310_answer_mode(
+    action_id: str,
+    bundle_text: str,
+    json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
+    settle: Callable[[], Any],
+    validation_status: str,
+) -> dict[str, Any]:
+    if action_id not in HUAWEI_310_ANSWER_ACTIONS:
+        raise ValueError("unsupported_answer_action")
+    target = HUAWEI_310_ANSWER_ACTIONS[action_id]
+    base = {"id": action_id, "transport": "https/443", "changed": False,
+            "writeAttempted": False, "validationStatus": validation_status}
+    required = (BAR310_READ_CONFIG_MARKER, 'reqSaveCfgUrl="/v1/om/config"',
+                'CfgIDString:["autoreply"', 'CfgItemID:"autoreply"')
+    if not all(marker in bundle_text for marker in required):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+
+    def read_value() -> int:
+        outer, data = json_request("POST", MANAGEMENT_CONFIG_PATH, {"CfgIDString": ["autoreply"]}, True)
+        if outer.get("success") != 1:
+            raise Bar310ContractError("configuration_read_failed")
+        value = data.get("autoreply") if isinstance(data, dict) else None
+        if type(value) is not int or value not in (0, 1):
+            raise Bar310ContractError("configuration_schema_unconfirmed")
+        return value
+
+    before = None
+    attempted = False
+    label = lambda value: "automatic" if value == 1 else "manual"
+    try:
+        before = read_value()
+        if before == target:
+            return {**base, "status": "already_compliant", "before": label(before), "after": label(target)}
+        attempted = True
+        outer, _ = json_request("PUT", MANAGEMENT_CONFIG_PATH, {
+            "CfgItemInt": [{"CfgItemID": "autoreply", "CfgItemInfo": target}],
+            "CfgItemString": [],
+        }, True)
+        if outer.get("success") != 1:
+            raise Bar310ContractError("configuration_write_failed")
+        settle()
+        after = read_value()
+        if after != target:
+            raise Bar310ContractError("configuration_verification_failed")
+        return {**base, "status": "applied", "changed": True, "writeAttempted": True,
+                "before": label(before), "after": label(after)}
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        code = error.code if isinstance(error, Bar310ContractError) else _transport_code(error)
+        return {**base, "status": "failed", "writeAttempted": attempted, "safeError": code,
+                **({} if before is None else {"before": label(before)})}
+
+
 def _disable_insecure_management_services(
     bundle_text: str,
     json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
@@ -637,6 +696,9 @@ def poll_huawei_310_family_device(
     }
     if contract_id != FAMILY_CONTRACT_ID or contract_model not in {"Bar 310", "Box 310", "Box 610"} or not plan_models or not ip or _planned_model(device) not in plan_models:
         return {**base, "failedStage": "validation", "safeError": "invalid_or_unsupported_target"}
+    answer_tasks = [item for item in requested_management_tasks if item in HUAWEI_310_ANSWER_ACTIONS]
+    if answer_tasks and (len(answer_tasks) != 1 or len(requested_management_tasks) != 1):
+        return {**base, "failedStage": "validation", "safeError": "management_task_conflict"}
     pool = credentials if isinstance(credentials, list) else [credentials]
     pool = [item for item in pool if isinstance(item, dict) and item.get("username") and item.get("password")]
     if not pool:
@@ -824,15 +886,18 @@ def poll_huawei_310_family_device(
         and DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks
     ):
         management_actions.append(_disable_insecure_management_services(bundle_text, json_request, settle, str(contract.get("management_validation_status") or "provisional_user_validation")))
-    verified_action = next((item for item in management_actions if item.get("status") in {"applied", "already_compliant"}), None)
+    if answer_tasks:
+        management_actions.append(_set_huawei_310_answer_mode(answer_tasks[0], bundle_text, json_request, settle,
+                                str(contract.get("answer_mode_validation_status") or "provisional_user_validation")))
+    verified_http_action = next((item for item in management_actions if item.get("id") == DISABLE_INSECURE_SERVICES_ACTION and item.get("status") in {"applied", "already_compliant"}), None)
     if profile_for_model and settings_profile == profile_for_model:
-        device_settings = _read_310_settings(contract_model, bundle_text, json_request, skip_http=bool(verified_action), validation_status="confirmed_user_validation" if confirmed_box_settings else None)
-    elif verified_action:
+        device_settings = _read_310_settings(contract_model, bundle_text, json_request, skip_http=bool(verified_http_action), validation_status="confirmed_user_validation" if confirmed_box_settings else None)
+    elif verified_http_action:
         device_settings = unknown_device_settings(contract_model, not_exposed=("telnet", "snmpV2", "autoUpdate"))
     else:
         device_settings = _read_device_settings(contract_model, bundle_text, json_request)
-    if verified_action:
-        device_settings["fields"]["http"] = {"status": "read", "value": verified_action["after"]["httpPort80"], "source": "managementActions.after.httpPort80"}
+    if verified_http_action:
+        device_settings["fields"]["http"] = {"status": "read", "value": verified_http_action["after"]["httpPort80"], "source": "managementActions.after.httpPort80"}
     result = {
         **base,
         "ok": True,

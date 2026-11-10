@@ -30,6 +30,7 @@ MAIN_BUNDLE = " ".join([
     "enable_http",
 ])
 FULL_SETTINGS_BUNDLE = MAIN_BUNDLE + ' reqGetCfgUrl="/v1/om/config" CfgIDString:["sitename"] CfgIDString:["autoreply" "synSerTime","ntpServerAddr","ntpGetMode" CfgIDString:["PSWD0","SSID" CfgIDString:["enabletelnet","enable_ssh" CfgIDString:["suppotReboot","sleepTime"'
+ANSWER_WRITE_BUNDLE = FULL_SETTINGS_BUNDLE + ' reqSaveCfgUrl="/v1/om/config" CfgItemID:"autoreply"'
 SERVER_AUDIT_BUNDLE = MAIN_BUNDLE + ' reqTMSorEsightParamUrl="/v1/om/config/service" get("v1/om/config/auto-config" UI_CLOUDTYPE_MANUAL:255 UI_CLOUDTYPE_SMC3:0 UI_CLOUDTYPE_SMC:3'
 SYNTHETIC_SETTINGS = {
     "sitename": "Synthetic site", "autoreply": 1, "synSerTime": 1, "ntpGetMode": 1,
@@ -112,6 +113,7 @@ class HuaweiBar310Tests(unittest.TestCase):
         logout_error=None,
         http_value=1,
         verify_http_value=0,
+        verify_answer_value=None,
         configuration_values=None,
         service_type=-1,
         auto_service_type=-1,
@@ -154,7 +156,16 @@ class HuaweiBar310Tests(unittest.TestCase):
                 raise AssertionError("Unconfirmed configuration field requested")
             if path == "/v1/om/config" and options["method"] == "PUT":
                 payload = json.loads(options["body"])
-                configuration["enable_http"] = verify_http_value
+                items = payload.get("CfgItemInt")
+                if (not isinstance(items, list) or len(items) != 1 or payload.get("CfgItemString") != []
+                        or set(items[0]) != {"CfgItemID", "CfgItemInfo"}):
+                    raise AssertionError("Only one confirmed configuration item may be written")
+                if items[0]["CfgItemID"] == "enable_http":
+                    configuration["enable_http"] = verify_http_value
+                elif items[0]["CfgItemID"] == "autoreply":
+                    configuration["autoreply"] = items[0]["CfgItemInfo"] if verify_answer_value is None else verify_answer_value
+                else:
+                    raise AssertionError("Unsupported configuration write")
                 return envelope({})
             if path == "/v1/login/session" and options["method"] == "DELETE":
                 if logout_error:
@@ -319,6 +330,58 @@ class HuaweiBar310Tests(unittest.TestCase):
         self.assertEqual(fields["ssh"]["status"], "unavailable")
         self.assertEqual(fields["ntp"]["status"], "unavailable")
         self.assertEqual(fields["powerManagement"]["status"], "unavailable")
+
+    def test_huawei_310_answer_mode_uses_one_minimal_write_and_post_read(self):
+        bundle = {"status_code": 200, "headers": [], "body": ANSWER_WRITE_BUNDLE}
+        for model, poller, validation in (("Bar 310", poll_huawei_bar310_device, "confirmed_local_validation"),
+                                          ("Box 310", poll_huawei_box310_device, "provisional_user_validation"),
+                                          ("Box 610", poll_huawei_box610_device, "provisional_user_validation")):
+            for action_id, initial, expected in (("set_huawei_310_auto_answer_manual", 1, "manual"),
+                                                 ("set_huawei_310_auto_answer_automatic", 0, "automatic")):
+                calls = []
+                result = poller(
+                    {"ip": "192.0.2.31", "model": model, "allowInsecureTls": True},
+                    [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+                    {"request": self.success_request(calls, model=model, overrides={"/static/js/main.synthetic.chunk.js": bundle}, configuration_values={**SYNTHETIC_SETTINGS, "autoreply": initial}),
+                     "management_tasks": [action_id], "management_settle": lambda: None},
+                )
+                self.assertTrue(result["ok"])
+                action = result["managementActions"][0]
+                self.assertEqual(action["id"], action_id)
+                self.assertEqual(action["status"], "applied")
+                self.assertEqual(action["after"], expected)
+                self.assertEqual(action["validationStatus"], validation)
+                writes = [call for call in calls if call["path"] == "/v1/om/config" and call["method"] == "PUT"]
+                self.assertEqual(len(writes), 1)
+                self.assertEqual(json.loads(writes[0]["body"]), {"CfgItemInt": [{"CfgItemID": "autoreply", "CfgItemInfo": 0 if expected == "manual" else 1}], "CfgItemString": []})
+                self.assertEqual(result["deviceSettings"]["fields"]["autoAnswer"]["value"], "disabled" if expected == "manual" else "enabled")
+                self.assertNotIn("GOOD-SYNTHETIC", json.dumps(result))
+
+    def test_huawei_310_answer_mode_is_idempotent_and_fails_closed(self):
+        bundle = {"status_code": 200, "headers": [], "body": ANSWER_WRITE_BUNDLE}
+        def run(overrides=None, initial=1, verify=None, tasks=None):
+            calls = []
+            result = poll_huawei_bar310_device(
+                {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+                [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+                {"request": self.success_request(calls, overrides=overrides or {"/static/js/main.synthetic.chunk.js": bundle}, configuration_values={**SYNTHETIC_SETTINGS, "autoreply": initial}, verify_answer_value=verify),
+                 "management_tasks": tasks or ["set_huawei_310_auto_answer_manual"], "management_settle": lambda: None},
+            )
+            return result, calls
+        already, calls = run(initial=0)
+        self.assertEqual(already["managementActions"][0]["status"], "already_compliant")
+        self.assertFalse(any(call["method"] == "PUT" for call in calls))
+        drift, calls = run(overrides={"/static/js/main.synthetic.chunk.js": {"status_code": 200, "headers": [], "body": ANSWER_WRITE_BUNDLE.replace('CfgItemID:"autoreply"', "missing-save-field")}})
+        self.assertFalse(drift["ok"])
+        self.assertEqual(drift["managementActions"][0]["safeError"], "management_contract_unconfirmed")
+        self.assertFalse(any(call["method"] == "PUT" for call in calls))
+        mismatch, calls = run(verify=1)
+        self.assertFalse(mismatch["ok"])
+        self.assertEqual(mismatch["managementActions"][0]["safeError"], "configuration_verification_failed")
+        self.assertEqual(len([call for call in calls if call["method"] == "PUT"]), 1)
+        conflict, calls = run(tasks=["set_huawei_310_auto_answer_manual", "disable_insecure_management_services"])
+        self.assertEqual(conflict["safeError"], "management_task_conflict")
+        self.assertFalse(calls)
 
     def test_bar310_reads_site_name_from_guarded_mailbox(self):
         calls = []

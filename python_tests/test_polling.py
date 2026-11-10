@@ -41,6 +41,19 @@ class PollingTests(unittest.TestCase):
                             {**plan, "devices": [{**plan["devices"][0], "model": "TE20"}]}):
                 with self.assertRaises(PollingError):
                     validate_te20_single_target_tasks(invalid, invalid["managementTasks"])
+    def test_huawei_310_answer_mode_requires_one_exact_sr_ip_and_no_other_write(self) -> None:
+        from mvp_runtime.polling import validate_te20_single_target_tasks
+        for model in ("Bar 310", "Box 310", "Box 610"):
+            for task in ("set_huawei_310_auto_answer_automatic", "set_huawei_310_auto_answer_manual"):
+                plan = {"devices": [{"category": "vcs", "manufacturer": "Huawei", "model": model, "ip": "192.0.2.31"}],
+                        "managementTasks": [task], "targetSource": "sr", "targetSourceSha256": "a" * 64,
+                        "selection": {"mode": "single_ip"}}
+                validate_te20_single_target_tasks(plan, [task])
+                for invalid in ({**plan, "selection": {"mode": "filters"}},
+                                {**plan, "managementTasks": [task, "disable_insecure_management_services"]},
+                                {**plan, "devices": [{**plan["devices"][0], "model": "Box 610-S"}]}):
+                    with self.assertRaises(PollingError):
+                        validate_te20_single_target_tasks(invalid, invalid["managementTasks"])
     def test_log_only_plan_is_allowed_but_both_outputs_off_rejected(self) -> None:
         base = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "collectJson": False, "collectLogs": True}
         seen = []

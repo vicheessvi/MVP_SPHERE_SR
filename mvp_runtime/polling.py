@@ -25,6 +25,7 @@ class PollingCancelled(PollingError):
 
 TE20_ANSWER_TASKS = frozenset({"set_te20_auto_answer_automatic", "set_te20_auto_answer_manual"})
 TE_FAMILY_ANSWER_TASKS = frozenset({"set_te_family_auto_answer_automatic", "set_te_family_auto_answer_manual"})
+HUAWEI_310_ANSWER_TASKS = frozenset({"set_huawei_310_auto_answer_automatic", "set_huawei_310_auto_answer_manual"})
 TE20_HTTP_TASKS = frozenset({"set_te20_http_open", "set_te20_http_closed"})
 TE20_TELNET_TASKS = frozenset({"set_te20_telnet_open", "set_te20_telnet_closed"})
 TE20_PORT_TASKS = TE20_HTTP_TASKS | TE20_TELNET_TASKS
@@ -87,6 +88,17 @@ def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: lis
                 or not isinstance(devices[0], dict)
                 or not resolve_management_action(devices[0], next(iter(family_answer))).get("supported")):
             raise PollingError("TE family Answer Mode requires one exact SR target selected by IP")
+    answer_310 = HUAWEI_310_ANSWER_TASKS.intersection(requested_tasks)
+    if answer_310:
+        selection = plan.get("selection") or {}
+        devices = plan.get("devices") or []
+        digest = str(plan.get("targetSourceSha256") or "").casefold()
+        if (len(answer_310) != 1 or len(requested_tasks) != 1 or plan.get("targetSource") != "sr"
+                or not re.fullmatch(r"[0-9a-f]{64}", digest) or not isinstance(selection, dict)
+                or selection.get("mode") != "single_ip" or not isinstance(devices, list) or len(devices) != 1
+                or not isinstance(devices[0], dict)
+                or not resolve_management_action(devices[0], next(iter(answer_310))).get("supported")):
+            raise PollingError("Huawei 310 Answer Mode requires one exact SR target selected by IP")
     answer = TE20_ANSWER_TASKS.intersection(requested_tasks)
     port = TE20_PORT_TASKS.intersection(requested_tasks)
     auto_update = TE20_AUTO_UPDATE_TASK in requested_tasks
