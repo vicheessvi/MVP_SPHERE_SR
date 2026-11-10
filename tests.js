@@ -20,6 +20,7 @@
   const api = global.MvpSphereSR;
   const runtimeModelCatalog = typeof require === "function" ? require("./runtime/model-catalog") : null;
   const pollingRecovery = typeof require === "function" ? require("./runtime/polling-recovery") : global.MVP_POLLING_RECOVERY;
+  const teLogEvents = typeof require === "function" ? require("./runtime/huawei-te-log-events") : global.MVP_HUAWEI_TE_LOG_EVENTS;
   const fixtures = global.MvpSphereSRFixtures;
   const timelineExpected = global.MvpSphereSRTimelineExpectations;
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
@@ -2347,7 +2348,7 @@
     ], state);
     assertEqual(rows.summary.files, 3);
     assertEqual(rows.summary.bytes, 10000109);
-    assertEqual(rows.rows[0].format, "TE20 XML");
+    assertEqual(rows.rows[0].format, "Huawei TE XML");
     assertEqual(rows.rows[0].matchStatus, "Сопоставлено");
     assertEqual(rows.rows[0].runFolder, "2026-11-05_12-00-00");
     assertEqual(rows.rows[1].format, "ZIP (без распаковки)");
@@ -2364,6 +2365,63 @@
     const recovery = pollingRecovery.create(api.buildPollingPlanExport(logsOnly.state, logsOnly.plan.id).payload, false, "2026-11-05T12:00:00Z");
     recovery.logFolderName = "2026-11-05_12-00-00";
     assertEqual(pollingRecovery.validate(recovery).plan.collectJson, false);
+  });
+
+  test("Лог Huawei TE различает подтверждённый reboot, выключение и неизвестный запуск", async () => {
+    const log = [
+      "<?xml version='1.0' encoding='UTF-8'?>", "<LogModule>",
+      "[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_MC 101 Synthetic System start: boot time",
+      "[Debug][Main] 2026-01-01 10:00:02 LOG_MOD_MC 102 Is normal terminal reboot",
+      "[Debug][Main] 2026-01-01 10:00:02 LOG_MOD_MC 103 Is normal terminal reboot",
+      "[Debug][Main] 2026-01-02 11:00:00 LOG_MOD_BSP 104 Terminal powered off",
+      "[Debug][Main] 2026-01-03 12:00:00 LOG_MOD_MC 105 Synthetic System start: boot time",
+      "[Debug][Main] 2026-01-03 12:00:00 LOG_MOD_RC 106 Terminal power status changed",
+      "bad <tag & invalid XML", "</LogModule>"
+    ].join("\n");
+    const scanned = teLogEvents.scanText(log);
+    assert(scanned.ok);
+    const events = teLogEvents.deriveEvents(scanned.markers);
+    assertEqual(events.filter((event) => event.kind === "confirmed_reboot").length, 1);
+    assertEqual(events.filter((event) => event.kind === "power_off").length, 1);
+    assertEqual(events.filter((event) => event.kind === "unknown_start").length, 1);
+    assertEqual(events.find((event) => event.kind === "confirmed_reboot").markerLineNumbers.length, 2);
+    assertEqual(teLogEvents.parseEventLine("[Debug][Main] 2026-02-30 10:00:00 LOG_MOD_MC 9 System start", 1), null);
+    const file = typeof Blob === "function" ? new Blob([log]) : { size: log.length, slice: (start, end) => ({ arrayBuffer: async () => new TextEncoder().encode(log.slice(start, end)).buffer }) };
+    assertEqual(teLogEvents.deriveEvents((await teLogEvents.scanFile(file)).markers).length, 3);
+  });
+
+  test("Импорт логов Huawei TE не смешивает IP и не удваивает события повторных выгрузок", () => {
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.locations = [{ id: "location-test", name: "Synthetic room", address: "Synthetic address" }];
+    state.inventoryDevices = [{ id: "te40-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "TE40", ipNormalized: "192.0.2.40", locationId: "location-test", inCurrentSr: true }];
+    const head = "<?xml version='1.0'?><LogModule>\n";
+    const start = "[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_MC 101 Synthetic System start: boot time\n";
+    const reboot = "[Debug][Main] 2026-01-01 10:00:02 LOG_MOD_MC 102 Is normal terminal reboot\n";
+    const off = "[Debug][Main] 2026-01-02 11:00:00 LOG_MOD_BSP 103 Terminal powered off\n";
+    const row = (path) => ({ path, ip: "192.0.2.40", format: "Huawei TE XML", matchStatus: "Сопоставлено", deviceId: "te40-test" });
+    const index = api.buildHuaweiTeLogEventIndex([
+      { row: row("run1/192.0.2.40.xml"), scan: teLogEvents.scanText(head + start + off) },
+      { row: row("run2/192.0.2.40.xml"), scan: teLogEvents.scanText(head + start + reboot + off) },
+      { row: { ...row("other.xml"), matchStatus: "Неоднозначный IP" }, scan: teLogEvents.scanText(head + start + reboot) }
+    ], state);
+    assertEqual(index.coverage.confirmedReboots, 1);
+    assertEqual(index.coverage.powerOffs, 1);
+    assertEqual(index.coverage.unknownStarts, 0);
+    assertEqual(index.coverage.ambiguousFiles, 1);
+    assertEqual(index.events.find((event) => event.kind === "confirmed_reboot").sources.length, 2);
+    const analysis = api.getHuaweiTeLogAnalytics(index, state, { period: "all", model: "TE40" });
+    assertEqual(analysis.groups.confirmed_reboot.count, 1);
+    assertEqual(analysis.groups.power_off.byDate[0].label, "2026-01-02");
+    assertEqual(analysis.groups.confirmed_reboot.topLocations[0].label, "Synthetic room");
+    assert(api.getHuaweiTeLogAnalytics(index, { ...state, srImports: [{ rawSha256: "b".repeat(64) }] }, { period: "all" }).stale);
+    assert(!JSON.stringify(index.events).includes("Synthetic System start"));
+    const repeated = teLogEvents.scanText(head + start + reboot + off);
+    const started = Date.now();
+    const bulk = api.buildHuaweiTeLogEventIndex(Array.from({ length: 1000 }, (_, number) => ({ row: row(`run-${number}/192.0.2.40.xml`), scan: repeated })), state);
+    assertEqual(bulk.coverage.confirmedReboots, 1);
+    assertEqual(bulk.coverage.powerOffs, 1);
+    assert(Date.now() - started < 2000, "Повторные выгрузки не должны замедлять дедупликацию");
   });
 
   test("Поток лога пишется в выбранную папку без JSON/base64", async () => {

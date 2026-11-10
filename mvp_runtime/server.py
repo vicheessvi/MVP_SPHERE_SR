@@ -38,6 +38,7 @@ PUBLIC_FILES = {
     "/vendor/xlsx.full.min.js": ("vendor/xlsx.full.min.js", "text/javascript; charset=utf-8"),
     "/runtime/credential-pool.js": ("runtime/credential-pool.js", "text/javascript; charset=utf-8"),
     "/runtime/polling-recovery.js": ("runtime/polling-recovery.js", "text/javascript; charset=utf-8"),
+    "/runtime/huawei-te-log-events.js": ("runtime/huawei-te-log-events.js", "text/javascript; charset=utf-8"),
     "/runtime/sphere.js": ("runtime/sphere.js", "text/javascript; charset=utf-8"),
 }
 JOB_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)$")
