@@ -162,7 +162,7 @@ class HuaweiBar310Tests(unittest.TestCase):
 
         return request
 
-    def test_bar310_server_type_audit_rule_is_separate_from_firmware_update(self):
+    def test_bar310_server_type_proves_update_capability_without_completed_update(self):
         bundle = {"status_code": 200, "headers": [], "body": SERVER_AUDIT_BUNDLE}
         for service_type, auto_service_type, expected in ((-1, -1, "disabled"), (255, -1, "disabled"), (3, -1, "enabled"), (0, -1, "enabled"), (-1, 3, "enabled"), (-1, 0, "enabled")):
             calls = []
@@ -175,6 +175,7 @@ class HuaweiBar310Tests(unittest.TestCase):
             field = result["deviceSettings"]["fields"]["autoUpdate"]
             self.assertEqual(field["value"], expected)
             self.assertEqual(field["basis"], "server_type_audit_rule")
+            self.assertEqual(field["meaning"], "firmware_update_capability")
             self.assertFalse(any(call["method"] == "PUT" for call in calls))
             self.assertNotIn("SYNTHETIC-INTERNAL", json.dumps(result))
         calls = []

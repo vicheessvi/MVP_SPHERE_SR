@@ -2169,6 +2169,7 @@
     assertEqual(projected.deviceSettings.fields.autoAnswer.value, "enabled");
     assertEqual(projected.deviceSettings.fields.autoUpdate.value, "disabled");
     assertEqual(projected.deviceSettings.fields.autoUpdate.basis, "server_type_audit_rule");
+    assertEqual(projected.deviceSettings.fields.autoUpdate.meaning, "firmware_update_capability");
     assertEqual(projected.deviceSettings.fields.ntp.value.mode, "manual");
     assertEqual(projected.deviceSettings.fields.wifi.value.preferredNetworkEnabled, false);
     assertEqual(projected.deviceSettings.fields.ssh.value, "enabled");

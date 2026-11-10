@@ -385,7 +385,7 @@ def _read_bar310_auto_update_audit(
     bundle_text: str,
     json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
 ) -> dict[str, Any]:
-    """User-defined server-type audit rule, not a firmware update switch."""
+    """Read firmware-update capability from administrator-confirmed server type."""
     unknown = {"status": "protocol_required", "value": None}
     if not all(marker in bundle_text for marker in BAR310_SERVER_AUDIT_MARKERS):
         return unknown
@@ -411,7 +411,8 @@ def _read_bar310_auto_update_audit(
         else:
             return {"status": "unavailable", "value": None}
         return {"status": "read", "value": value, "source": source,
-                "basis": "server_type_audit_rule", "ruleVersion": "bar310-server-type-audit-v1"}
+                "basis": "server_type_audit_rule", "ruleVersion": "bar310-server-type-audit-v1",
+                "meaning": "firmware_update_capability"}
     except Exception:
         return {"status": "unavailable", "value": None}
 
