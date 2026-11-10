@@ -1,12 +1,25 @@
 # Карта контекста
 
+## Feature 045 — единый контракт Huawei 310
+
+- Exact Bar 310, Box 310 и Box 610 используют общий `huawei_310_rest_v1` / `huawei-310-rest-v1` при сохранении трёх модельных key и pre/post-auth identity gates: `mvp_runtime/adapters/huawei_bar310.py`, `mvp_runtime/polling.py`, `runtime/device-catalog.json`, `app.js`.
+- Bar остаётся подтверждённым; новые настройки Box 310/610 — предварительными отдельно для каждой модели. Старые JSON не переписываются, model-key сохраняются; тесты: `python_tests/test_huawei_bar310.py`, `python_tests/test_huawei_box.py`, `python_tests/test_catalog.py`, `python_tests/test_polling.py`, `tests.js`.
+- Решение ADR-0047; реальные проверки обеих Box ожидаются от администратора.
+
+## Feature 044 — предварительные настройки exact Huawei Box 310/610
+
+- Требования, профиль и критерии проверки: `specs/044-box310-610-settings-read/`; решение ADR-0046.
+- Общий условный read-only профиль после разных exact model/identity gates: `mvp_runtime/adapters/huawei_bar310.py`, wrappers `huawei_box310.py` и `huawei_box610.py`.
+- Импорт сохраняет предварительные значения, но не выводит их как подтверждённые факты: `app.js`; синтетические тесты: `python_tests/test_huawei_bar310.py`, `tests.js`.
+- Реальная сверка отдельно на Box 310 и Box 610 ожидается от администратора; ни одна Box не наследует подтверждение другой.
+
 ## Feature 043 — фактические настройки exact Huawei Bar 310
 
 - Требования, read-form, модельные коды и границы неполных полей: `specs/043-bar310-settings-read/`.
-- Только `mvp_runtime/adapters/huawei_bar310.py` после exact pre/post-auth gates читает узкие config-ID для Site name, автоответа, NTP, Wi‑Fi, SSH и подтверждённых полей питания. Box 310/610 не наследуют эти запросы.
+- `mvp_runtime/adapters/huawei_bar310.py` после exact pre/post-auth gates читает узкие config-ID для Site name, автоответа, NTP, Wi‑Fi, SSH и питания. Bar подтверждён; Box 310/610 получают те же чтения условно с provisional-статусом по feature 044/045.
 - `app.js` допускает новые источники при импорте только для точного Bar 310; синтетические проверки: `python_tests/test_huawei_bar310.py`, `tests.js`.
 - На подключённом Bar 310 поэтапно сверены автоответ, NTP (включая точное имя сервера без его вывода), три переключателя Wi‑Fi, SSH, три видимых пункта питания, HTTP и точное Site name. Отдельные расписания включения/выключения и очистка памяти после перезагрузки на экране отсутствуют и остаются неподтверждёнными для иных прошивок. Сырые ответы, адрес и учётные данные не сохранялись в проекте.
-- `autoUpdate` exact Bar 310 — подтверждённая администратором возможность обновления прошивки по «Типу сервера»: «Вручную» → `disabled`, прочие доступные варианты (SMC/SMC2.0 на текущем устройстве) → `enabled`. В JSON и импорте обязательны стабильные `basis=server_type_audit_rule`, версия правила и `meaning=firmware_update_capability`. Текущий ручной режим подтверждён read-only опросом, включённая ветка — только синтетически. Значение не утверждает, что обновление уже происходило. Box не наследует правило; см. ADR-0045.
+- `autoUpdate` Bar 310 — подтверждённая администратором возможность обновления прошивки по «Типу сервера»: «Вручную» → `disabled`, прочие доступные варианты → `enabled`. В JSON обязательны `basis=server_type_audit_rule`, версия правила и `meaning=firmware_update_capability`. Текущий ручной режим проверен на Bar; Box 310/610 используют только предварительный вариант правила до отдельных проверок. Значение не утверждает, что обновление уже происходило; см. ADR-0045/0047.
 
 ## Feature 042 — аналитика событий логов Huawei TE
 

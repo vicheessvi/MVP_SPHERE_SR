@@ -269,7 +269,7 @@
       manufacturerNormalized: "huawei",
       modelNormalized,
       support: "implemented",
-      transport: "huawei_bar310_rest_v1",
+      transport: "huawei_310_rest_v1",
       normalizerKey: "huawei-bar310-json-v1",
       credentialMode: "memory_xlsx_pool",
       managementTasks: Object.freeze(["disable_insecure_management_services"])
@@ -280,7 +280,7 @@
       manufacturerNormalized: "huawei",
       modelNormalized,
       support: "implemented",
-      transport: "huawei_box310_rest_v1",
+      transport: "huawei_310_rest_v1",
       normalizerKey: "huawei-box310-json-v1",
       credentialMode: "memory_xlsx_pool",
       managementTasks: Object.freeze(["disable_insecure_management_services"])
@@ -291,7 +291,7 @@
       manufacturerNormalized: "huawei",
       modelNormalized,
       support: "implemented",
-      transport: "huawei_box610_rest_v1",
+      transport: "huawei_310_rest_v1",
       normalizerKey: "huawei-box610-json-v1",
       credentialMode: "memory_xlsx_pool",
       managementTasks: Object.freeze(["disable_insecure_management_services"])
@@ -1355,12 +1355,18 @@
       webInterface: getCaseInsensitive(payload, "webInterface") ?? null,
       webBlocks: getCaseInsensitive(payload, "webBlocks") ?? null
     };
+    const observedModel = auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model"));
+    const boxModelProvisional = (projected.adapterKey === "vcs/huawei/box310" && observedModel === "box310")
+      || (projected.adapterKey === "vcs/huawei/box610" && observedModel === "box610");
     const siteName = getCaseInsensitive(payload, "siteName");
     if (siteName !== undefined) {
       const read = isPlainObject(siteName) && normalizeText(getCaseInsensitive(siteName, "status")) === "read";
       const value = read ? normalizedSiteName(getCaseInsensitive(siteName, "value")) : null;
-      projected.siteName = { status: read && value ? "read" : "unavailable", value };
-    }
+      const provisional = boxModelProvisional;
+      projected.siteName = provisional && read && value
+        ? { status: "provisional", value, validationStatus: "provisional_user_validation" }
+        : { status: read && value ? "read" : "unavailable", value };
+    } else if (boxModelProvisional) projected.siteName = { status: "unavailable", value: null };
     const settingKeys = ["telnet", "http", "snmpV2", "autoUpdate", "autoAnswer", "ntp", "wifi", "ssh", "powerManagement"];
     const suppliedSettings = getCaseInsensitive(payload, "deviceSettings");
     const suppliedFields = getCaseInsensitive(suppliedSettings, "fields");
@@ -1370,6 +1376,7 @@
       && ["te30", "te40", "te50", "te60"].includes(auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")));
     const bar310SettingsConfirmed = projected.adapterKey === "vcs/huawei/bar310"
       && auditModelToken(getCaseInsensitive(getCaseInsensitive(projected.webBlocks, "Device Info"), "Model")) === "bar310";
+    const boxSettingsProvisional = boxModelProvisional && getCaseInsensitive(suppliedSettings, "validationStatus") === "provisional_user_validation";
     const projectedFields = {};
     const approvedReadSources = {
       telnet: new Set(["WEB_GetCfgParamAPI:enabletelnet", "managementActions.after.telnetPort23"]),
@@ -1384,13 +1391,14 @@
       const status = normalizeText(getCaseInsensitive(supplied, "status"));
       const value = getCaseInsensitive(supplied, "value");
       const source = String(getCaseInsensitive(supplied, "source") || "");
-      if (key === "autoUpdate" && bar310SettingsConfirmed && status === "read" && ["enabled", "disabled"].includes(value)
+      const exact310SettingsRead = bar310SettingsConfirmed || (boxSettingsProvisional && getCaseInsensitive(supplied, "validationStatus") === "provisional_user_validation");
+      if (key === "autoUpdate" && exact310SettingsRead && status === "read" && ["enabled", "disabled"].includes(value)
         && ["GET /v1/om/config/service:serverType", "GET /v1/om/config/service+auto-config:serverType"].includes(source)
         && getCaseInsensitive(supplied, "basis") === "server_type_audit_rule"
         && getCaseInsensitive(supplied, "ruleVersion") === "bar310-server-type-audit-v1") {
         projectedFields[key] = { status: "read", value, source, basis: "server_type_audit_rule", ruleVersion: "bar310-server-type-audit-v1", meaning: "firmware_update_capability" };
       } else if (status === "read" && approvedReadSources[key]?.has(source) && ["enabled", "disabled"].includes(value)
-        && (["telnet", "http"].includes(key) || te20SettingsConfirmed || (teFamilySettingsConfirmed && ["ssh", "autoUpdate", "autoAnswer", "snmpV2"].includes(key)) || (bar310SettingsConfirmed && ["ssh", "autoAnswer"].includes(key)))) {
+        && (["telnet", "http"].includes(key) || te20SettingsConfirmed || (teFamilySettingsConfirmed && ["ssh", "autoUpdate", "autoAnswer", "snmpV2"].includes(key)) || (exact310SettingsRead && ["ssh", "autoAnswer"].includes(key)))) {
         projectedFields[key] = { status: "read", value, source };
         if (key === "snmpV2" && teFamilySettingsConfirmed) {
           if (typeof getCaseInsensitive(supplied, "configuredEnabled") !== "boolean" || typeof getCaseInsensitive(supplied, "serviceEnabled") !== "boolean" || value !== (supplied.configuredEnabled && supplied.serviceEnabled ? "enabled" : "disabled")) {
@@ -1402,11 +1410,11 @@
         }
       } else if (status === "read" && (te20SettingsConfirmed || teFamilySettingsConfirmed) && key === "ntp" && source === "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
         projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, mode: value.modeCode === 1 ? "manual" : "automatic", server: value.server }, source };
-      } else if (status === "read" && bar310SettingsConfirmed && key === "ntp" && source === "POST /v1/om/config:synSerTime,ntpGetMode,ntpServerAddr" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
+      } else if (status === "read" && exact310SettingsRead && key === "ntp" && source === "POST /v1/om/config:synSerTime,ntpGetMode,ntpServerAddr" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string" && value.server.length <= 255 && !/[\u0000-\u001f]/.test(value.server)) {
         projectedFields[key] = { status: "read", value: { enabled: value.enabled, modeCode: value.modeCode, mode: value.modeCode === 1 ? "manual" : "automatic", server: value.server }, source };
       } else if (status === "read" && teFamilySettingsConfirmed && key === "wifi" && source === "WEB_GetWifiStatModeAPI:ucWifiMode" && isPlainObject(value) && [0, 1, 2, 3].includes(value.modeCode) && value.clientEnabled === [2, 3].includes(value.modeCode) && value.accessPointEnabled === [1, 3].includes(value.modeCode)) {
         projectedFields[key] = { status: "read", value: { modeCode: value.modeCode, clientEnabled: value.clientEnabled, accessPointEnabled: value.accessPointEnabled }, source };
-      } else if (status === "read" && bar310SettingsConfirmed && key === "wifi" && source === "POST /v1/om/config:enableWifi,apEnable,isWifiPriority" && isPlainObject(value) && typeof value.clientEnabled === "boolean" && typeof value.accessPointEnabled === "boolean" && typeof value.preferredNetworkEnabled === "boolean") {
+      } else if (status === "read" && exact310SettingsRead && key === "wifi" && source === "POST /v1/om/config:enableWifi,apEnable,isWifiPriority" && isPlainObject(value) && typeof value.clientEnabled === "boolean" && typeof value.accessPointEnabled === "boolean" && typeof value.preferredNetworkEnabled === "boolean") {
         projectedFields[key] = { status: "read", value: { clientEnabled: value.clientEnabled, accessPointEnabled: value.accessPointEnabled, preferredNetworkEnabled: value.preferredNetworkEnabled }, source };
       } else if (status === "read" && teFamilySettingsConfirmed && key === "powerManagement" && source === "WEB_GetCfgParamAPI:sleepTime" && isPlainObject(value) && ["never", "interval"].includes(value.sleepMode) && Number.isInteger(value.sleepTimeCode) && value.sleepTimeCode >= 0 && value.sleepTimeCode <= 100000 && value.sleepMode === (value.sleepTimeCode === 0 ? "never" : "interval")) {
         const power = { sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode };
@@ -1425,7 +1433,7 @@
           Object.assign(projectedPower, { shutdownRestartEnabled: value.shutdownRestartEnabled, restartHour: value.restartHour, restartMinute: value.restartMinute });
         }
         projectedFields[key] = { status: "read", value: projectedPower, source };
-      } else if (status === "read" && bar310SettingsConfirmed && key === "powerManagement" && source === "POST /v1/om/config:suppotReboot,sleepTime,autoReboot,sleepCloseAPP,autoRebootVal,savePowerMode" && isPlainObject(value) && [0, 1, 5, 10, 15, 30, 60].includes(value.sleepTimeCode) && value.sleepMode === (value.sleepTimeCode === 0 ? "never" : "interval") && ["shutdownRestartEnabled", "automaticRestartEnabled", "clearMemoryInSleepEnabled", "energySavingEnabled"].every((field) => typeof value[field] === "boolean") && Number.isInteger(value.automaticRestartIntervalDays) && value.automaticRestartIntervalDays >= 0 && value.automaticRestartIntervalDays <= 3650) {
+      } else if (status === "read" && exact310SettingsRead && key === "powerManagement" && source === "POST /v1/om/config:suppotReboot,sleepTime,autoReboot,sleepCloseAPP,autoRebootVal,savePowerMode" && isPlainObject(value) && [0, 1, 5, 10, 15, 30, 60].includes(value.sleepTimeCode) && value.sleepMode === (value.sleepTimeCode === 0 ? "never" : "interval") && ["shutdownRestartEnabled", "automaticRestartEnabled", "clearMemoryInSleepEnabled", "energySavingEnabled"].every((field) => typeof value[field] === "boolean") && Number.isInteger(value.automaticRestartIntervalDays) && value.automaticRestartIntervalDays >= 0 && value.automaticRestartIntervalDays <= 3650) {
         projectedFields[key] = { status: "read", value: { shutdownRestartEnabled: value.shutdownRestartEnabled, sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, automaticRestartEnabled: value.automaticRestartEnabled, automaticRestartIntervalDays: value.automaticRestartIntervalDays, clearMemoryInSleepEnabled: value.clearMemoryInSleepEnabled, energySavingEnabled: value.energySavingEnabled }, source, unconfirmedFields: ["scheduledPowerOn", "scheduledPowerOff", "clearMemoryAfterRestart"] };
       } else if (["protocol_required", "unavailable", "not_exposed"].includes(status)) {
         projectedFields[key] = { status, value: null };
@@ -1436,6 +1444,7 @@
           projectedFields[key].reason = "capability_absent";
         }
       }
+      if (boxSettingsProvisional && key !== "http" && projectedFields[key]?.status === "read") projectedFields[key].validationStatus = "provisional_user_validation";
     }
     if (getCaseInsensitive(payload, "ok") === true) {
       const actions = getCaseInsensitive(payload, "managementActions");
@@ -3223,6 +3232,7 @@
       if (field === "wifi" && setting.reason === "capability_absent") return "Отсутствует (отключено)";
       return "Не предоставлено интерфейсом";
     }
+    if (getCaseInsensitive(setting, "validationStatus") === "provisional_user_validation") return "Требует проверки";
     if (status !== "read") return "Нет данных";
     const value = getCaseInsensitive(setting, "value");
     if (value === "enabled") return "Включено";
@@ -3286,7 +3296,7 @@
       const adapterMatches = latest?.normalizedData?.adapterKey === target.pollingCapability?.key;
       const valid = exactIp && modelMatches && adapterMatches && latest.parseStatus === "parsed" && (latest.operationalStatus || latest.pollStatus) === "success";
       const usable = valid ? latest : null;
-      if (outputKeys.some((key) => key.field && !["Нет данных", "Не предоставлено интерфейсом"].includes(auditFact(key.field, usable)))) withFacts += 1;
+      if (outputKeys.some((key) => key.field && !["Нет данных", "Не предоставлено интерфейсом", "Требует проверки"].includes(auditFact(key.field, usable)))) withFacts += 1;
       const status = !latest ? "Нет файла опроса" : !exactIp ? "IP не подтверждён" : !modelMatches ? "Модель не совпадает" : !adapterMatches ? "Контракт опроса не подтверждён" : !valid ? "Опрос неуспешен" : "Сопоставлено";
       return [...outputKeys.map((key) => key.source !== undefined ? String(sourceRow[key.source] ?? "") : auditFact(key.field, usable)), status, latest?.filename || "", latest?.capturedAt || ""];
     });

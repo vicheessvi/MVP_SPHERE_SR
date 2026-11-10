@@ -76,8 +76,8 @@ def family_request(calls, model: str, *, management=False, http_value=1, verifie
 
 class HuaweiBoxContractTests(unittest.TestCase):
     MANAGEMENT_CASES = (
-        (poll_huawei_box310_device, "Box 310", "huawei-box310-rest-v1"),
-        (poll_huawei_box610_device, "Box 610", "huawei-box610-rest-v1"),
+        (poll_huawei_box310_device, "Box 310", "huawei-310-rest-v1"),
+        (poll_huawei_box610_device, "Box 610", "huawei-310-rest-v1"),
     )
 
     def test_box310_and_box610_read_site_name_when_bundle_confirms_mailbox(self):
@@ -163,8 +163,8 @@ class HuaweiBoxContractTests(unittest.TestCase):
 
     def test_box_contracts_are_separate_and_confirmed(self):
         cases = (
-            (poll_huawei_box310_device, "CloudLink Box 310", "Box 310", "huawei-box310-rest-v1"),
-            (poll_huawei_box610_device, "CloudLink Box 610", "Box 610", "huawei-box610-rest-v1"),
+            (poll_huawei_box310_device, "CloudLink Box 310", "Box 310", "huawei-310-rest-v1"),
+            (poll_huawei_box610_device, "CloudLink Box 610", "Box 610", "huawei-310-rest-v1"),
         )
         for poll, planned_model, device_model, contract in cases:
             calls = []

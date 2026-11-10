@@ -19,7 +19,8 @@ from mvp_runtime.adapters.device_settings import binary_setting, unknown_device_
 
 CONTRACT_MODEL = "Bar 310"
 SUPPORTED_PLAN_MODELS = frozenset({"bar 310", "cloudlink bar 310", "cloudlinc bar 310"})
-CONTRACT_ID = "huawei-bar310-rest-v1"
+FAMILY_CONTRACT_ID = "huawei-310-rest-v1"
+CONTRACT_ID = FAMILY_CONTRACT_ID
 BAR310_CONTRACT = {
     "contract_id": CONTRACT_ID,
     "contract_model": CONTRACT_MODEL,
@@ -28,6 +29,7 @@ BAR310_CONTRACT = {
     "evidence_label": "Huawei Bar 310 pre-auth model and v1 resource markers found",
     "management_action": "disable_insecure_management_services",
     "management_validation_status": "confirmed_local_validation",
+    "settings_read_profile": "bar310_confirmed",
 }
 MAIN_BUNDLE_PATTERN = re.compile(r"^/static/js/main\.[A-Za-z0-9._~-]{1,120}\.chunk\.js$")
 MAX_COOKIE_COUNT = 16
@@ -52,7 +54,7 @@ BUNDLE_MARKERS = (
 )
 
 DISABLE_INSECURE_SERVICES_ACTION = "disable_insecure_management_services"
-HTTP_ONLY_MANAGEMENT_CONTRACT_IDS = frozenset({"huawei-bar310-rest-v1", "huawei-box310-rest-v1", "huawei-box610-rest-v1"})
+HTTP_ONLY_MANAGEMENT_CONTRACT_IDS = frozenset({FAMILY_CONTRACT_ID})
 MANAGEMENT_BUNDLE_MARKERS = (
     'reqGetCfgUrl="/v1/om/config"',
     'reqSaveCfgUrl="/v1/om/config"',
@@ -417,12 +419,13 @@ def _read_bar310_auto_update_audit(
         return {"status": "unavailable", "value": None}
 
 
-def _read_bar310_settings(
+def _read_310_settings(
+    model: str,
     bundle_text: str,
     json_request: Callable[[str, str, Any, bool], tuple[dict[str, Any], Any]],
-    *, skip_http: bool = False,
+    *, skip_http: bool = False, provisional: bool = False,
 ) -> dict[str, Any]:
-    settings = unknown_device_settings(CONTRACT_MODEL, not_exposed=("telnet", "snmpV2")) if skip_http else _read_device_settings(CONTRACT_MODEL, bundle_text, json_request)
+    settings = unknown_device_settings(model, not_exposed=("telnet", "snmpV2")) if skip_http else _read_device_settings(model, bundle_text, json_request)
     fields = settings["fields"]
     fields["autoUpdate"] = _read_bar310_auto_update_audit(bundle_text, json_request)
     for key, (ids, marker) in BAR310_SETTING_GROUPS.items():
@@ -456,6 +459,11 @@ def _read_bar310_settings(
                 fields[key] = {"status": "read", "value": {"shutdownRestartEnabled": bool(values["suppotReboot"]), "sleepMode": "never" if sleep == 0 else "interval", "sleepTimeCode": sleep, "automaticRestartEnabled": bool(values["autoReboot"]), "automaticRestartIntervalDays": interval, "clearMemoryInSleepEnabled": bool(values["sleepCloseAPP"]), "energySavingEnabled": bool(values["savePowerMode"])}, "source": "POST /v1/om/config:suppotReboot,sleepTime,autoReboot,sleepCloseAPP,autoRebootVal,savePowerMode", "unconfirmedFields": ["scheduledPowerOn", "scheduledPowerOff", "clearMemoryAfterRestart"]}
             else:
                 fields[key] = {"status": "unavailable", "value": None}
+    if provisional:
+        settings["validationStatus"] = "provisional_user_validation"
+        for key, field in fields.items():
+            if key != "http" and field.get("status") == "read":
+                field["validationStatus"] = "provisional_user_validation"
     return settings
 
 
@@ -627,7 +635,7 @@ def poll_huawei_310_family_device(
             "evidenceStatus": evidence_status,
         },
     }
-    if not contract_id or not contract_model or not plan_models or not ip or _planned_model(device) not in plan_models:
+    if contract_id != FAMILY_CONTRACT_ID or contract_model not in {"Bar 310", "Box 310", "Box 610"} or not plan_models or not ip or _planned_model(device) not in plan_models:
         return {**base, "failedStage": "validation", "safeError": "invalid_or_unsupported_target"}
     pool = credentials if isinstance(credentials, list) else [credentials]
     pool = [item for item in pool if isinstance(item, dict) and item.get("username") and item.get("password")]
@@ -799,8 +807,17 @@ def poll_huawei_310_family_device(
         bundle_text,
         lambda name, payload: json_request("POST", f"/action.cgi?ActionID={name}", payload, token=True),
     )
-    if contract_id == CONTRACT_ID and site_name["status"] == "protocol_required":
+    settings_profile = str(contract.get("settings_read_profile") or "")
+    profile_for_model = {
+        "Bar 310": "bar310_confirmed",
+        "Box 310": "box310_provisional",
+        "Box 610": "box610_provisional",
+    }.get(contract_model) if contract_id == FAMILY_CONTRACT_ID else None
+    if profile_for_model and settings_profile == profile_for_model and site_name["status"] == "protocol_required":
         site_name = _read_bar310_site_name(bundle_text, json_request)
+    provisional_settings = settings_profile in {"box310_provisional", "box610_provisional"} and settings_profile == profile_for_model
+    if provisional_settings and site_name["status"] == "read":
+        site_name["validationStatus"] = "provisional_user_validation"
     if (
         contract_id in HTTP_ONLY_MANAGEMENT_CONTRACT_IDS
         and contract.get("management_action") == DISABLE_INSECURE_SERVICES_ACTION
@@ -808,8 +825,8 @@ def poll_huawei_310_family_device(
     ):
         management_actions.append(_disable_insecure_management_services(bundle_text, json_request, settle, str(contract.get("management_validation_status") or "provisional_user_validation")))
     verified_action = next((item for item in management_actions if item.get("status") in {"applied", "already_compliant"}), None)
-    if contract_id == CONTRACT_ID:
-        device_settings = _read_bar310_settings(bundle_text, json_request, skip_http=bool(verified_action))
+    if profile_for_model and settings_profile == profile_for_model:
+        device_settings = _read_310_settings(contract_model, bundle_text, json_request, skip_http=bool(verified_action), provisional=provisional_settings)
     elif verified_action:
         device_settings = unknown_device_settings(contract_model, not_exposed=("telnet", "snmpV2", "autoUpdate"))
     else:
@@ -841,3 +858,20 @@ def poll_huawei_310_family_device(
 
 def poll_huawei_bar310_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None) -> dict[str, Any]:
     return poll_huawei_310_family_device(device, credentials, BAR310_CONTRACT, options)
+
+
+def poll_huawei_310_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One transport and contract, dispatched by exact planned model before network access."""
+    planned = _planned_model(device)
+    if planned in SUPPORTED_PLAN_MODELS:
+        contract = BAR310_CONTRACT
+    else:
+        from .huawei_box310 import BOX310_CONTRACT
+        from .huawei_box610 import BOX610_CONTRACT
+        if planned in BOX310_CONTRACT["plan_models"]:
+            contract = BOX310_CONTRACT
+        elif planned in BOX610_CONTRACT["plan_models"]:
+            contract = BOX610_CONTRACT
+        else:
+            return {"ok": False, "failedStage": "validation", "safeError": "invalid_or_unsupported_target", "credentialAttempts": 0}
+    return poll_huawei_310_family_device(device, credentials, contract, options)

@@ -180,10 +180,10 @@ def _default_huawei_te20(device: dict[str, Any], credential: Any, options: dict[
     return poll_huawei_te20_device(device, credential, options)
 
 
-def _default_huawei_bar310(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
-    from .adapters.huawei_bar310 import poll_huawei_bar310_device
+def _default_huawei_310(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
+    from .adapters.huawei_bar310 import poll_huawei_310_device
 
-    return poll_huawei_bar310_device(device, credential, options)
+    return poll_huawei_310_device(device, credential, options)
 
 
 def _default_huawei_bar300(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
@@ -202,18 +202,6 @@ def _default_huawei_box600(device: dict[str, Any], credential: Any, options: dic
     from .adapters.huawei_300 import poll_huawei_box600_device
 
     return poll_huawei_box600_device(device, credential, options)
-
-
-def _default_huawei_box310(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
-    from .adapters.huawei_box310 import poll_huawei_box310_device
-
-    return poll_huawei_box310_device(device, credential, options)
-
-
-def _default_huawei_box610(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
-    from .adapters.huawei_box610 import poll_huawei_box610_device
-
-    return poll_huawei_box610_device(device, credential, options)
 
 
 def _default_polycom_group310(device: dict[str, Any], credential: Any, options: dict[str, Any]) -> dict[str, Any]:
@@ -246,9 +234,7 @@ register_adapter("huawei_te20_web_cgi_v1", _default_huawei_te20)
 register_adapter("huawei_bar300_web_cgi_v1", _default_huawei_bar300)
 register_adapter("huawei_box300_web_cgi_v1", _default_huawei_box300)
 register_adapter("huawei_box600_web_cgi_v1", _default_huawei_box600)
-register_adapter("huawei_bar310_rest_v1", _default_huawei_bar310)
-register_adapter("huawei_box310_rest_v1", _default_huawei_box310)
-register_adapter("huawei_box610_rest_v1", _default_huawei_box610)
+register_adapter("huawei_310_rest_v1", _default_huawei_310)
 register_adapter("polycom_group310_web_v1", _default_polycom_group310)
 register_adapter("polycom_group300_web_v1", _default_polycom_group300)
 register_adapter("polycom_group500_web_v1", _default_polycom_group500)

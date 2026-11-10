@@ -342,13 +342,11 @@ class PollingTests(unittest.TestCase):
             "adapters": {
                 "huawei_te_web_cgi_v1": adapter("huawei"),
                 "huawei_te20_web_cgi_v1": adapter("huawei-te20"),
-                "huawei_bar310_rest_v1": adapter("huawei-bar310"),
-                "huawei_box310_rest_v1": adapter("huawei-box310"),
-                "huawei_box610_rest_v1": adapter("huawei-box610"),
+                "huawei_310_rest_v1": adapter("huawei-310"),
                 "extron_web_dynamic_resources_v1": adapter("extron"),
             },
         })
-        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41"), ("huawei-te20", "192.0.2.42"), ("huawei-bar310", "192.0.2.44"), ("huawei-box310", "192.0.2.45"), ("huawei-box610", "192.0.2.46")])
+        self.assertEqual(calls, [("huawei", "192.0.2.40"), ("extron", "192.0.2.41"), ("huawei-te20", "192.0.2.42"), ("huawei-310", "192.0.2.44"), ("huawei-310", "192.0.2.45"), ("huawei-310", "192.0.2.46")])
         self.assertEqual([item["ip"] for item in results], ["192.0.2.40", "192.0.2.41", "192.0.2.42", "192.0.2.44", "192.0.2.45", "192.0.2.46", "192.0.2.43"])
         self.assertTrue(results[3]["ok"] and results[4]["ok"] and results[5]["ok"])
         self.assertFalse(results[6]["networkAttempted"])
@@ -389,9 +387,7 @@ class PollingTests(unittest.TestCase):
                 "adapters": {
                     "huawei_te20_web_cgi_v1": adapter,
                     "huawei_te_web_cgi_v1": adapter,
-                    "huawei_bar310_rest_v1": adapter,
-                    "huawei_box310_rest_v1": adapter,
-                    "huawei_box610_rest_v1": adapter,
+                    "huawei_310_rest_v1": adapter,
                 },
             },
         )

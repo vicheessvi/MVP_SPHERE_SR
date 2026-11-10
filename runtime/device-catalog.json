@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1", "huawei_bar310_rest_v1", "huawei_box310_rest_v1", "huawei_box610_rest_v1", "polycom_group310_web_v1", "polycom_group300_web_v1", "polycom_group500_web_v1", "polycom_group700_web_v1"],
+  "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1", "huawei_310_rest_v1", "polycom_group310_web_v1", "polycom_group300_web_v1", "polycom_group500_web_v1", "polycom_group700_web_v1"],
   "managementActions": [
     {
       "id": "disable_insecure_management_services",
@@ -157,7 +157,7 @@
       "aliases": ["huawey"],
       "models": ["Bar 310", "CloudLink Bar 310", "CloudLinc Bar 310"],
       "protocolStatus": "supported",
-      "transport": "huawei_bar310_rest_v1",
+      "transport": "huawei_310_rest_v1",
       "credentialMode": "memory_xlsx_pool"
     },
     {
@@ -167,7 +167,7 @@
       "aliases": ["huawey"],
       "models": ["Box 310", "CloudLink Box 310", "CloudLinc Box 310"],
       "protocolStatus": "supported",
-      "transport": "huawei_box310_rest_v1",
+      "transport": "huawei_310_rest_v1",
       "credentialMode": "memory_xlsx_pool"
     },
     {
@@ -177,7 +177,7 @@
       "aliases": ["huawey"],
       "models": ["Box 610", "CloudLink Box 610", "CloudLinc Box 610"],
       "protocolStatus": "supported",
-      "transport": "huawei_box610_rest_v1",
+      "transport": "huawei_310_rest_v1",
       "credentialMode": "memory_xlsx_pool"
     },
     {

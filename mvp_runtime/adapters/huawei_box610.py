@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from .huawei_bar310 import DISABLE_INSECURE_SERVICES_ACTION, poll_huawei_310_family_device
+from .huawei_bar310 import DISABLE_INSECURE_SERVICES_ACTION, FAMILY_CONTRACT_ID, poll_huawei_310_family_device
 
 
-CONTRACT_ID = "huawei-box610-rest-v1"
+CONTRACT_ID = FAMILY_CONTRACT_ID
 CONTRACT_MODEL = "Box 610"
 SUPPORTED_PLAN_MODELS = frozenset({"box 610", "cloudlink box 610", "cloudlinc box 610"})
 BOX610_CONTRACT = {
@@ -18,6 +18,7 @@ BOX610_CONTRACT = {
     "evidence_label": "Huawei Box 610 exact pre-auth model and compatible v1 resource markers found",
     "management_action": DISABLE_INSECURE_SERVICES_ACTION,
     "management_validation_status": "provisional_user_validation",
+    "settings_read_profile": "box610_provisional",
 }
 
 

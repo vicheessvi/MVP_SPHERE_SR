@@ -53,7 +53,7 @@ class CatalogTests(unittest.TestCase):
         for model in ("Bar 310", "CloudLink Bar 310", "CloudLinc Bar 310"):
             supported = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": model})
             self.assertEqual(supported["key"], "vcs/huawei/bar310")
-            self.assertEqual(supported["transport"], "huawei_bar310_rest_v1")
+            self.assertEqual(supported["transport"], "huawei_310_rest_v1")
             self.assertEqual(supported["protocolStatus"], "supported")
             self.assertTrue(supported["knownModel"])
             action = resolve_management_action(
@@ -61,7 +61,7 @@ class CatalogTests(unittest.TestCase):
                 "disable_insecure_management_services",
             )
             self.assertTrue(action["supported"])
-            self.assertEqual(action["transport"], "huawei_bar310_rest_v1")
+            self.assertEqual(action["transport"], "huawei_310_rest_v1")
 
         fallback = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "CloudLinc Bar 310-X"})
         self.assertEqual(fallback["key"], "vcs/huawei")
@@ -103,8 +103,8 @@ class CatalogTests(unittest.TestCase):
 
     def test_huawei_box_models_have_separate_exact_http_only_actions(self) -> None:
         families = (
-            (("Box 310", "CloudLink Box 310", "CloudLinc Box 310"), "vcs/huawei/box310", "huawei_box310_rest_v1"),
-            (("Box 610", "CloudLink Box 610", "CloudLinc Box 610"), "vcs/huawei/box610", "huawei_box610_rest_v1"),
+            (("Box 310", "CloudLink Box 310", "CloudLinc Box 310"), "vcs/huawei/box310", "huawei_310_rest_v1"),
+            (("Box 610", "CloudLink Box 610", "CloudLinc Box 610"), "vcs/huawei/box610", "huawei_310_rest_v1"),
         )
         for models, key, transport in families:
             for model in models:

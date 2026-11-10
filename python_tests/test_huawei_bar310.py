@@ -6,10 +6,16 @@ import unittest
 
 from mvp_runtime.adapters.huawei_bar310 import (
     BAR310_RESOURCE_PATHS,
+    BAR310_CONTRACT,
     Bar310TransportError,
     DISABLE_INSECURE_SERVICES_ACTION,
+    FAMILY_CONTRACT_ID,
     poll_huawei_bar310_device,
+    poll_huawei_310_device,
+    poll_huawei_310_family_device,
 )
+from mvp_runtime.adapters.huawei_box310 import poll_huawei_box310_device
+from mvp_runtime.adapters.huawei_box610 import poll_huawei_box610_device
 
 
 MAIN_BUNDLE = " ".join([
@@ -193,6 +199,81 @@ class HuaweiBar310Tests(unittest.TestCase):
         )
         self.assertEqual(managed["deviceSettings"]["fields"]["autoUpdate"]["value"], "enabled")
         self.assertFalse(any(call["method"] == "PUT" for call in managed_calls))
+
+    def test_box310_and_box610_share_guarded_provisional_settings_reader(self):
+        bundle = {"status_code": 200, "headers": [], "body": FULL_SETTINGS_BUNDLE + " " + SERVER_AUDIT_BUNDLE}
+        for model, poller in (("Box 310", poll_huawei_box310_device), ("Box 610", poll_huawei_box610_device)):
+            calls = []
+            result = poller(
+                {"ip": "192.0.2.31", "model": model, "allowInsecureTls": True},
+                [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+                {"request": self.success_request(calls, model=model, overrides={"/static/js/main.synthetic.chunk.js": bundle}, configuration_values=SYNTHETIC_SETTINGS)},
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["vendorPolling"]["model"], model)
+            self.assertEqual(result["siteName"]["validationStatus"], "provisional_user_validation")
+            fields = result["deviceSettings"]["fields"]
+            self.assertEqual(fields["autoAnswer"]["value"], "enabled")
+            self.assertEqual(fields["ntp"]["value"]["mode"], "manual")
+            self.assertEqual(fields["wifi"]["value"]["clientEnabled"], False)
+            self.assertEqual(fields["ssh"]["value"], "enabled")
+            self.assertEqual(fields["powerManagement"]["value"]["sleepTimeCode"], 10)
+            self.assertEqual(fields["autoUpdate"]["meaning"], "firmware_update_capability")
+            self.assertTrue(all(field["validationStatus"] == "provisional_user_validation" for key, field in fields.items() if key != "http" and field["status"] == "read"))
+            self.assertNotIn("validationStatus", fields["http"])
+            self.assertFalse(any(call["method"] == "PUT" for call in calls))
+            self.assertNotIn("GOOD-SYNTHETIC", json.dumps(result))
+            self.assertNotIn("SYNTHETIC-INTERNAL", json.dumps(result))
+
+            wrong_calls = []
+            wrong = poller(
+                {"ip": "192.0.2.31", "model": model, "allowInsecureTls": True},
+                [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+                {"request": self.success_request(wrong_calls, model="Bar 310", overrides={"/static/js/main.synthetic.chunk.js": bundle}, configuration_values=SYNTHETIC_SETTINGS)},
+            )
+            self.assertFalse(wrong["ok"])
+            self.assertEqual(wrong["safeError"], "target_model_mismatch")
+            self.assertFalse(any(call["path"] == "/v1/login/account" for call in wrong_calls))
+
+    def test_box_settings_marker_drift_is_field_local(self):
+        bundle = {"status_code": 200, "headers": [], "body": (FULL_SETTINGS_BUNDLE + " " + SERVER_AUDIT_BUNDLE).replace('CfgIDString:["autoreply"', "missing-answer-marker")}
+        calls = []
+        result = poll_huawei_box310_device(
+            {"ip": "192.0.2.31", "model": "Box 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": self.success_request(calls, model="Box 310", overrides={"/static/js/main.synthetic.chunk.js": bundle}, configuration_values=SYNTHETIC_SETTINGS)},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deviceSettings"]["fields"]["autoAnswer"], {"status": "protocol_required", "value": None})
+        self.assertEqual(result["deviceSettings"]["fields"]["ntp"]["status"], "read")
+        self.assertFalse(any(json.loads(call["body"]).get("CfgIDString") == ["autoreply"] for call in calls if call["path"] == "/v1/om/config" and call["method"] == "POST"))
+
+    def test_one_family_dispatcher_preserves_exact_model_and_contract(self):
+        for model in ("Bar 310", "Box 310", "Box 610"):
+            calls = []
+            result = poll_huawei_310_device(
+                {"ip": "192.0.2.31", "model": model, "allowInsecureTls": True},
+                [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+                {"request": self.success_request(calls, model=model)},
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["vendorPolling"]["contract"], FAMILY_CONTRACT_ID)
+            self.assertEqual(result["vendorPolling"]["model"], model)
+            self.assertTrue(any(call["path"] == "/v1/login/account" for call in calls))
+        blocked = poll_huawei_310_device(
+            {"ip": "192.0.2.31", "model": "Box 610-S", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {"request": lambda *_args: self.fail("Unknown model must not reach network")},
+        )
+        self.assertEqual(blocked["safeError"], "invalid_or_unsupported_target")
+        self.assertEqual(blocked["credentialAttempts"], 0)
+        legacy = poll_huawei_310_family_device(
+            {"ip": "192.0.2.31", "model": "Bar 310", "allowInsecureTls": True},
+            [{"username": "good-user", "password": "GOOD-SYNTHETIC"}],
+            {**BAR310_CONTRACT, "contract_id": "huawei-bar310-rest-v1"},
+            {"request": lambda *_args: self.fail("Legacy contract must not create a new network route")},
+        )
+        self.assertEqual(legacy["safeError"], "invalid_or_unsupported_target")
 
     def test_bar310_reads_exact_new_settings_without_secrets_or_write(self):
         calls = []

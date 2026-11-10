@@ -380,13 +380,13 @@
     assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === "te20").length, 2);
     bar310Aliases.forEach((item) => {
       assertEqual(item.support, "implemented");
-      assertEqual(item.transport, "huawei_bar310_rest_v1");
+      assertEqual(item.transport, "huawei_310_rest_v1");
       assertEqual((item.managementTasks || []).join(","), "disable_insecure_management_services");
       assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === item.modelNormalized).length, 2);
     });
     [...box310Aliases, ...box610Aliases].forEach((item) => {
       assertEqual(item.support, "implemented");
-      assertEqual(item.transport, item.modelNormalized.includes("610") ? "huawei_box610_rest_v1" : "huawei_box310_rest_v1");
+      assertEqual(item.transport, "huawei_310_rest_v1");
       assertEqual((item.managementTasks || []).join(","), "disable_insecure_management_services");
       assertEqual(api.ANALYZED_PARAMETER_RULES.filter((rule) => rule.manufacturerNormalized === "huawei" && rule.modelNormalized === item.modelNormalized).length, 2);
     });
@@ -461,16 +461,16 @@
     assert(te20Action.supported);
     assertEqual(te20Action.transport, "huawei_te20_web_cgi_v1");
     assertEqual(bar310.key, "vcs/huawei/bar310");
-    assertEqual(bar310.transport, "huawei_bar310_rest_v1");
+    assertEqual(bar310.transport, "huawei_310_rest_v1");
     const barAction = runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "Bar 310" }, "disable_insecure_management_services");
     assert(barAction.supported);
-    assertEqual(barAction.transport, "huawei_bar310_rest_v1");
+    assertEqual(barAction.transport, "huawei_310_rest_v1");
     assertEqual(box310.key, "vcs/huawei/box310");
-    assertEqual(box310.transport, "huawei_box310_rest_v1");
+    assertEqual(box310.transport, "huawei_310_rest_v1");
     assertEqual(box610.key, "vcs/huawei/box610");
-    assertEqual(box610.transport, "huawei_box610_rest_v1");
-    assertEqual(runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "Box 310" }, "disable_insecure_management_services").transport, "huawei_box310_rest_v1");
-    assertEqual(runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "Box 610" }, "disable_insecure_management_services").transport, "huawei_box610_rest_v1");
+    assertEqual(box610.transport, "huawei_310_rest_v1");
+    assertEqual(runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "Box 310" }, "disable_insecure_management_services").transport, "huawei_310_rest_v1");
+    assertEqual(runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "Box 610" }, "disable_insecure_management_services").transport, "huawei_310_rest_v1");
     assert(!runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Huawei", model: "Box 610-S" }, "disable_insecure_management_services").supported);
     assertEqual(tx50.key, "vcs/huawei");
     assertEqual(tx50.transport, null);
@@ -2186,6 +2186,60 @@
     assert(!invalid.deviceSettings?.fields?.wifi);
     const unproven = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { autoUpdate: { ...fields.autoUpdate, basis: "firmware_update" } } } });
     assert(!unproven.deviceSettings?.fields?.autoUpdate);
+  });
+
+  test("Новые настройки Box 310/610 сохраняют предварительный статус и не становятся фактами Site name", () => {
+    const fields = {
+      http: { status: "read", value: "disabled", source: "POST /v1/om/config:enable_http" },
+      autoAnswer: { status: "read", value: "enabled", source: "POST /v1/om/config:autoreply", validationStatus: "provisional_user_validation" },
+      autoUpdate: { status: "read", value: "disabled", source: "GET /v1/om/config/service+auto-config:serverType", basis: "server_type_audit_rule", ruleVersion: "bar310-server-type-audit-v1", meaning: "firmware_update_capability", validationStatus: "provisional_user_validation" },
+      ntp: { status: "read", value: { enabled: true, modeCode: 1, server: "ntp.example.test" }, source: "POST /v1/om/config:synSerTime,ntpGetMode,ntpServerAddr", validationStatus: "provisional_user_validation" },
+      wifi: { status: "read", value: { clientEnabled: false, accessPointEnabled: false, preferredNetworkEnabled: false }, source: "POST /v1/om/config:enableWifi,apEnable,isWifiPriority", validationStatus: "provisional_user_validation" },
+      ssh: { status: "read", value: "enabled", source: "POST /v1/om/config:enable_ssh", validationStatus: "provisional_user_validation" },
+      powerManagement: { status: "read", value: { shutdownRestartEnabled: true, sleepMode: "interval", sleepTimeCode: 10, automaticRestartEnabled: false, automaticRestartIntervalDays: 1, clearMemoryInSleepEnabled: false, energySavingEnabled: false }, source: "POST /v1/om/config:suppotReboot,sleepTime,autoReboot,sleepCloseAPP,autoRebootVal,savePowerMode", validationStatus: "provisional_user_validation" }
+    };
+    for (const [model, adapterKey] of [["Box 310", "vcs/huawei/box310"], ["Box 610", "vcs/huawei/box610"]]) {
+      const payload = { ok: true, adapterKey, webBlocks: { "Device Info": { Model: model, "Site Name": "SYNTHETIC-SITE" } }, siteName: { status: "read", value: "SYNTHETIC-SITE", validationStatus: "provisional_user_validation" }, deviceSettings: { validationStatus: "provisional_user_validation", fields } };
+      const result = api.pollingPayloadProjection(payload);
+      assertEqual(result.siteName.status, "provisional");
+      assertEqual(result.deviceSettings.fields.autoAnswer.validationStatus, "provisional_user_validation");
+      assertEqual(result.deviceSettings.fields.autoUpdate.meaning, "firmware_update_capability");
+      assertEqual(result.deviceSettings.fields.autoUpdate.validationStatus, "provisional_user_validation");
+      assertEqual(result.deviceSettings.fields.ntp.value.mode, "manual");
+      assertEqual(result.deviceSettings.fields.wifi.value.preferredNetworkEnabled, false);
+      assertEqual(result.deviceSettings.fields.powerManagement.value.sleepTimeCode, 10);
+      assert(!result.deviceSettings.fields.http.validationStatus);
+      const withoutMarker = api.pollingPayloadProjection({ ...payload, siteName: undefined, deviceSettings: { fields } });
+      assertEqual(withoutMarker.siteName.status, "unavailable");
+      assert(!withoutMarker.deviceSettings?.fields?.autoAnswer);
+      assert(!withoutMarker.deviceSettings?.fields?.autoUpdate);
+    }
+    const wrongModel = api.pollingPayloadProjection({ ok: true, adapterKey: "vcs/huawei/box310", webBlocks: { "Device Info": { Model: "Box 610" } }, deviceSettings: { validationStatus: "provisional_user_validation", fields } });
+    assert(!wrongModel.deviceSettings?.fields?.autoAnswer);
+    const headers = [...srHeaders(), "Автообновление"];
+    const row = srRow({ IP: "192.0.2.31", Производитель: "Huawei", Модель: "Box 310", Автообновление: "Отключено" });
+    const parsed = api.parseManagementTargetRows({ headers, rows: [row] });
+    assert(parsed.ok, parsed.errors?.join("; "));
+    const candidate = api.createDemoState();
+    candidate.pollingResults = [{ id: "box-provisional", filename: "192.0.2.31.json", filenameIp: "192.0.2.31", internalIp: "192.0.2.31", matchStatus: "unmatched", capturedAt: "2026-10-01T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: api.pollingPayloadProjection({ ok: true, adapterKey: "vcs/huawei/box310", webBlocks: { "Device Info": { Model: "Box 310" } }, deviceSettings: { validationStatus: "provisional_user_validation", fields } }) }];
+    const report = api.buildDeviceSettingsAuditRows({ ...parsed, headers, rows: [row] }, candidate);
+    assert(report.ok);
+    assertEqual(report.rows[0][report.headers.indexOf("Автообновление, факт")], "Требует проверки");
+    assertEqual(report.withFacts, 0);
+  });
+
+  test("Единый Huawei 310 transport не переписывает модельные ключи старых JSON", () => {
+    for (const [model, adapterKey, oldContract] of [
+      ["Bar 310", "vcs/huawei/bar310", "huawei-bar310-rest-v1"],
+      ["Box 310", "vcs/huawei/box310", "huawei-box310-rest-v1"],
+      ["Box 610", "vcs/huawei/box610", "huawei-box610-rest-v1"]
+    ]) {
+      const oldPayload = { ok: true, adapterKey, vendorPolling: { contract: oldContract, model }, webBlocks: { "Device Info": { Model: model } }, deviceSettings: { fields: { http: { status: "read", value: "disabled", source: "POST /v1/om/config:enable_http" } } } };
+      const projected = api.pollingPayloadProjection(oldPayload);
+      assertEqual(projected.adapterKey, adapterKey);
+      assertEqual(projected.deviceSettings.fields.http.value, "disabled");
+      assertEqual(api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Huawei", modelRaw: model }).transport, "huawei_310_rest_v1");
+    }
   });
 
   test("Включение автоответа TE20 создаёт только отдельный план одного IP", () => {
