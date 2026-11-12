@@ -4,6 +4,7 @@ import http.client
 import hashlib
 import io
 import json
+import re
 import threading
 import time
 import unittest
@@ -199,12 +200,19 @@ class ServerTests(unittest.TestCase):
 
     def test_static_allowlist_runtime_marker_and_removed_storage(self) -> None:
         cookie, csrf = self.harness.session()
-        for path, expected in (("/", b"<!doctype html"), ("/app.js", b"MvpSphereSR"), ("/runtime/sphere.js", b"MVP_SPHERE_BRAND"), ("/runtime/polling-recovery.js", b"MVP_POLLING_RECOVERY"), ("/runtime/huawei-te-log-events.js", b"MVP_HUAWEI_TE_LOG_EVENTS"), ("/runtime-config.js", b"__MVP_CSRF__")):
+        for path, expected in (("/", b"<!doctype html"), ("/app.js", b"MvpSphereSR"), ("/runtime/sphere.js", b"MVP_SPHERE_BRAND"), ("/runtime/polling-recovery.js", b"MVP_POLLING_RECOVERY"), ("/runtime/huawei-te-log-events.js", b"MVP_HUAWEI_TE_LOG_EVENTS"), ("/runtime/huawei-310-log-events.js", b"MVP_HUAWEI_310_LOG_EVENTS"), ("/runtime-config.js", b"__MVP_CSRF__")):
             status, headers, body = self.harness.request("GET", path, headers={"Cookie": cookie})
             self.assertEqual(status, 200)
             self.assertIn(expected, body)
             self.assertEqual(headers["x-frame-options"], "DENY")
             self.assertEqual(headers["cache-control"], "no-store, max-age=0")
+        status, _, index = self.harness.request("GET", "/", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        for source in re.findall(rb'<script\s+src="([^"]+)"', index):
+            script_path = "/" + source.decode("ascii").lstrip("/")
+            script_status, _, script_body = self.harness.request("GET", script_path, headers={"Cookie": cookie})
+            self.assertEqual(script_status, 200, script_path)
+            self.assertTrue(script_body, script_path)
         status, _, body = self.harness.request("GET", "/api/polling/jobs/active", headers={"Cookie": cookie})
         self.assertEqual(status, 200)
         self.assertIsNone(json.loads(body)["activeJobId"])
