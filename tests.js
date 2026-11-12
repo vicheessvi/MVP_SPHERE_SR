@@ -2645,6 +2645,34 @@
     if (typeof require === "function") assert(require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8").includes('powerDurationBucket: "over_year"'));
   });
 
+  test("Тепловая карта считает уникальные устройства по дням и часам и разделяет достоверность", () => {
+    const event = (deviceId, at, kind, path) => ({ kind, deviceId, deviceName: `Synthetic ${deviceId}`, model: "TE40", ip: "192.0.2.40", locationName: "Synthetic location", address: "Synthetic address", deviceLocalTime: at, sources: [{ path, line: 7 }] });
+    const te = { valid: true, stale: false, groups: { power_off: { events: [
+      event("a", "2026-01-05 10:01:00", "power_off", "one.xml"),
+      event("a", "2026-01-05 10:01:00", "power_off", "duplicate.xml"),
+      event("a", "2026-01-05 10:42:00", "power_off", "two.xml"),
+      event("b", "2026-01-05 10:05:00", "power_off", "three.xml")
+    ] }, suspected_power_loss: { events: [event("c", "2026-01-06 11:00:00", "suspected_power_loss", "four.xml")] } } };
+    const bar = { valid: true, stale: false, groups: { power_off: { events: [event("d", "2026-01-05 10:15:00", "power_off", "bar.xml")] } } };
+    const confirmed = api.getPowerHeatmapAnalytics(te, bar, "confirmed");
+    const monday10 = confirmed.cells[10];
+    assertEqual(monday10.day, 0);
+    assertEqual(monday10.hour, 10);
+    assertEqual(monday10.count, 3);
+    assertEqual(monday10.eventCount, 4);
+    assertEqual(monday10.devices.get("a").count, 2);
+    assertEqual(monday10.devices.get("a").sources.length, 3);
+    assertEqual(confirmed.totalEvents, 4);
+    assertEqual(confirmed.affectedDevices, 3);
+    assertEqual(confirmed.maxCount, 3);
+    const suspected = api.getPowerHeatmapAnalytics(te, bar, "suspected");
+    assertEqual(suspected.cells[24 + 11].count, 1);
+    assertEqual(suspected.totalEvents, 1);
+    assertEqual(suspected.cells[10].count, 0);
+    const stale = api.getPowerHeatmapAnalytics({ ...te, stale: true }, null, "confirmed");
+    assertEqual(stale.totalEvents, 0);
+  });
+
   test("Длинная пауза перед запуском остаётся лишь кандидатом отключения питания", () => {
     const header = "<?xml version='1.0'?><LogModule>\n";
     const activity = (time) => `[Debug][Main] ${time} LOG_MOD_AUDIO 9 Synthetic activity\n`;

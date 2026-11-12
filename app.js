@@ -3066,6 +3066,45 @@
       buckets: buckets.map((item) => ({ ...item, count: item.devices.length, percent: selectedDevices.length ? item.devices.length / selectedDevices.length * 100 : 0 })) };
   }
 
+  const POWER_HEATMAP_DAYS = Object.freeze(["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]);
+
+  function getPowerHeatmapAnalytics(teAnalytics, barAnalytics, kind) {
+    const selectedKind = kind === "suspected" ? "suspected_power_loss" : "power_off";
+    const cells = Array.from({ length: 7 * 24 }, (_, index) => ({ day: Math.floor(index / 24), hour: index % 24, devices: new Map(), count: 0, eventCount: 0 }));
+    const seen = new Set();
+    for (const analytics of [teAnalytics, barAnalytics]) {
+      if (!analytics?.valid || analytics.stale) continue;
+      for (const event of analytics.groups?.[selectedKind]?.events || []) {
+        const at = String(event.deviceLocalTime || "");
+        if (!/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(at) || !event.deviceId) continue;
+        const date = new Date(`${at.slice(0, 10)}T${at.slice(11)}Z`);
+        if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 19).replace("T", " ") !== at) continue;
+        const day = (date.getUTCDay() + 6) % 7;
+        const hour = date.getUTCHours();
+        const cell = cells[day * 24 + hour];
+        const eventKey = `${event.deviceId}|${selectedKind}|${at}`;
+        const duplicate = seen.has(eventKey);
+        seen.add(eventKey);
+        const entry = cell.devices.get(event.deviceId) || { deviceId: event.deviceId, deviceName: event.deviceName, model: event.model, ip: event.ip,
+          locationName: event.locationName, address: event.address, count: 0, latestAt: "", sources: [] };
+        if (!duplicate) entry.count += 1;
+        if (at > entry.latestAt) entry.latestAt = at;
+        for (const source of event.sources || []) {
+          if (entry.sources.length >= 12) break;
+          const path = String(source.path || "").slice(0, 512);
+          const line = Number.isSafeInteger(source.line) ? source.line : null;
+          if (path && !entry.sources.some((item) => item.path === path && item.line === line)) entry.sources.push({ path, line });
+        }
+        cell.devices.set(event.deviceId, entry);
+        if (!duplicate) cell.eventCount += 1;
+      }
+    }
+    for (const cell of cells) cell.count = cell.devices.size;
+    return { kind: selectedKind, cells, maxCount: Math.max(0, ...cells.map((item) => item.count)),
+      totalEvents: cells.reduce((sum, item) => sum + item.eventCount, 0),
+      affectedDevices: new Set(cells.flatMap((item) => [...item.devices.keys()])).size };
+  }
+
   function getVersionAnalysis(candidateState, kind) {
     if (!["project", "firmware"].includes(kind)) return { rows: [], devices: 0, changes: 0 };
     const devices = new Map((candidateState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
@@ -5583,6 +5622,7 @@
     getRebootAnalytics,
     getHuaweiTeLogAnalytics,
     getPowerDurationAnalytics,
+    getPowerHeatmapAnalytics,
     buildHuawei310LogEventIndex,
     getVersionAnalysis,
     getConnectionErrorAnalysis,
@@ -5752,6 +5792,8 @@
     rebootView: null,
     rebootSubmodule: "reboots",
     powerDurationBucket: "over_year",
+    powerHeatmapKind: "confirmed",
+    powerHeatmapCell: null,
     analyticsPage: { rebootEvents: 0, project: 0, firmware: 0, authorization: 0, network: 0 },
     helpQuery: "",
     helpTopicId: null
@@ -6412,6 +6454,24 @@
       <div class="section-gap"><h3>${escapeHtml(selected.label)} — устройства</h3>${renderRebootTable(["Устройство", "Модель", "IP", "Локация", "Адрес", "Интервал", "Основание"], rows)}${selected.devices.length > 100 ? `<p class="muted">Показаны первые 100 устройств из ${selected.devices.length}; диаграмма рассчитана по всем.</p>` : ""}</div></section>`;
   }
 
+  function renderPowerHeatmap(data) {
+    const selectedKind = data.kind === "suspected_power_loss" ? "suspected" : "confirmed";
+    const selectedId = ui.powerHeatmapCell;
+    const requestedCell = data.cells.find((item) => `${item.day}:${item.hour}` === selectedId);
+    const selected = requestedCell || (data.maxCount ? [...data.cells].sort((a, b) => b.count - a.count || a.day - b.day || a.hour - b.hour)[0] : null);
+    const activeId = selected ? `${selected.day}:${selected.hour}` : null;
+    const rows = selected?.count ? [...selected.devices.values()].sort((a, b) => b.count - a.count || String(a.deviceName).localeCompare(String(b.deviceName), "ru")).slice(0, 100).map((item) => `<tr><td>${escapeHtml(item.deviceName || "Не указано")}</td><td>${escapeHtml(item.model || "Не указано")}</td><td class="mono">${escapeHtml(item.ip || "—")}</td><td>${escapeHtml(item.locationName || "Не указано")}</td><td>${escapeHtml(item.address || "Не указано")}</td><td>${item.count}</td><td>${escapeHtml(item.latestAt)}</td><td>${escapeHtml(item.sources.map((source) => `${source.path}${source.line === null ? "" : `:${source.line}`}`).join("; "))}</td></tr>`) : [];
+    const hours = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0"));
+    const color = selectedKind === "confirmed" ? "34, 129, 147" : "159, 92, 140";
+    return `<section class="card power-heatmap section-gap" aria-labelledby="power-heatmap-title"><div class="section-heading"><div><p class="eyebrow">День недели × час</p><h2 id="power-heatmap-title">Тепловая карта событий питания</h2></div></div>
+      <div class="power-heatmap-toolbar" role="group" aria-label="Тип событий"><button type="button" data-power-heatmap-kind="confirmed" aria-pressed="${selectedKind === "confirmed"}">Подтверждённые выключения</button><button type="button" data-power-heatmap-kind="suspected" aria-pressed="${selectedKind === "suspected"}">Предполагаемые паузы</button></div>
+      <p class="muted">Цвет ячейки — число уникальных устройств, а не число записей. Время взято из часов терминалов; часовые пояса не подтверждены. Фильтры и период событий применяются к карте.</p>
+      <div class="power-heatmap-stats"><span><strong>${data.totalEvents}</strong> событий</span><span><strong>${data.affectedDevices}</strong> устройств</span><span><strong>${data.maxCount}</strong> максимум в ячейке</span></div>
+      <div class="power-heatmap-scroll"><table class="power-heatmap-table"><thead><tr><th scope="col">День</th>${hours.map((hour) => `<th scope="col">${hour}</th>`).join("")}</tr></thead><tbody>${POWER_HEATMAP_DAYS.map((dayName, day) => `<tr><th scope="row">${dayName}</th>${hours.map((hourLabel, hour) => { const cell = data.cells[day * 24 + hour]; const id = `${day}:${hour}`; const intensity = cell.count && data.maxCount ? Math.max(.18, .15 + .8 * cell.count / data.maxCount) : 0; const label = `${dayName}, ${hourLabel}:00–${hourLabel}:59: ${cell.count} устройств, ${cell.eventCount} событий`; return `<td><button type="button" data-power-heatmap-cell="${id}" class="power-heatmap-cell${activeId === id ? " selected" : ""}" style="background-color:rgba(${color},${intensity.toFixed(3)})" aria-label="${escapeHtml(label)}" aria-pressed="${activeId === id}">${cell.count || "·"}</button></td>`; }).join("")}</tr>`).join("")}</tbody></table></div>
+      <div class="power-heatmap-scale" aria-hidden="true"><span>Нет событий</span><i class="${selectedKind}"></i><span>Больше устройств</span></div>
+      <div class="section-gap"><h3>${activeId ? `${POWER_HEATMAP_DAYS[selected.day]}, ${hours[selected.hour]}:00–${hours[selected.hour]}:59 — ${selected.count} устройств` : "В выбранной области событий нет"}</h3>${renderRebootTable(["Устройство", "Модель", "IP", "Локация", "Адрес", "Событий", "Последнее время", "Файлы-источники"], rows)}${selected?.count > 100 ? `<p class="muted">Показаны первые 100 устройств; итоги рассчитаны по полной выборке.</p>` : ""}</div></section>`;
+  }
+
   function renderReboots() {
     const analytics = getRebootAnalytics(state, ui.rebootFilters);
     const teAnalytics = getHuaweiTeLogAnalytics(ui.teLogIndex, state, ui.rebootFilters);
@@ -6423,7 +6483,7 @@
     const filters = renderRebootFilters(ui.rebootFilters, analytics);
     const tabs = `<nav class="reboot-submodules" aria-label="Разделы анализа"><button type="button" data-reboot-submodule="reboots" aria-current="${mode === "reboots" ? "page" : "false"}">Анализ перезагрузок</button><button type="button" data-reboot-submodule="power" aria-current="${mode === "power" ? "page" : "false"}">Анализ отключения питания</button></nav>`;
     if (!analytics.valid) return `${header}${tabs}${filters}<div class="error-panel section-gap" role="alert">${escapeHtml(analytics.errors.join("; "))}</div>`;
-    if (mode === "power") return `${header}${tabs}${filters}${renderPowerDurationDashboard(getPowerDurationAnalytics(teAnalytics, barAnalytics, state, ui.rebootFilters))}${teSections}${huawei310Sections}`;
+    if (mode === "power") return `${header}${tabs}${filters}${renderPowerDurationDashboard(getPowerDurationAnalytics(teAnalytics, barAnalytics, state, ui.rebootFilters))}${renderPowerHeatmap(getPowerHeatmapAnalytics(teAnalytics, barAnalytics, ui.powerHeatmapKind))}${teSections}${huawei310Sections}`;
     const empty = analytics.emptyState ? `<div class="${analytics.emptyState === "no_events" ? "success" : "info"}-panel section-gap"><strong>${escapeHtml(rebootEmptyMessage(analytics.emptyState))}</strong></div>` : "";
     if (["no_sr", "no_polling", "insufficient"].includes(analytics.emptyState)) return `${header}${tabs}${filters}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}${teSections}${huawei310Sections}`;
     return `${header}${tabs}${filters}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}
@@ -7381,6 +7441,7 @@
 
     if (event.target.closest("[data-clear-reboot-filters]")) {
       ui.rebootFilters = { period: "all", logSilenceMinutes: "60" };
+      ui.powerHeatmapCell = null;
       render();
       return;
     }
@@ -7394,6 +7455,19 @@
     const durationChoice = event.target.closest("[data-power-duration]");
     if (durationChoice) {
       ui.powerDurationBucket = POWER_DURATION_BUCKETS.some((item) => item.id === durationChoice.dataset.powerDuration) ? durationChoice.dataset.powerDuration : "over_year";
+      render();
+      return;
+    }
+    const heatmapKind = event.target.closest("[data-power-heatmap-kind]");
+    if (heatmapKind) {
+      ui.powerHeatmapKind = heatmapKind.dataset.powerHeatmapKind === "suspected" ? "suspected" : "confirmed";
+      ui.powerHeatmapCell = null;
+      render();
+      return;
+    }
+    const heatmapCell = event.target.closest("[data-power-heatmap-cell]");
+    if (heatmapCell) {
+      ui.powerHeatmapCell = /^([0-6]):(\d|1\d|2[0-3])$/.test(heatmapCell.dataset.powerHeatmapCell || "") ? heatmapCell.dataset.powerHeatmapCell : null;
       render();
       return;
     }
@@ -7687,6 +7761,7 @@
       event.preventDefault();
       const formData = new FormData(rebootFilterForm);
       ui.rebootFilters = Object.fromEntries(["period", "dateFrom", "dateTo", "category", "manufacturer", "model", "locationId", "address", "logSilenceMinutes"].map((key) => [key, String(formData.get(key) || "")]));
+      ui.powerHeatmapCell = null;
       render();
       return;
     }
