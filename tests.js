@@ -21,6 +21,7 @@
   const runtimeModelCatalog = typeof require === "function" ? require("./runtime/model-catalog") : null;
   const pollingRecovery = typeof require === "function" ? require("./runtime/polling-recovery") : global.MVP_POLLING_RECOVERY;
   const teLogEvents = typeof require === "function" ? require("./runtime/huawei-te-log-events") : global.MVP_HUAWEI_TE_LOG_EVENTS;
+  const huawei310LogEvents = typeof require === "function" ? require("./runtime/huawei-310-log-events") : global.MVP_HUAWEI_310_LOG_EVENTS;
   const fixtures = global.MvpSphereSRFixtures;
   const timelineExpected = global.MvpSphereSRTimelineExpectations;
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
@@ -2530,6 +2531,120 @@
     assertEqual(teLogEvents.deriveEvents((await teLogEvents.scanFile(file)).markers).length, 3);
   });
 
+  test("Bar 310 считает только подтверждённую web-перезагрузку", async () => {
+    const xml = ["<?xml version='1.0'?><LogModule>",
+      "2026-01-01 10:00:00 Web user reboot terminal success; user restart",
+      "2026-01-01 10:00:10 Component restart success",
+      "2026-01-01 10:01:10 System boot",
+      "2026-01-02 12:00:00 System boot",
+      "2026-01-02 12:00:01 Component restart success",
+      "2026-01-03 14:00:00 Web user shut down terminal",
+      "</LogModule>"].join("\n");
+    const scan = huawei310LogEvents.scanText(xml);
+    assert(scan.ok);
+    const events = huawei310LogEvents.deriveEvents(scan.markers);
+    assertEqual(events.filter((item) => item.kind === "confirmed_reboot").length, 1);
+    assertEqual(events.filter((item) => item.kind === "unknown_start").length, 1);
+    assertEqual(events.filter((item) => item.kind === "power_off").length, 1);
+    assertEqual(huawei310LogEvents.deriveEvents(huawei310LogEvents.scanText(xml.replace("success;", "failed;")).markers).filter((item) => item.kind === "confirmed_reboot").length, 0);
+    const file = new Blob([xml]);
+    assertEqual(huawei310LogEvents.deriveEvents((await huawei310LogEvents.scanFile(file)).markers).length, 3);
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [{ id: "bar310-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Bar 310", ipNormalized: "192.0.2.31", inCurrentSr: true }];
+    const row = (path) => ({ path, ip: "192.0.2.31", format: "Huawei 310 XML", matchStatus: "Сопоставлено", deviceId: "bar310-test" });
+    const index = api.buildHuawei310LogEventIndex([{ row: row("first.xml"), scan }, { row: row("second.xml"), scan }], state);
+    assertEqual(index.coverage.confirmedReboots, 1);
+    assertEqual(index.coverage.unknownStarts, 1);
+    assertEqual(index.coverage.powerOffs, 1);
+    assertEqual(index.coverage.startsAfterShutdown, 0);
+    assertEqual(index.events.find((item) => item.kind === "confirmed_reboot").sources.length, 2);
+    assert(!JSON.stringify(index).includes("Web user"), "Сырые сообщения не должны попадать в индекс");
+    const imported = api.buildDeviceLogImportRows([{ name: "192.0.2.31.xml", relativePath: "run/192.0.2.31.xml", size: file.size, prefix: new TextEncoder().encode(xml.slice(0, 2048)) }], state);
+    assertEqual(imported.rows[0].format, "Huawei 310 XML");
+    state.inventoryDevices[0].modelRaw = "Box 310";
+    assertEqual(api.buildHuawei310LogEventIndex([{ row: row("box.xml"), scan }], state).coverage.pendingBoxFiles, 1);
+  });
+
+  test("Bar 310 разделяет перезагрузку и выключение с пульта ДУ", () => {
+    const head = "<?xml version='1.0'?><LogModule>\n";
+    const remote = (at) => `${at} Remote control power button\n`;
+    const boot = (at) => `${at} System boot\n`;
+    const shutdown = (at) => `${at} User shut down terminal\n`;
+    const log = head + remote("2026-01-01 10:00:00") + remote("2026-01-01 10:00:14") + boot("2026-01-01 10:01:00")
+      + remote("2026-01-02 11:00:00") + shutdown("2026-01-02 11:00:04") + boot("2026-01-02 11:01:20") + "</LogModule>";
+    const events = huawei310LogEvents.deriveEvents(huawei310LogEvents.scanText(log).markers);
+    assertEqual(events.filter((item) => item.kind === "confirmed_reboot" && item.method === "remote_control").length, 1);
+    assertEqual(events.filter((item) => item.kind === "power_off" && item.method === "remote_control").length, 1);
+    assertEqual(events.filter((item) => item.kind === "start_after_shutdown").length, 1);
+    assertEqual(events.find((item) => item.kind === "confirmed_reboot").markerLineNumbers.length, 2);
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [{ id: "remote-bar", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Bar 310", ipNormalized: "192.0.2.31", inCurrentSr: true }];
+    const index = api.buildHuawei310LogEventIndex([{ row: { path: "run/192.0.2.31.xml", ip: "192.0.2.31", format: "Huawei 310 XML", matchStatus: "Сопоставлено", deviceId: "remote-bar" }, scan: huawei310LogEvents.scanText(log) }], state);
+    assertEqual(index.events.find((item) => item.kind === "confirmed_reboot").actionMethod, "remote_control");
+    assertEqual(index.events.find((item) => item.kind === "power_off").actionMethod, "remote_control");
+    assertEqual(index.coverage.confirmedReboots, 1);
+    assertEqual(index.coverage.powerOffs, 1);
+    assertEqual(index.coverage.startsAfterShutdown, 1);
+    const single = huawei310LogEvents.deriveEvents(huawei310LogEvents.scanText(head + remote("2026-01-03 12:00:00") + boot("2026-01-03 12:01:00")).markers);
+    assertEqual(single.filter((item) => item.kind === "confirmed_reboot").length, 0);
+    const tooFar = huawei310LogEvents.deriveEvents(huawei310LogEvents.scanText(head + remote("2026-01-04 12:00:00") + remote("2026-01-04 12:01:00") + boot("2026-01-04 12:02:00")).markers);
+    assertEqual(tooFar.filter((item) => item.kind === "confirmed_reboot").length, 0);
+    const notRemote = huawei310LogEvents.deriveEvents(huawei310LogEvents.scanText(head + shutdown("2026-01-05 12:00:00") + boot("2026-01-05 12:01:00")).markers);
+    assertEqual(notRemote.filter((item) => item.kind === "power_off").length, 0);
+  });
+
+  test("Bar 310: пауза перед неизвестным запуском остаётся низкодостоверной", () => {
+    const header = "<?xml version='1.0'?><LogModule>\n";
+    const log = header + "2026-01-01 09:00:00 Activity\n2026-01-01 09:01:00 Activity\n2026-01-01 10:05:00 Activity\n2026-01-01 10:06:00 System boot\n";
+    const scan = huawei310LogEvents.scanText(log);
+    assertEqual(scan.bootGaps.length, 1);
+    assertEqual(scan.bootGaps[0].gapSeconds, 64 * 60);
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [{ id: "bar-gap", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Bar 310", ipNormalized: "192.0.2.31", inCurrentSr: true }];
+    const index = api.buildHuawei310LogEventIndex([{ row: { path: "run/192.0.2.31.xml", ip: "192.0.2.31", format: "Huawei 310 XML", matchStatus: "Сопоставлено", deviceId: "bar-gap" }, scan }], state);
+    const analytics = api.getHuaweiTeLogAnalytics(index, state, { period: "all", logSilenceMinutes: "60" });
+    assertEqual(analytics.groups.suspected_power_loss.count, 1);
+    assertEqual(analytics.groups.confirmed_reboot.count, 0);
+    assertEqual(api.getHuaweiTeLogAnalytics(index, state, { period: "all", logSilenceMinutes: "120" }).groups.suspected_power_loss.count, 0);
+  });
+
+  test("Диаграмма питания использует 100% выбранных устройств и непересекающиеся интервалы", () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = [
+      { id: "a", inCurrentSr: true, category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE20" },
+      { id: "b", inCurrentSr: true, category: "vcs", manufacturerRaw: "Huawei", modelRaw: "Bar 310" },
+      { id: "c", inCurrentSr: true, category: "controller", manufacturerRaw: "Extron", modelRaw: "IPCP Pro 250" },
+      { id: "d", inCurrentSr: true, category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE40" }
+    ];
+    const suspected = (deviceId, seconds) => ({ kind: "suspected_power_loss", deviceId, seconds, silenceGap: { seconds }, estimatedAt: "2026-01-02T00:00:00.000Z", deviceName: deviceId, model: "TE20", ip: "192.0.2.31" });
+    const te = { valid: true, stale: false, groups: { suspected_power_loss: { events: [suspected("a", 3600), suspected("a", 4000)] }, power_off: { events: [{ kind: "power_off", deviceId: "d", estimatedAt: "2026-01-01T00:00:00.000Z", deviceName: "d", model: "TE40", ip: "192.0.2.40" }] }, unknown_start: { events: [{ kind: "unknown_start", deviceId: "d", estimatedAt: "2026-01-01T02:00:00.000Z" }] } } };
+    const bar = { valid: true, stale: false, groups: { suspected_power_loss: { events: [suspected("b", 366 * 86400)] } } };
+    const all = api.getPowerDurationAnalytics(te, bar, state, {});
+    assertEqual(all.totalDevices, 4);
+    assertEqual(all.observedDevices, 3);
+    assertEqual(all.withoutMeasuredGap, 1);
+    assertEqual(all.buckets.reduce((sum, item) => sum + item.count, 0), 3);
+    assertEqual(all.buckets.find((item) => item.id === "over_year").count, 1);
+    assertEqual(all.buckets.find((item) => item.id === "day").count, 2);
+    assertEqual(api.getPowerDurationAnalytics(te, bar, state, { manufacturer: "Huawei" }).totalDevices, 3);
+  });
+
+  test("Восемь интервалов питания имеют непересекающиеся границы и стартуют с более года", () => {
+    const state = api.createDemoState();
+    const seconds = [1800, 4000, 90000, 700000, 3000000, 8000000, 16000000, 32000000];
+    state.inventoryDevices = seconds.map((_, number) => ({ id: `duration-${number}`, inCurrentSr: true, category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE40" }));
+    const events = seconds.map((value, number) => ({ kind: "suspected_power_loss", deviceId: `duration-${number}`, silenceGap: { seconds: value }, estimatedAt: "2026-01-01T00:00:00.000Z", deviceName: `Synthetic ${number}`, model: "TE40", ip: `192.0.2.${number + 10}` }));
+    const data = api.getPowerDurationAnalytics({ valid: true, stale: false, groups: { suspected_power_loss: { events } } }, null, state, {});
+    assertEqual(data.totalDevices, 8);
+    assertEqual(data.buckets.length, 8);
+    assert(data.buckets.every((item) => item.count === 1));
+    assertEqual(data.buckets.at(-1).id, "over_year");
+    if (typeof require === "function") assert(require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8").includes('powerDurationBucket: "over_year"'));
+  });
+
   test("Длинная пауза перед запуском остаётся лишь кандидатом отключения питания", () => {
     const header = "<?xml version='1.0'?><LogModule>\n";
     const activity = (time) => `[Debug][Main] ${time} LOG_MOD_AUDIO 9 Synthetic activity\n`;
@@ -2541,8 +2656,11 @@
     assertEqual(scanned.bootGaps[0].knownAction, false);
     const withOff = teLogEvents.scanText(header + activity("2026-01-01 09:00:00") + "[Debug][Main] 2026-01-01 09:01:00 LOG_MOD_BSP 11 Terminal powered off\n" + activity("2026-01-01 10:05:00") + boot);
     assertEqual(withOff.bootGaps[0].knownAction, true);
-    const withClockJump = teLogEvents.scanText(header + activity("2025-01-01 09:00:00") + activity("2026-01-01 10:05:00") + boot);
+    const withClockJump = teLogEvents.scanText(header + activity("2000-01-01 09:00:00") + activity("2026-01-01 10:05:00") + boot);
     assertEqual(withClockJump.bootGaps[0].clockAnomalyOrLongGap, true);
+    const yearly = teLogEvents.scanText(header + activity("2025-01-01 09:00:00") + activity("2026-01-01 10:05:00") + boot);
+    assert(yearly.bootGaps[0].gapSeconds > 365 * 86400);
+    assertEqual(yearly.bootGaps[0].clockAnomalyOrLongGap, false);
   });
 
   test("Предполагаемое отключение питания отделено от подтверждённых событий и зависит от порога", () => {

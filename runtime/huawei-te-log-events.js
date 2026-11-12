@@ -6,7 +6,7 @@
   const MAX_LINE = 8192;
   const CHUNK_BYTES = 65536;
   const BOOT_WINDOW_MS = 10 * 60 * 1000;
-  const MAX_SUSPECT_GAP_MS = 30 * 24 * 60 * 60 * 1000;
+  const MAX_SUSPECT_GAP_MS = 10 * 365 * 24 * 60 * 60 * 1000;
   const ACTIVITY_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+LOG_MOD_[A-Z0-9_]{2,32}\b/;
   const EVENT_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_[A-Z0-9_]{2,32})\s+\d{1,8}\s+(.{0,4096})$/;
   const TE20_EVENT_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_MC)\s+\d{1,9}\s+\d{1,9}\[[A-Za-z]:\d{1,6}\s+[A-Za-z]:\d{1,6}\]\s+(.{0,4096})$/;
