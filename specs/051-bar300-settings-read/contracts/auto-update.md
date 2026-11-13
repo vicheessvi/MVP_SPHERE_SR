@@ -1,6 +1,6 @@
 # Контракт read-only возможности обновления Bar 300
 
-Актуализация ADR-0054: тот же узкий reader предварительно доступен exact Box 300/600 только после их собственных model/identity gates и текущих bundle-маркеров. Живое подтверждение ручного кода ниже относится лишь к Bar 300; новые Box-факты имеют `provisional_user_validation`. Это заменяет прежнюю фразу о запрете наследования.
+Актуализация ADR-0054: тот же узкий reader доступен exact Box 300/600 только после собственных model/identity gates и текущих bundle-маркеров. Администратор сверил их значения с меню; новые Box-факты имеют `confirmed_user_validation`, исторические provisional JSON не переписываются. Живое подтверждение ручного кода ниже относится лишь к Bar 300; старую фразу о запрете наследования заменяет это уточнение.
 
 Только exact Bar 300 после numeric pre-auth model и post-auth model/identity gates. Текущий bundle должен одновременно содержать `cloudsetPanelObjRequest` с `cloudType`, форму `SelCloudType`, её ручной пункт `value:Q` и подтверждённую кодовую схему `Y=2,K=5,J=6,Q=7,Z=8,$=10,ee=11`. Узкий `WEB_GetCfgParamAPI` запрашивает только `CfgIDString=["cloudType"]` с текущим CSRF; соседние `cloudCfgType`, `HwCloudName`, регистрационные логины и пароли не запрашиваются.
 

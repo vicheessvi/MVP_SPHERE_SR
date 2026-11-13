@@ -35,6 +35,7 @@
 
 - [x] T010 Обновить `AGENTS.md`, `docs/context-map.md`, `docs/implementation-log.md`, `docs/decisions/ADR-0055-cloudlink-300-log-export.md` и `product-catalog.js`.
 - [x] T011 Выполнить полные Python/JS/reference/syntax/security проверки для `mvp_runtime/adapters/huawei_300.py`, `mvp_runtime/polling.py`, `python_tests/test_huawei_300.py`, `python_tests/test_polling.py` и `product-catalog.js`.
+- [x] T012 Зафиксировать подтверждение администратором успешных опросов и логов всех трёх моделей в `specs/052-cloudlink-300-log-collection/research.md`, `mvp_runtime/adapters/huawei_300.py` и документации; не повышать статус отдельных настроек Box.
 
 ## Dependencies
 

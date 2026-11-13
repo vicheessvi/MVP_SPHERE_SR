@@ -1,6 +1,6 @@
 # Contract: Huawei CloudLink 300 log export v1
 
-Только exact Bar 300, Box 300, Box 600 после их собственных numeric pre-auth model и post-auth exact model плюс SN/MAC gates. Текущий bundle обязан содержать оба маркера `ExportLogBtn.onClick=i.handleExportLogData` и `handleExportLogData=function(){window.open("log?rmd="+Math.random()`. На Bar 300 live подтверждены только HTTP/MIME/XML-префикс, а не полное сохранение; `logCollection.validationStatus` для всех трёх моделей предварителен до проверки администратором каждого файла.
+Только exact Bar 300, Box 300, Box 600 после их собственных numeric pre-auth model и post-auth exact model плюс SN/MAC gates. Текущий bundle обязан содержать оба маркера `ExportLogBtn.onClick=i.handleExportLogData` и `handleExportLogData=function(){window.open("log?rmd="+Math.random()`. После проверки агента на Bar 300 администратор подтвердил успешное формирование опросов и логов всех трёх моделей; новые `logCollection.validationStatus` получают `confirmed_user_validation`. Старые предварительные JSON не переписываются.
 
 Один read-only `GET /log?rmd=<nonce>` по HTTPS/443 с cookie текущего сеанса, `Referer` и без учётных данных/CSRF в URL. TLS по умолчанию проверяется; самоподписанный сертификат допустим только при явном разрешении данного запуска. Не вызывать соседние `WEB_CleanAllLogsAPI`, `WEB_DeleteCHRLogAPI`, `WEB_HIDLogExportRequest`, диагностический `logfile.tgz` или методы другой серии.
 

@@ -1,6 +1,6 @@
 # Контракт read-only интервала сна Bar 300
 
-Актуализация ADR-0054: общий узкий reader предварительно доступен exact Box 300/600 после их собственных model/identity gates и bundle-маркеров; живые коды ниже подтверждены только на Bar 300. Новые Box-факты имеют `provisional_user_validation`. Это заменяет прежнюю фразу о запрете наследования.
+Актуализация ADR-0054: общий узкий reader доступен exact Box 300/600 после собственных model/identity gates и bundle-маркеров. Администратор сверил их значения с меню; новые Box-факты имеют `confirmed_user_validation`, старые provisional JSON не переписываются. Живые коды ниже исследованы агентом только на Bar 300; это уточнение заменяет прежнюю фразу о запрете наследования.
 
 Только exact Bar 300 после numeric pre-auth model и post-auth model/identity gates. Текущий bundle должен содержать форму `SelSleepDuration` с `sleepTime` и `powerMagParams` с тем же ID; видимые коды `{0,1,5,10,15,30,60}` соответствуют «Никогда» и минутам. Узкий `WEB_GetCfgParamAPI` запрашивает только `CfgIDString=["sleepTime"]` с текущим CSRF; широкую базовую группу, включающую `api_user`, `admin_user` и email, не запрашивать.
 

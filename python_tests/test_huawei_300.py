@@ -134,7 +134,7 @@ class Huawei300Tests(unittest.TestCase):
                     [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
                     {**options, "request": fake_request([], model=model, code=code, bundle=LOG_BUNDLE)})
                 self.assertTrue(result["ok"])
-                self.assertEqual(result["logCollection"], {"status": "saved", "validationStatus": "provisional_user_validation"})
+                self.assertEqual(result["logCollection"], {"status": "saved", "validationStatus": "confirmed_user_validation"})
                 self.assertEqual(len(opened), 1)
                 self.assertNotIn("SYNTHETIC-PRIVATE-LOG", json.dumps(result))
 
@@ -174,7 +174,7 @@ class Huawei300Tests(unittest.TestCase):
              "collect_logs": True, "log_opener": opener, "on_log": sink},
         )
         self.assertTrue(result["ok"])
-        self.assertEqual(result["logCollection"], {"status": "saved", "validationStatus": "provisional_user_validation"})
+        self.assertEqual(result["logCollection"], {"status": "saved", "validationStatus": "confirmed_user_validation"})
         self.assertEqual(saved[0][1], {"ip": "192.0.2.31", "filename": "192.0.2.31.xml"})
         self.assertTrue(opened and stream.closed)
         self.assertNotIn("SYNTHETIC-PRIVATE-LOG", json.dumps(result))
@@ -276,13 +276,13 @@ class Huawei300Tests(unittest.TestCase):
                      "allow_insecure_tls": True},
                 )
                 self.assertTrue(result["ok"])
-                self.assertEqual(result["deviceSettings"]["validationStatus"], "provisional_user_validation")
+                self.assertEqual(result["deviceSettings"]["validationStatus"], "confirmed_user_validation")
                 for key in ("http", "telnet", "ssh", "autoAnswer", "ntp", "wifi", "autoUpdate", "powerManagement"):
                     field = result["deviceSettings"]["fields"][key]
                     self.assertEqual(field["status"], "read", key)
-                    self.assertEqual(field["validationStatus"], "provisional_user_validation", key)
+                    self.assertEqual(field["validationStatus"], "confirmed_user_validation", key)
                 self.assertEqual(result["deviceSettings"]["fields"]["snmpV2"]["status"], "not_exposed")
-                self.assertNotIn("reason", result["deviceSettings"]["fields"]["snmpV2"])
+                self.assertEqual(result["deviceSettings"]["fields"]["snmpV2"]["reason"], "version_not_supported")
                 self.assertEqual(result["deviceSettings"]["fields"]["powerManagement"]["value"]["sleepTimeCode"], 10)
                 self.assertTrue(all(item["method"] in ("GET", "POST") for item in calls))
                 self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in calls))
@@ -372,7 +372,7 @@ class Huawei300Tests(unittest.TestCase):
             {"request": fake_request(calls, model="Box 300", code=19, bundle=SLEEP_BUNDLE), "allow_insecure_tls": True},
         )
         self.assertEqual(box["deviceSettings"]["fields"]["powerManagement"]["status"], "read")
-        self.assertEqual(box["deviceSettings"]["fields"]["powerManagement"]["validationStatus"], "provisional_user_validation")
+        self.assertEqual(box["deviceSettings"]["fields"]["powerManagement"]["validationStatus"], "confirmed_user_validation")
         self.assertEqual([json.loads(item["body"])["CfgIDString"] for item in calls if "WEB_GetCfgParamAPI" in item["path"]], [["sitename"], ["sleepTime"]])
 
     def test_exact_bar300_server_type_audit_is_narrow_and_model_gated(self):
@@ -401,7 +401,7 @@ class Huawei300Tests(unittest.TestCase):
             {"request": fake_request(calls, model="Box 300", code=19, bundle=SERVER_TYPE_BUNDLE), "allow_insecure_tls": True},
         )
         self.assertEqual(box["deviceSettings"]["fields"]["autoUpdate"]["status"], "read")
-        self.assertEqual(box["deviceSettings"]["fields"]["autoUpdate"]["validationStatus"], "provisional_user_validation")
+        self.assertEqual(box["deviceSettings"]["fields"]["autoUpdate"]["validationStatus"], "confirmed_user_validation")
         self.assertEqual([json.loads(item["body"])["CfgIDString"] for item in calls if "WEB_GetCfgParamAPI" in item["path"]], [["sitename"], ["cloudType"]])
         calls = []
         drift = poll_huawei_bar300_device(
@@ -443,7 +443,7 @@ class Huawei300Tests(unittest.TestCase):
             {"request": fake_request(calls, model="Box 300", code=19, bundle=WIFI_BUNDLE), "allow_insecure_tls": True},
         )
         self.assertEqual(box["deviceSettings"]["fields"]["wifi"]["status"], "read")
-        self.assertEqual(box["deviceSettings"]["fields"]["wifi"]["validationStatus"], "provisional_user_validation")
+        self.assertEqual(box["deviceSettings"]["fields"]["wifi"]["validationStatus"], "confirmed_user_validation")
         self.assertEqual(sum("WEB_GetWifiStatModeAPI" in call["path"] for call in calls), 1)
 
     def test_exact_bar300_ntp_read_is_narrow_and_schema_checked(self):
@@ -476,7 +476,7 @@ class Huawei300Tests(unittest.TestCase):
             {"request": fake_request(calls, model="Box 300", code=19, bundle=NTP_BUNDLE), "allow_insecure_tls": True},
         )
         self.assertEqual(box["deviceSettings"]["fields"]["ntp"]["status"], "read")
-        self.assertEqual(box["deviceSettings"]["fields"]["ntp"]["validationStatus"], "provisional_user_validation")
+        self.assertEqual(box["deviceSettings"]["fields"]["ntp"]["validationStatus"], "confirmed_user_validation")
 
     def test_exact_bar300_auto_answer_uses_confirmed_cycle_and_narrow_read(self):
         for code, expected in ((0, "enabled"), (1, "disabled"), (2, None)):
@@ -500,7 +500,7 @@ class Huawei300Tests(unittest.TestCase):
             {"request": fake_request(calls, model="Box 300", code=19, bundle=ANSWER_BUNDLE), "allow_insecure_tls": True},
         )
         self.assertEqual(box["deviceSettings"]["fields"]["autoAnswer"]["status"], "read")
-        self.assertEqual(box["deviceSettings"]["fields"]["autoAnswer"]["validationStatus"], "provisional_user_validation")
+        self.assertEqual(box["deviceSettings"]["fields"]["autoAnswer"]["validationStatus"], "confirmed_user_validation")
 
     def test_exact_bar300_ssh_read_is_narrow_and_model_gated(self):
         for code, expected in ((1, "enabled"), (0, "disabled"), (2, "disabled"), (3, None)):
@@ -524,7 +524,7 @@ class Huawei300Tests(unittest.TestCase):
             {"request": fake_request(calls, model="Box 300", code=19, bundle=SSH_BUNDLE), "allow_insecure_tls": True},
         )
         self.assertEqual(box["deviceSettings"]["fields"]["ssh"]["status"], "read")
-        self.assertEqual(box["deviceSettings"]["fields"]["ssh"]["validationStatus"], "provisional_user_validation")
+        self.assertEqual(box["deviceSettings"]["fields"]["ssh"]["validationStatus"], "confirmed_user_validation")
 
     def test_exact_bar300_telnet_read_is_narrow_and_model_gated(self):
         for code, expected in ((0, "disabled"), (1, "enabled"), (2, "disabled"), (3, None)):
@@ -548,7 +548,7 @@ class Huawei300Tests(unittest.TestCase):
             {"request": fake_request(calls, model="Box 300", code=19, bundle=TELNET_BUNDLE), "allow_insecure_tls": True},
         )
         self.assertEqual(box["deviceSettings"]["fields"]["telnet"]["status"], "read")
-        self.assertEqual(box["deviceSettings"]["fields"]["telnet"]["validationStatus"], "provisional_user_validation")
+        self.assertEqual(box["deviceSettings"]["fields"]["telnet"]["validationStatus"], "confirmed_user_validation")
 
     def test_exact_bar300_http_read_uses_confirmed_bundle_and_schema(self):
         for code, expected in ((0, "disabled"), (1, "enabled"), (2, "disabled"), (3, None)):
@@ -571,7 +571,7 @@ class Huawei300Tests(unittest.TestCase):
             {"request": fake_request(calls, model="Box 300", code=19, bundle=HTTP_BUNDLE), "allow_insecure_tls": True},
         )
         self.assertEqual(result["deviceSettings"]["fields"]["http"]["status"], "read")
-        self.assertEqual(result["deviceSettings"]["fields"]["http"]["validationStatus"], "provisional_user_validation")
+        self.assertEqual(result["deviceSettings"]["fields"]["http"]["validationStatus"], "confirmed_user_validation")
         self.assertEqual(sum('WEB_GetCfgParamAPI' in item["path"] for item in calls), 2)
 
     def test_bar300_live_shape_and_site_name(self):
@@ -604,7 +604,7 @@ class Huawei300Tests(unittest.TestCase):
                 self.assertEqual(result["vendorPolling"]["contract"], contract)
                 self.assertEqual(result["vendorPolling"]["validationStatus"], "confirmed_user_validation")
                 self.assertEqual(result["siteName"]["value"], "Synthetic Site")
-                self.assertNotIn("reason", result["deviceSettings"]["fields"]["snmpV2"])
+                self.assertEqual(result["deviceSettings"]["fields"]["snmpV2"]["reason"], "version_not_supported")
 
     def test_wrong_model_and_bundle_fail_before_credentials(self):
         for poll, model, code, _contract in MODEL_CASES:

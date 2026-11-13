@@ -362,7 +362,7 @@ class PollingTests(unittest.TestCase):
 
         def adapter(device, _credentials, options):
             seen.append((device["model"], options["collect_logs"], callable(options["on_log"])))
-            return {"ok": True, "logCollection": {"status": "saved", "validationStatus": "provisional_user_validation"}}
+            return {"ok": True, "logCollection": {"status": "saved", "validationStatus": "confirmed_user_validation"}}
 
         adapters = {key: adapter for key in (
             "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1"

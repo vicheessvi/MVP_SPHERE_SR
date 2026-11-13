@@ -2236,31 +2236,36 @@
     assert(!box.deviceSettings?.fields?.powerManagement);
   });
 
-  test("Box 300 и Box 600 наследуют только guarded read-only поля с предварительным статусом", () => {
+  test("Box 300 и Box 600 сохраняют подтверждённые настройки и прежний предварительный статус файлов", () => {
     for (const [adapterKey, model] of [["vcs/huawei/box300", "Box 300"], ["vcs/huawei/box600", "Box 600"]]) {
-      const validationStatus = "provisional_user_validation";
+      const validationStatus = "confirmed_user_validation";
       const fields = {
         http: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enable_http", validationStatus },
         wifi: { status: "read", value: { modeCode: 0, clientEnabled: false, accessPointEnabled: false }, source: "WEB_GetWifiStatModeAPI:ucWifiMode", validationStatus },
         autoUpdate: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:cloudType", serverTypeCode: 7,
           basis: "server_type_audit_rule", ruleVersion: "bar300-cloud-type-audit-v1", meaning: "firmware_update_capability", validationStatus },
         powerManagement: { status: "read", value: { sleepTimeCode: 10, sleepMode: "interval", networkWakeEnabled: false },
-          source: "WEB_GetCfgParamAPI:sleepTime,enable_wol", validationStatus }
+          source: "WEB_GetCfgParamAPI:sleepTime,enable_wol", validationStatus },
+        snmpV2: { status: "not_exposed", value: null, reason: "version_not_supported" }
       };
       const payload = { ok: true, adapterKey, webBlocks: { "Device Info": { Model: model } },
         deviceSettings: { validationStatus, fields } };
       const projected = api.pollingPayloadProjection(payload);
-      for (const key of Object.keys(fields)) {
+      for (const key of ["http", "wifi", "autoUpdate", "powerManagement"]) {
         assertEqual(projected.deviceSettings.fields[key].status, "read");
         assertEqual(projected.deviceSettings.fields[key].validationStatus, validationStatus);
       }
+      assertEqual(projected.deviceSettings.fields.snmpV2.reason, "version_not_supported");
       const noFieldMark = api.pollingPayloadProjection({ ...payload, deviceSettings: {
         validationStatus, fields: { http: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enable_http" } } } });
       assert(!noFieldMark.deviceSettings?.fields?.http);
-      const forgedConfirmed = api.pollingPayloadProjection({ ...payload, deviceSettings: {
-        validationStatus: "confirmed_user_validation", fields: {
-          http: { ...fields.http, validationStatus: "confirmed_user_validation" } } } });
-      assert(!forgedConfirmed.deviceSettings?.fields?.http);
+      const historicalProvisional = api.pollingPayloadProjection({ ...payload, deviceSettings: {
+        validationStatus: "provisional_user_validation", fields: {
+          http: { ...fields.http, validationStatus: "provisional_user_validation" } } } });
+      assertEqual(historicalProvisional.deviceSettings.fields.http.validationStatus, "provisional_user_validation");
+      const mismatchedMarker = api.pollingPayloadProjection({ ...payload, deviceSettings: {
+        validationStatus, fields: { http: { ...fields.http, validationStatus: "provisional_user_validation" } } } });
+      assert(!mismatchedMarker.deviceSettings?.fields?.http);
       const wrongModel = api.pollingPayloadProjection({ ...payload, webBlocks: { "Device Info": { Model: "Bar 300" } } });
       assert(!wrongModel.deviceSettings?.fields?.http);
       const wrongRule = api.pollingPayloadProjection({ ...payload, deviceSettings: { validationStatus,

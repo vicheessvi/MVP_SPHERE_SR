@@ -434,8 +434,7 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
 
         site_name = _read_site_name(bundle, action, csrf)
         device_settings = unknown_device_settings(label, not_exposed=("snmpV2", "autoUpdate"))
-        if model_key == "bar300":
-            device_settings["fields"]["snmpV2"]["reason"] = "version_not_supported"
+        device_settings["fields"]["snmpV2"]["reason"] = "version_not_supported"
         if model_key in ("bar300", "box300", "box600"):
             device_settings["fields"]["autoUpdate"] = _read_bar300_auto_update(bundle, action, csrf)
             device_settings["fields"]["http"] = _read_bar300_http(bundle, action, csrf)
@@ -446,10 +445,10 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             device_settings["fields"]["wifi"] = _read_bar300_wifi(bundle, action, csrf)
             device_settings["fields"]["powerManagement"] = _read_bar300_sleep(bundle, action, csrf)
         if model_key in ("box300", "box600"):
-            device_settings["validationStatus"] = "provisional_user_validation"
+            device_settings["validationStatus"] = "confirmed_user_validation"
             for field in device_settings["fields"].values():
                 if field.get("status") == "read":
-                    field["validationStatus"] = "provisional_user_validation"
+                    field["validationStatus"] = "confirmed_user_validation"
         log_collection = None
         if settings.get("collect_logs") is True:
             if not callable(settings.get("on_log")):
@@ -467,7 +466,7 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
                     if not isinstance(response, dict) or response.get("status") not in {"saved", "failed"}:
                         raise HuaweiContractError("log_ack_invalid")
                     log_collection = {"status": response["status"],
-                                      "validationStatus": "provisional_user_validation"}
+                                      "validationStatus": "confirmed_user_validation"}
                     if response["status"] == "failed":
                         log_collection["safeError"] = "log_save_failed"
                 except BaseException as error:

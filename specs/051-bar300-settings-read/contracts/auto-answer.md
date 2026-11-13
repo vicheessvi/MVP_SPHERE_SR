@@ -1,5 +1,5 @@
 # Контракт read-only автоответа Bar 300
 
-Актуализация ADR-0054: тот же узкий reader предварительно доступен exact Box 300/600 только после их собственных model/identity gates и текущих bundle-маркеров; циклы ниже подтверждены лишь на Bar 300. Новые Box-факты имеют `provisional_user_validation`.
+Актуализация ADR-0054: тот же узкий reader доступен exact Box 300/600 только после собственных model/identity gates и текущих bundle-маркеров; администратор сверил их значения с меню, новые Box-факты имеют `confirmed_user_validation`. Исторические provisional JSON не переписываются, циклы ниже подтверждены лишь на Bar 300.
 
 Только exact Bar 300 после существующих pre/post-auth model и identity gates. Текущий bundle должен содержать config-группу с `autoreply` и форму `SelectAutoreply` с кодами `0=Авто`, `1=Вручную`. Узкий `WEB_GetCfgParamAPI` запрашивает только `CfgIDString=["autoreply"]` с текущим CSRF; другие параметры конференции и Wi‑Fi не запрашиваются. Строгое целое `0` → `enabled` (автоответ), `1` → `disabled` (ручной режим), другой код/ошибка → `unavailable`, отсутствующий маркер → `protocol_required`. Администратор вручную проверил цикл 0→1→0, каждый шаг подтверждён отдельным read-only чтением. Источник: `WEB_GetCfgParamAPI:autoreply`; команд сохранения нет.

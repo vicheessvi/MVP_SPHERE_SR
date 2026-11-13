@@ -1384,7 +1384,7 @@
     const box300SettingsExact = (projected.adapterKey === "vcs/huawei/box300" && observedModel === "box300")
       || (projected.adapterKey === "vcs/huawei/box600" && observedModel === "box600");
     const box300SettingsValidation = box300SettingsExact ? getCaseInsensitive(suppliedSettings, "validationStatus") : null;
-    const box300SettingsAccepted = box300SettingsValidation === "provisional_user_validation";
+    const box300SettingsAccepted = ["provisional_user_validation", "confirmed_user_validation"].includes(box300SettingsValidation);
     const exact300SettingsRead = bar300SettingsConfirmed || box300SettingsAccepted;
     const boxSettingsValidation = boxModelExact ? getCaseInsensitive(suppliedSettings, "validationStatus") : null;
     const boxSettingsAccepted = ["provisional_user_validation", "confirmed_user_validation"].includes(boxSettingsValidation);
@@ -1474,7 +1474,7 @@
         projectedFields[key] = { status: "read", value: { shutdownRestartEnabled: value.shutdownRestartEnabled, sleepMode: value.sleepMode, sleepTimeCode: value.sleepTimeCode, automaticRestartEnabled: value.automaticRestartEnabled, automaticRestartIntervalDays: value.automaticRestartIntervalDays, clearMemoryInSleepEnabled: value.clearMemoryInSleepEnabled, energySavingEnabled: value.energySavingEnabled }, source, unconfirmedFields: ["scheduledPowerOn", "scheduledPowerOff", "clearMemoryAfterRestart"] };
       } else if (["protocol_required", "unavailable", "not_exposed"].includes(status)) {
         projectedFields[key] = { status, value: null };
-        if ((te20SettingsConfirmed || bar300SettingsConfirmed) && key === "snmpV2" && status === "not_exposed" && getCaseInsensitive(supplied, "reason") === "version_not_supported") {
+        if ((te20SettingsConfirmed || exact300SettingsRead) && key === "snmpV2" && status === "not_exposed" && getCaseInsensitive(supplied, "reason") === "version_not_supported") {
           projectedFields[key].reason = "version_not_supported";
         }
         if (te20SettingsConfirmed && key === "wifi" && status === "not_exposed" && getCaseInsensitive(supplied, "reason") === "capability_absent") {
