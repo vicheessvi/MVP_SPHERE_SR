@@ -925,7 +925,7 @@ def poll_huawei_310_family_device(
                 response = settings["on_log"](stream, {"ip": ip, "filename": f"{ip}.xml"})
                 if not isinstance(response, dict) or response.get("status") not in {"saved", "failed"}:
                     raise Bar310ContractError("log_ack_invalid")
-                log_collection = {"status": response["status"], "validationStatus": "confirmed_local_validation" if contract_model == "Bar 310" else "provisional_user_validation"}
+                log_collection = {"status": response["status"], "validationStatus": "confirmed_user_validation"}
                 if response["status"] == "failed":
                     log_collection["safeError"] = "log_save_failed"
             except BaseException as error:

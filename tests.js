@@ -2563,7 +2563,7 @@
     const imported = api.buildDeviceLogImportRows([{ name: "192.0.2.31.xml", relativePath: "run/192.0.2.31.xml", size: file.size, prefix: new TextEncoder().encode(xml.slice(0, 2048)) }], state);
     assertEqual(imported.rows[0].format, "Huawei 310 XML");
     state.inventoryDevices[0].modelRaw = "Box 310";
-    assertEqual(api.buildHuawei310LogEventIndex([{ row: row("box.xml"), scan }], state).coverage.pendingBoxFiles, 1);
+    assertEqual(api.buildHuawei310LogEventIndex([{ row: row("box.xml"), scan }], state).coverage.boxFiles, 1);
   });
 
   test("Bar 310 разделяет перезагрузку и выключение с пульта ДУ", () => {
@@ -2593,6 +2593,34 @@
     assertEqual(tooFar.filter((item) => item.kind === "confirmed_reboot").length, 0);
     const notRemote = huawei310LogEvents.deriveEvents(huawei310LogEvents.scanText(head + shutdown("2026-01-05 12:00:00") + boot("2026-01-05 12:01:00")).markers);
     assertEqual(notRemote.filter((item) => item.kind === "power_off").length, 0);
+  });
+
+  test("Box 310/610 после пользовательского подтверждения входят в модельную аналитику", () => {
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [
+      { id: "box310-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Box 310", ipNormalized: "192.0.2.31", inCurrentSr: true },
+      { id: "box610-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Box 610", ipNormalized: "192.0.2.61", inCurrentSr: true }
+    ];
+    const xml = "<?xml version='1.0'?><LogModule>\n2026-01-01 10:00:00 Web user reboot terminal success\n2026-01-01 10:01:00 System boot\n2026-01-02 11:00:00 Web user shut down terminal\n2026-01-02 12:00:00 System boot\n</LogModule>";
+    const scan = huawei310LogEvents.scanText(xml);
+    const rows = state.inventoryDevices.map((device) => ({ row: { path: `run/${device.ipNormalized}.xml`, ip: device.ipNormalized, format: "Huawei 310 XML", matchStatus: "Сопоставлено", deviceId: device.id }, scan }));
+    const main = api.buildHuawei310LogEventIndex(rows, state);
+    assertEqual(main.events.filter((item) => item.kind === "confirmed_reboot").length, 2);
+    assertEqual(main.events.filter((item) => item.kind === "power_off").length, 2);
+    assertEqual(main.coverage.boxFiles, 2);
+    assert(main.events.every((item) => item.validationStatus === "confirmed_user_validation"));
+    assert(main.events.some((item) => item.ruleVersion === "huawei-box310-log-v1"));
+    assert(main.events.some((item) => item.ruleVersion === "huawei-box610-log-v1"));
+    assert(!JSON.stringify(main).includes("Web user"));
+    const boxAnalytics = api.getHuaweiTeLogAnalytics(main, state, { period: "all" });
+    assertEqual(api.getPowerHeatmapAnalytics(null, boxAnalytics, "confirmed").totalEvents, 2);
+    assertEqual(api.getPowerDurationAnalytics(null, boxAnalytics, state, {}).observedDevices, 2);
+    const repeated = api.buildHuawei310LogEventIndex([...rows, { row: { ...rows[0].row, path: "second/192.0.2.31.xml" }, scan }], state);
+    assertEqual(repeated.events.length, main.events.length);
+    assertEqual(repeated.events.find((item) => item.deviceId === "box310-test" && item.kind === "confirmed_reboot").sources.length, 2);
+    const wrongIp = api.buildHuawei310LogEventIndex([{ row: { ...rows[0].row, ip: "192.0.2.99" }, scan }], state);
+    assertEqual(wrongIp.events.length, 0);
   });
 
   test("Bar 310: пауза перед неизвестным запуском остаётся низкодостоверной", () => {

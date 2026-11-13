@@ -184,7 +184,7 @@ class HuaweiBar310Tests(unittest.TestCase):
                 )
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["logCollection"]["status"], "saved")
-                self.assertEqual(result["logCollection"]["validationStatus"], "confirmed_local_validation" if model == "Bar 310" else "provisional_user_validation")
+                self.assertEqual(result["logCollection"]["validationStatus"], "confirmed_user_validation")
                 self.assertEqual(len(opened), 1)
                 self.assertEqual(opened[0]["ip"], "192.0.2.31")
                 self.assertEqual(opened[0]["headers"]["X-Access-Token"], "SYNTHETIC-ACCESS-TOKEN")
