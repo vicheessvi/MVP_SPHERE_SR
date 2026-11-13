@@ -34,9 +34,53 @@ LOGIN_MARKERS = ("WEB_GetLoginInfo", "Web_RequestSessionID", "Web_RequestCertifi
 RESOURCE_MARKERS = tuple(RESOURCE_ACTIONS.values())
 SITE_NAME_ACTION = "WEB_GetCfgParamAPI"
 SITE_NAME_MARKER = "getSiteNameConfigs"
-ALLOWED_ACTIONS = frozenset((*LOGIN_MARKERS, *RESOURCE_MARKERS, SITE_NAME_ACTION, "WEB_Logout"))
+ALLOWED_ACTIONS = frozenset((*LOGIN_MARKERS, *RESOURCE_MARKERS, SITE_NAME_ACTION, "WEB_GetWifiStatModeAPI", "WEB_Logout"))
 MAIN_BUNDLE_PATH = "/static/js/main.chunk.js"
 MAX_SITE_NAME_LENGTH = 256
+BAR300_HTTP_GROUP = re.compile(r'CfgIDString:\[[^\]]{0,250}"enable_http"[^\]]{0,250}\]')
+BAR300_HTTP_FORM = re.compile(r'RGenable_http:\{id:"enable_http"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:2\}\]')
+BAR300_TELNET_GROUP = re.compile(r'CfgIDString:\[[^\]]{0,300}"enabletelnet"[^\]]{0,300}\]')
+BAR300_TELNET_FORM = re.compile(r'RGenabletelnet:\{id:"enabletelnet"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:2\}\]')
+BAR300_SSH_GROUP = re.compile(r'CfgIDString:\[[^\]]{0,300}"enable_ssh"[^\]]{0,300}\]')
+BAR300_SSH_FORM = re.compile(r'RGenable_ssh:\{id:"enable_ssh"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:2\}\]')
+BAR300_ANSWER_GROUP = re.compile(r'CfgIDString:\[[^\]]{0,1200}"autoreply"[^\]]{0,1200}\]')
+BAR300_ANSWER_FORM = re.compile(r'SelectAutoreply:\{id:"autoreply"[\s\S]{0,400}options:\[\{value:0,[^{}]{0,100}\},\{value:1,[^{}]{0,100}\}\]')
+BAR300_NTP_GROUP = re.compile(r'CfgIDString:\[(?=[^\]]{0,1200}"synSerTime")(?=[^\]]{0,1200}"ntpGetMode")(?=[^\]]{0,1200}"timeServer")[^\]]{1,1200}\]')
+BAR300_NTP_ENABLE_FORM = re.compile(r'RadioGroupEnableNTP:\{id:"synSerTime"[\s\S]{0,350}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:0\}\]')
+BAR300_NTP_MODE_FORM = re.compile(r'RGntpGetMode:\{id:"ntpGetMode"[\s\S]{0,350}data:\[\{[^{}]{0,100}value:0\},\{[^{}]{0,100}value:1\}\]')
+BAR300_NTP_SERVER_MARKER = 'TextFieldNTPSvrAddr:{id:"timeServer"'
+BAR300_WIFI_STATUS_ACTION = "WEB_GetWifiStatModeAPI"
+BAR300_WIFI_MARKERS = (
+    'reqGetWifiStatModeUrl="action.cgi?ActionID=WEB_GetWifiStatModeAPI"',
+    'this.post(this.reqGetWifiStatModeUrl,{},{}).then',
+    'getCurrentWifiMode=function',
+    'RGEnableSta',
+    'RGEnableAp',
+)
+BAR300_SERVER_TYPE_MARKERS = (
+    'cloudsetPanelObjRequest={CfgIDString:["cloudType","cloudCfgType","HwCloudName"]}',
+    'SelCloudType:{id:"cloudType"',
+    'Y=2,K=5,J=6,Q=7,Z=8,$=10,ee=11',
+    'value:Q,text:a.resName.TXT_CONFIG_SIP_VIDEO_REQUEST_MANUAL',
+)
+BAR300_SERVER_TYPE_CODES = frozenset((2, 5, 6, 7, 8, 10, 11))
+BAR300_SLEEP_MARKERS = (
+    'powerMagParams={CfgIDString:["suppotReboot","sleepTime","enable_wol","autoReboot","sleepCloseAPP","autoRebootVal","faceWakeUp"]}',
+    'SelSleepDuration:{id:"sleepTime"',
+    'value:0,text:a.props.resName.TXT_VCT_NO_SLEEP',
+    'value:10,text:a.props.resName.TXT_CFG_SITENAME_TIME_10_MINUTE_SLEEP',
+)
+BAR300_SLEEP_CODES = frozenset((0, 1, 5, 10, 15, 30, 60))
+BAR300_WOL_FORM = re.compile(r'RGNetworkWakeUp:\{id:"enable_wol"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:0\}\]')
+BAR300_FACE_WAKE_FORM = re.compile(r'RGFaceWakeUp:\{id:"faceWakeUp"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:0\}\]')
+BAR300_SLEEP_CLEAN_FORM = re.compile(r'RGSleepClean:\{id:"sleepCloseAPP"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:0\}\]')
+BAR300_AUTO_REBOOT_FORM = re.compile(r'RGAutoReboot:\{id:"autoReboot"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:0\}\]')
+BAR300_POWER_SWITCHES = (
+    ("enable_wol", BAR300_WOL_FORM, "networkWakeEnabled", "networkWake"),
+    ("faceWakeUp", BAR300_FACE_WAKE_FORM, "faceWakeEnabled", "faceWake"),
+    ("sleepCloseAPP", BAR300_SLEEP_CLEAN_FORM, "clearMemoryInSleepEnabled", "clearMemoryInSleep"),
+    ("autoReboot", BAR300_AUTO_REBOOT_FORM, "automaticRestartEnabled", "automaticRestart"),
+)
 
 
 def _model_matches(value: Any, label: str) -> bool:
@@ -84,6 +128,141 @@ def _read_site_name(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
     if outer.get("success") != 1 or not isinstance(value, str) or len(value) > MAX_SITE_NAME_LENGTH or any(ord(char) < 32 for char in value):
         return {"status": "unavailable", "value": None}
     return {"status": "read", "value": value, "source": "huawei_cfg_sitename"}
+
+
+def _read_bar300_http(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
+    if not BAR300_HTTP_GROUP.search(bundle) or not BAR300_HTTP_FORM.search(bundle):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action(SITE_NAME_ACTION, {"CfgIDString": ["enable_http"], "acCSRFToken": csrf})
+    except Exception:
+        return {"status": "unavailable", "value": None}
+    code = data.get("enable_http") if isinstance(data, dict) else None
+    if outer.get("success") != 1 or type(code) is not int or code not in (0, 1, 2):
+        return {"status": "unavailable", "value": None}
+    return {"status": "read", "value": "enabled" if code == 1 else "disabled", "source": "WEB_GetCfgParamAPI:enable_http"}
+
+
+def _read_bar300_telnet(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
+    if not BAR300_TELNET_GROUP.search(bundle) or not BAR300_TELNET_FORM.search(bundle):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action(SITE_NAME_ACTION, {"CfgIDString": ["enabletelnet"], "acCSRFToken": csrf})
+    except Exception:
+        return {"status": "unavailable", "value": None}
+    code = data.get("enabletelnet") if isinstance(data, dict) else None
+    if outer.get("success") != 1 or type(code) is not int or code not in (0, 1, 2):
+        return {"status": "unavailable", "value": None}
+    return {"status": "read", "value": "enabled" if code == 1 else "disabled", "source": "WEB_GetCfgParamAPI:enabletelnet"}
+
+
+def _read_bar300_ssh(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
+    if not BAR300_SSH_GROUP.search(bundle) or not BAR300_SSH_FORM.search(bundle):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action(SITE_NAME_ACTION, {"CfgIDString": ["enable_ssh"], "acCSRFToken": csrf})
+    except Exception:
+        return {"status": "unavailable", "value": None}
+    code = data.get("enable_ssh") if isinstance(data, dict) else None
+    if outer.get("success") != 1 or type(code) is not int or code not in (0, 1, 2):
+        return {"status": "unavailable", "value": None}
+    return {"status": "read", "value": "enabled" if code == 1 else "disabled", "source": "WEB_GetCfgParamAPI:enable_ssh"}
+
+
+def _read_bar300_auto_answer(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
+    if not BAR300_ANSWER_GROUP.search(bundle) or not BAR300_ANSWER_FORM.search(bundle):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action(SITE_NAME_ACTION, {"CfgIDString": ["autoreply"], "acCSRFToken": csrf})
+    except Exception:
+        return {"status": "unavailable", "value": None}
+    code = data.get("autoreply") if isinstance(data, dict) else None
+    if outer.get("success") != 1 or type(code) is not int or code not in (0, 1):
+        return {"status": "unavailable", "value": None}
+    return {"status": "read", "value": "enabled" if code == 0 else "disabled", "source": "WEB_GetCfgParamAPI:autoreply"}
+
+
+def _read_bar300_ntp(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
+    if not (BAR300_NTP_GROUP.search(bundle) and BAR300_NTP_ENABLE_FORM.search(bundle)
+            and BAR300_NTP_MODE_FORM.search(bundle) and BAR300_NTP_SERVER_MARKER in bundle):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action(SITE_NAME_ACTION, {"CfgIDString": ["synSerTime", "ntpGetMode", "timeServer"], "acCSRFToken": csrf})
+    except Exception:
+        return {"status": "unavailable", "value": None}
+    enabled = data.get("synSerTime") if isinstance(data, dict) else None
+    mode = data.get("ntpGetMode") if isinstance(data, dict) else None
+    server = data.get("timeServer") if isinstance(data, dict) else None
+    if (outer.get("success") != 1 or type(enabled) is not int or enabled not in (0, 1)
+            or type(mode) is not int or mode not in (0, 1) or not isinstance(server, str)
+            or len(server) > 255 or any(ord(char) < 32 for char in server)
+            or (enabled == 1 and mode == 1 and not server)):
+        return {"status": "unavailable", "value": None}
+    return {"status": "read", "value": {"enabled": enabled == 1, "modeCode": mode,
+                                        "mode": "manual" if mode == 1 else "automatic", "server": server},
+            "source": "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer"}
+
+
+def _read_bar300_wifi(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
+    if not all(marker in bundle for marker in BAR300_WIFI_MARKERS):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action(BAR300_WIFI_STATUS_ACTION, {"acCSRFToken": csrf})
+    except Exception:
+        return {"status": "unavailable", "value": None}
+    mode = data.get("ucWifiMode") if isinstance(data, dict) else None
+    if outer.get("success") != 1 or type(mode) is not int or mode not in (0, 1, 2, 3):
+        return {"status": "unavailable", "value": None}
+    return {"status": "read", "value": {"modeCode": mode, "clientEnabled": mode in (2, 3),
+                                        "accessPointEnabled": mode in (1, 3)},
+            "source": "WEB_GetWifiStatModeAPI:ucWifiMode"}
+
+
+def _read_bar300_auto_update(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
+    if not all(marker in bundle for marker in BAR300_SERVER_TYPE_MARKERS):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action(SITE_NAME_ACTION, {"CfgIDString": ["cloudType"], "acCSRFToken": csrf})
+    except Exception:
+        return {"status": "unavailable", "value": None}
+    code = data.get("cloudType") if isinstance(data, dict) else None
+    if outer.get("success") != 1 or type(code) is not int or code not in BAR300_SERVER_TYPE_CODES:
+        return {"status": "unavailable", "value": None}
+    return {"status": "read", "value": "disabled" if code == 7 else "enabled",
+            "source": "WEB_GetCfgParamAPI:cloudType", "serverTypeCode": code,
+            "basis": "server_type_audit_rule", "ruleVersion": "bar300-cloud-type-audit-v1",
+            "meaning": "firmware_update_capability"}
+
+
+def _read_bar300_sleep(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
+    if not all(marker in bundle for marker in BAR300_SLEEP_MARKERS):
+        return {"status": "protocol_required", "value": None}
+    try:
+        outer, data = action(SITE_NAME_ACTION, {"CfgIDString": ["sleepTime"], "acCSRFToken": csrf})
+    except Exception:
+        return {"status": "unavailable", "value": None}
+    code = data.get("sleepTime") if isinstance(data, dict) else None
+    if outer.get("success") != 1 or type(code) is not int or code not in BAR300_SLEEP_CODES:
+        return {"status": "unavailable", "value": None}
+    field = {"status": "read", "value": {"sleepTimeCode": code,
+                                         "sleepMode": "never" if code == 0 else "interval"},
+             "source": "WEB_GetCfgParamAPI:sleepTime",
+             "unconfirmedFields": ["networkWake", "faceWake", "clearMemoryInSleep", "automaticRestart"]}
+    for setting_id, form, property_name, unknown_name in BAR300_POWER_SWITCHES:
+        if not form.search(bundle):
+            continue
+        try:
+            switch_outer, switch_data = action(SITE_NAME_ACTION, {"CfgIDString": [setting_id], "acCSRFToken": csrf})
+            switch_code = switch_data.get(setting_id) if isinstance(switch_data, dict) else None
+            if switch_outer.get("success") == 1 and type(switch_code) is int and switch_code in (0, 1):
+                field["value"][property_name] = switch_code == 1
+                field["source"] += "," + setting_id
+                field["unconfirmedFields"].remove(unknown_name)
+                if setting_id == "autoReboot" and switch_code == 1:
+                    field["unconfirmedFields"].append("automaticRestartIntervalDays")
+        except Exception:
+            pass
+    return field
 
 
 def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: dict[str, Any] | None = None, *, model_key: str) -> dict[str, Any]:
@@ -214,6 +393,23 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             return {**base, "failedStage": "resources", "safeError": "resource_schema_unconfirmed", "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors}}
 
         site_name = _read_site_name(bundle, action, csrf)
+        device_settings = unknown_device_settings(label, not_exposed=("snmpV2", "autoUpdate"))
+        if model_key == "bar300":
+            device_settings["fields"]["snmpV2"]["reason"] = "version_not_supported"
+        if model_key in ("bar300", "box300", "box600"):
+            device_settings["fields"]["autoUpdate"] = _read_bar300_auto_update(bundle, action, csrf)
+            device_settings["fields"]["http"] = _read_bar300_http(bundle, action, csrf)
+            device_settings["fields"]["telnet"] = _read_bar300_telnet(bundle, action, csrf)
+            device_settings["fields"]["ssh"] = _read_bar300_ssh(bundle, action, csrf)
+            device_settings["fields"]["autoAnswer"] = _read_bar300_auto_answer(bundle, action, csrf)
+            device_settings["fields"]["ntp"] = _read_bar300_ntp(bundle, action, csrf)
+            device_settings["fields"]["wifi"] = _read_bar300_wifi(bundle, action, csrf)
+            device_settings["fields"]["powerManagement"] = _read_bar300_sleep(bundle, action, csrf)
+        if model_key in ("box300", "box600"):
+            device_settings["validationStatus"] = "provisional_user_validation"
+            for field in device_settings["fields"].values():
+                if field.get("status") == "read":
+                    field["validationStatus"] = "provisional_user_validation"
         blocks = build_web_blocks(resources, ip)
         if site_name["status"] == "read":
             blocks["Device Info"]["Site Name"] = site_name["value"]
@@ -228,7 +424,7 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             "webInterface": {"ok": True, "evidence": f"Huawei {label} current CGI and identity markers confirmed", "insecureTls": not reject_unauthorized},
             "webBlocks": blocks,
             "siteName": site_name,
-            "deviceSettings": unknown_device_settings(label, not_exposed=("snmpV2", "autoUpdate")),
+            "deviceSettings": device_settings,
             "rawResources": sanitize_result(resources),
             "readMode": "targeted",
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},

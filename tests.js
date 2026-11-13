@@ -2160,6 +2160,115 @@
     assert(!unverified.deviceSettings);
   });
 
+  test("HTTP, Telnet, SSH, автоответ, NTP и Wi-Fi Bar 300 сохраняются только при точной модели и источнике", () => {
+    const payload = { ok: true, adapterKey: "vcs/huawei/bar300", webBlocks: { "Device Info": { Model: "Bar 300" } }, deviceSettings: { fields: { http: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enable_http" }, telnet: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enabletelnet" }, ssh: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:enable_ssh" }, autoAnswer: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:autoreply" }, ntp: { status: "read", value: { enabled: true, modeCode: 1, server: "ntp.example.test" }, source: "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" }, wifi: { status: "read", value: { modeCode: 0, clientEnabled: false, accessPointEnabled: false }, source: "WEB_GetWifiStatModeAPI:ucWifiMode" }, snmpV2: { status: "not_exposed", value: null, reason: "version_not_supported" }, autoUpdate: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:cloudType", serverTypeCode: 7, basis: "server_type_audit_rule", ruleVersion: "bar300-cloud-type-audit-v1", meaning: "firmware_update_capability" }, powerManagement: { status: "read", value: { sleepTimeCode: 10, sleepMode: "interval", networkWakeEnabled: false }, source: "WEB_GetCfgParamAPI:sleepTime,enable_wol", unconfirmedFields: ["faceWake", "clearMemoryInSleep", "automaticRestart"] } } } };
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.http.value, "disabled");
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.telnet.value, "disabled");
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.ssh.value, "enabled");
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.autoAnswer.value, "enabled");
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.ntp.value.mode, "manual");
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.wifi.value.modeCode, 0);
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.snmpV2.reason, "version_not_supported");
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.autoUpdate.value, "disabled");
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.powerManagement.value.sleepTimeCode, 10);
+    assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.powerManagement.value.networkWakeEnabled, false);
+    const wrongModel = api.pollingPayloadProjection({ ...payload, webBlocks: { "Device Info": { Model: "Box 300" } } });
+    assert(!wrongModel.deviceSettings?.fields?.http);
+    assert(!wrongModel.deviceSettings?.fields?.telnet);
+    assert(!wrongModel.deviceSettings?.fields?.ssh);
+    assert(!wrongModel.deviceSettings?.fields?.autoAnswer);
+    assert(!wrongModel.deviceSettings?.fields?.ntp);
+    assert(!wrongModel.deviceSettings?.fields?.wifi);
+    assert(!wrongModel.deviceSettings?.fields?.snmpV2?.reason);
+    assert(!wrongModel.deviceSettings?.fields?.autoUpdate);
+    assert(!wrongModel.deviceSettings?.fields?.powerManagement);
+    const wrongAdapter = api.pollingPayloadProjection({ ...payload, adapterKey: "vcs/huawei/box300" });
+    assert(!wrongAdapter.deviceSettings?.fields?.http);
+    assert(!wrongAdapter.deviceSettings?.fields?.telnet);
+    assert(!wrongAdapter.deviceSettings?.fields?.ssh);
+    assert(!wrongAdapter.deviceSettings?.fields?.autoAnswer);
+    assert(!wrongAdapter.deviceSettings?.fields?.ntp);
+    assert(!wrongAdapter.deviceSettings?.fields?.wifi);
+    assert(!wrongAdapter.deviceSettings?.fields?.snmpV2?.reason);
+    assert(!wrongAdapter.deviceSettings?.fields?.autoUpdate);
+    assert(!wrongAdapter.deviceSettings?.fields?.powerManagement);
+    const wrongSource = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { http: { status: "read", value: "disabled", source: "unconfirmed" } } } });
+    assert(!wrongSource.deviceSettings?.fields?.http);
+    const wrongTelnetSource = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { telnet: { status: "read", value: "disabled", source: "unconfirmed" } } } });
+    assert(!wrongTelnetSource.deviceSettings?.fields?.telnet);
+    const wrongSshSource = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { ssh: { status: "read", value: "enabled", source: "unconfirmed" } } } });
+    assert(!wrongSshSource.deviceSettings?.fields?.ssh);
+    const wrongAnswerSource = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { autoAnswer: { status: "read", value: "enabled", source: "unconfirmed" } } } });
+    assert(!wrongAnswerSource.deviceSettings?.fields?.autoAnswer);
+    const wrongNtpSource = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { ntp: { status: "read", value: { enabled: true, modeCode: 1, server: "ntp.example.test" }, source: "unconfirmed" } } } });
+    assert(!wrongNtpSource.deviceSettings?.fields?.ntp);
+    const wrongWifi = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { wifi: { status: "read", value: { modeCode: 0, clientEnabled: true, accessPointEnabled: false }, source: "WEB_GetWifiStatModeAPI:ucWifiMode" } } } });
+    assert(!wrongWifi.deviceSettings?.fields?.wifi);
+    const wrongWifiSource = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { wifi: { status: "read", value: { modeCode: 0, clientEnabled: false, accessPointEnabled: false }, source: "WEB_GetWifiCfgAPI:ucMode" } } } });
+    assert(!wrongWifiSource.deviceSettings?.fields?.wifi);
+    const wrongServerType = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { autoUpdate: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:cloudType", serverTypeCode: 7, basis: "server_type_audit_rule", ruleVersion: "bar300-cloud-type-audit-v1", meaning: "firmware_update_capability" } } } });
+    assert(!wrongServerType.deviceSettings?.fields?.autoUpdate);
+    const wrongSleep = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { powerManagement: { status: "read", value: { sleepTimeCode: 10, sleepMode: "never" }, source: "WEB_GetCfgParamAPI:sleepTime" } } } });
+    assert(!wrongSleep.deviceSettings?.fields?.powerManagement);
+    const wrongWol = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { powerManagement: { status: "read", value: { sleepTimeCode: 10, sleepMode: "interval", networkWakeEnabled: 0 }, source: "WEB_GetCfgParamAPI:sleepTime,enable_wol" } } } });
+    assert(!wrongWol.deviceSettings?.fields?.powerManagement);
+  });
+
+  test("Питание Bar 300 сохраняет только подтверждённые отдельные переключатели", () => {
+    const source = "WEB_GetCfgParamAPI:sleepTime,enable_wol,faceWakeUp,sleepCloseAPP,autoReboot";
+    const value = { sleepTimeCode: 10, sleepMode: "interval", networkWakeEnabled: false,
+      faceWakeEnabled: false, clearMemoryInSleepEnabled: false, automaticRestartEnabled: false };
+    const payload = { ok: true, adapterKey: "vcs/huawei/bar300", webBlocks: { "Device Info": { Model: "Bar 300" } },
+      deviceSettings: { fields: { powerManagement: { status: "read", source, value, password: "SYNTHETIC-SECRET" } } } };
+    const projected = api.pollingPayloadProjection(payload);
+    for (const [name, expected] of Object.entries(value)) {
+      assertEqual(projected.deviceSettings.fields.powerManagement.value[name], expected);
+    }
+    assertEqual(JSON.stringify(projected.deviceSettings.fields.powerManagement.unconfirmedFields), "[]");
+    assert(!JSON.stringify(projected).includes("SYNTHETIC-SECRET"));
+    const enabledRestart = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { powerManagement: {
+      status: "read", source, value: { ...value, automaticRestartEnabled: true } } } } });
+    assertEqual(JSON.stringify(enabledRestart.deviceSettings.fields.powerManagement.unconfirmedFields), '["automaticRestartIntervalDays"]');
+    const malformed = api.pollingPayloadProjection({ ...payload, deviceSettings: { fields: { powerManagement: {
+      status: "read", source, value: { ...value, faceWakeEnabled: 0 } } } } });
+    assert(!malformed.deviceSettings?.fields?.powerManagement);
+    const box = api.pollingPayloadProjection({ ...payload, adapterKey: "vcs/huawei/box300" });
+    assert(!box.deviceSettings?.fields?.powerManagement);
+  });
+
+  test("Box 300 и Box 600 наследуют только guarded read-only поля с предварительным статусом", () => {
+    for (const [adapterKey, model] of [["vcs/huawei/box300", "Box 300"], ["vcs/huawei/box600", "Box 600"]]) {
+      const validationStatus = "provisional_user_validation";
+      const fields = {
+        http: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enable_http", validationStatus },
+        wifi: { status: "read", value: { modeCode: 0, clientEnabled: false, accessPointEnabled: false }, source: "WEB_GetWifiStatModeAPI:ucWifiMode", validationStatus },
+        autoUpdate: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:cloudType", serverTypeCode: 7,
+          basis: "server_type_audit_rule", ruleVersion: "bar300-cloud-type-audit-v1", meaning: "firmware_update_capability", validationStatus },
+        powerManagement: { status: "read", value: { sleepTimeCode: 10, sleepMode: "interval", networkWakeEnabled: false },
+          source: "WEB_GetCfgParamAPI:sleepTime,enable_wol", validationStatus }
+      };
+      const payload = { ok: true, adapterKey, webBlocks: { "Device Info": { Model: model } },
+        deviceSettings: { validationStatus, fields } };
+      const projected = api.pollingPayloadProjection(payload);
+      for (const key of Object.keys(fields)) {
+        assertEqual(projected.deviceSettings.fields[key].status, "read");
+        assertEqual(projected.deviceSettings.fields[key].validationStatus, validationStatus);
+      }
+      const noFieldMark = api.pollingPayloadProjection({ ...payload, deviceSettings: {
+        validationStatus, fields: { http: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enable_http" } } } });
+      assert(!noFieldMark.deviceSettings?.fields?.http);
+      const forgedConfirmed = api.pollingPayloadProjection({ ...payload, deviceSettings: {
+        validationStatus: "confirmed_user_validation", fields: {
+          http: { ...fields.http, validationStatus: "confirmed_user_validation" } } } });
+      assert(!forgedConfirmed.deviceSettings?.fields?.http);
+      const wrongModel = api.pollingPayloadProjection({ ...payload, webBlocks: { "Device Info": { Model: "Bar 300" } } });
+      assert(!wrongModel.deviceSettings?.fields?.http);
+      const wrongRule = api.pollingPayloadProjection({ ...payload, deviceSettings: { validationStatus,
+        fields: { autoUpdate: { ...fields.autoUpdate, ruleVersion: "bar310-server-type-audit-v1" } } } });
+      assert(!wrongRule.deviceSettings?.fields?.autoUpdate);
+    }
+  });
+
   test("Новые настройки Bar 310 проходят только при точном контракте и без секретов", () => {
     const fields = {
       autoUpdate: { status: "read", value: "disabled", source: "GET /v1/om/config/service+auto-config:serverType", basis: "server_type_audit_rule", ruleVersion: "bar310-server-type-audit-v1" },
