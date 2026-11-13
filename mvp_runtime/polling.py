@@ -35,6 +35,11 @@ TE20_NTP_TASK = "set_te20_ntp_settings"
 TE20_POWER_TASK = "set_te20_power_settings"
 POWER_SLEEP_VALUES = frozenset({0, 1, 5, 10, 15, 30, 60})
 NTP_SERVER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,40}\Z")
+LOG_TRANSPORTS = frozenset({"huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_310_rest_v1",
+                            "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1"})
+LOG_ADAPTER_KEYS = frozenset({"vcs/huawei/te20-legacy", "vcs/huawei/te-family", "vcs/huawei/bar310",
+                              "vcs/huawei/box310", "vcs/huawei/box610", "vcs/huawei/bar300",
+                              "vcs/huawei/box300", "vcs/huawei/box600"})
 
 
 def validate_ntp_changes(plan: dict[str, Any], requested_tasks: list[str]) -> None:
@@ -307,10 +312,10 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
         result = adapter(
             {**device, "ipNormalized": ip, "allowInsecureTls": device.get("allowInsecureTls") is True or settings.get("allow_insecure_tls") is True},
             credential,
-            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes"), "collect_logs": collect_logs and transport in {"huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_310_rest_v1"}, "on_log": settings.get("on_log"), "log_opener": settings.get("log_opener")},
+            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes"), "collect_logs": collect_logs and transport in LOG_TRANSPORTS, "on_log": settings.get("on_log"), "log_opener": settings.get("log_opener")},
         )
         merged = {**result, "ip": ip, "capturedAt": result.get("capturedAt") or captured_at, "adapterKey": manifest["key"], "networkAttempted": True, "ping": {"ok": True, "durationMs": ping.get("durationMs")}}
-        if collect_logs and transport not in {"huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_310_rest_v1"}:
+        if collect_logs and transport not in LOG_TRANSPORTS:
             merged["logCollection"] = {"status": "protocol_required"}
         return _complete_management_actions(device, requested_management_tasks, merged)
     except BaseException as error:
@@ -423,7 +428,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
             log_callback = (lambda stream, metadata: on_log(stream, {**metadata, "index": index, "total": len(devices)})) if callable(on_log) else None
             result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges"), "collect_logs": plan.get("collectLogs") is True, "on_log": log_callback})
         if plan.get("collectLogs") is True and "logCollection" not in result:
-            log_status = "not_started" if result.get("adapterKey") in {"vcs/huawei/te20-legacy", "vcs/huawei/te-family", "vcs/huawei/bar310", "vcs/huawei/box310", "vcs/huawei/box610"} else "protocol_required"
+            log_status = "not_started" if result.get("adapterKey") in LOG_ADAPTER_KEYS else "protocol_required"
             result = {**result, "logCollection": {"status": log_status}}
         results.append(result)
         if settings.get("on_result"):

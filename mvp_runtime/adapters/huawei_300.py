@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
+import secrets
 from typing import Any
 
 from mvp_runtime.redaction import sanitize_result
@@ -13,8 +15,10 @@ from .huawei_te40 import (
     MAC_PATTERN,
     RESOURCE_ACTIONS,
     HuaweiContractError,
+    _HuaweiLogStream,
     _cookie_header,
     _decode_envelope,
+    _https_context,
     _transport_code,
     _update_cookies,
     _utc_iso,
@@ -36,6 +40,10 @@ SITE_NAME_ACTION = "WEB_GetCfgParamAPI"
 SITE_NAME_MARKER = "getSiteNameConfigs"
 ALLOWED_ACTIONS = frozenset((*LOGIN_MARKERS, *RESOURCE_MARKERS, SITE_NAME_ACTION, "WEB_GetWifiStatModeAPI", "WEB_Logout"))
 MAIN_BUNDLE_PATH = "/static/js/main.chunk.js"
+LOG_EXPORT_BUNDLE_MARKERS = (
+    'ExportLogBtn.onClick=i.handleExportLogData',
+    'handleExportLogData=function(){window.open("log?rmd="+Math.random()',
+)
 MAX_SITE_NAME_LENGTH = 256
 BAR300_HTTP_GROUP = re.compile(r'CfgIDString:\[[^\]]{0,250}"enable_http"[^\]]{0,250}\]')
 BAR300_HTTP_FORM = re.compile(r'RGenable_http:\{id:"enable_http"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:2\}\]')
@@ -81,6 +89,38 @@ BAR300_POWER_SWITCHES = (
     ("sleepCloseAPP", BAR300_SLEEP_CLEAN_FORM, "clearMemoryInSleepEnabled", "clearMemoryInSleep"),
     ("autoReboot", BAR300_AUTO_REBOOT_FORM, "automaticRestartEnabled", "automaticRestart"),
 )
+
+
+def _open_huawei_300_log_stream(options: dict[str, Any]) -> _HuaweiLogStream:
+    """Open only the bundle-confirmed XML export and retain at most its prefix."""
+    ip = str(options["ip"])
+    cookie = str(options.get("cookie") or "")
+    nonce = str(options.get("nonce") or "")
+    if not cookie or not re.fullmatch(r"0\.\d{12}", nonce):
+        raise HuaweiContractError("log_contract_unconfirmed")
+    connection = http.client.HTTPSConnection(
+        ip, 443, timeout=30, context=_https_context(options["reject_unauthorized"], None)
+    )
+    try:
+        connection.request("GET", f"/log?rmd={nonce}", headers={
+            "Cookie": cookie,
+            "Referer": f"https://{ip}/",
+            "Accept": "*/*",
+            "User-Agent": browser_request_headers(ip)["User-Agent"],
+        })
+        response = connection.getresponse()
+        content_type = str(response.getheader("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if response.status != 200 or content_type not in {
+            "application/x-octet-stream", "application/octet-stream", "application/xml", "text/xml"
+        }:
+            raise HuaweiContractError("log_contract_unconfirmed")
+        prefix = response.read(4096)
+        if not prefix.lstrip().startswith(b"<?xml") or b"<LogModule" not in prefix:
+            raise HuaweiContractError("log_contract_unconfirmed")
+        return _HuaweiLogStream(connection, response, prefix)
+    except Exception:
+        connection.close()
+        raise
 
 
 def _model_matches(value: Any, label: str) -> bool:
@@ -410,6 +450,36 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             for field in device_settings["fields"].values():
                 if field.get("status") == "read":
                     field["validationStatus"] = "provisional_user_validation"
+        log_collection = None
+        if settings.get("collect_logs") is True:
+            if not callable(settings.get("on_log")):
+                log_collection = {"status": "failed", "safeError": "log_sink_unavailable"}
+            elif not all(marker in bundle for marker in LOG_EXPORT_BUNDLE_MARKERS) or not _cookie_header(cookies):
+                log_collection = {"status": "protocol_required"}
+            else:
+                stream = None
+                try:
+                    opener = settings.get("log_opener") or _open_huawei_300_log_stream
+                    stream = opener({"ip": ip, "cookie": _cookie_header(cookies),
+                                     "nonce": f"0.{secrets.randbelow(10**12):012d}",
+                                     "reject_unauthorized": reject_unauthorized})
+                    response = settings["on_log"](stream, {"ip": ip, "filename": f"{ip}.xml"})
+                    if not isinstance(response, dict) or response.get("status") not in {"saved", "failed"}:
+                        raise HuaweiContractError("log_ack_invalid")
+                    log_collection = {"status": response["status"],
+                                      "validationStatus": "provisional_user_validation"}
+                    if response["status"] == "failed":
+                        log_collection["safeError"] = "log_save_failed"
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    log_collection = {"status": "failed", "safeError": error.code if isinstance(error, HuaweiContractError) else "log_download_failed"}
+                finally:
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
         blocks = build_web_blocks(resources, ip)
         if site_name["status"] == "read":
             blocks["Device Info"]["Site Name"] = site_name["value"]
@@ -419,7 +489,7 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
         for source, label_name in (("CPLDVersion", "CPLD Version"), ("FPGAVersion", "FPGA Version"), ("MBVersion", "Mainboard Version")):
             if version.get(source):
                 blocks["Firmware"][label_name] = version[source]
-        return {
+        result = {
             **base, "ok": True,
             "webInterface": {"ok": True, "evidence": f"Huawei {label} current CGI and identity markers confirmed", "insecureTls": not reject_unauthorized},
             "webBlocks": blocks,
@@ -429,6 +499,9 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             "readMode": "targeted",
             "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
         }
+        if log_collection is not None:
+            result["logCollection"] = log_collection
+        return result
     finally:
         if authenticated:
             try:

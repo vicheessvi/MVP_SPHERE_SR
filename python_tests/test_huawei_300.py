@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import io
 import ssl
 import unittest
+from unittest.mock import patch
 
 from mvp_runtime.adapters.huawei_300 import (
     poll_huawei_bar300_device,
@@ -45,6 +47,7 @@ WOL_BUNDLE = SLEEP_BUNDLE + ' RGNetworkWakeUp:{id:"enable_wol",className:"radio"
 FULL_POWER_BUNDLE = WOL_BUNDLE + ' RGFaceWakeUp:{id:"faceWakeUp",className:"radio",data:[{text:"Enable",value:1},{text:"Disable",value:0}]} RGSleepClean:{id:"sleepCloseAPP",className:"radio",data:[{text:"Enable",value:1},{text:"Disable",value:0}]} RGAutoReboot:{id:"autoReboot",className:"radio",data:[{text:"Enable",value:1},{text:"Disable",value:0}]}'
 ALL_SETTINGS_BUNDLE = " ".join((HTTP_BUNDLE, TELNET_BUNDLE, SSH_BUNDLE, ANSWER_BUNDLE,
                                 NTP_BUNDLE, WIFI_BUNDLE, SERVER_TYPE_BUNDLE, FULL_POWER_BUNDLE))
+LOG_BUNDLE = current_bundle() + ' ExportLogBtn.onClick=i.handleExportLogData handleExportLogData=function(){window.open("log?rmd="+Math.random()'
 
 
 def fake_request(calls, model="Bar 300", code=18, *, bundle=None, site_name="Synthetic Site", http_code=0, telnet_code=0, ssh_code=1, answer_code=0, ntp_data=None, wifi_mode=0, server_type_code=7, sleep_code=10, wol_code=0, face_code=0, clean_code=0, restart_code=0, postauth_model=None, timeout_action=None, certificate_success=True, root_error=None):
@@ -116,6 +119,152 @@ def fake_request(calls, model="Bar 300", code=18, *, bundle=None, site_name="Syn
 
 
 class Huawei300Tests(unittest.TestCase):
+    def test_box300_box600_logs_are_provisional_and_model_gated(self):
+        for poll, model, code, _contract in MODEL_CASES[1:]:
+            with self.subTest(model=model):
+                opened = []
+
+                def opener(options):
+                    opened.append(options)
+                    return io.BytesIO(b"<?xml?><LogModule>SYNTHETIC-PRIVATE-LOG</LogModule>")
+
+                options = {"allow_insecure_tls": True, "collect_logs": True,
+                           "log_opener": opener, "on_log": lambda _stream, _metadata: {"status": "saved"}}
+                result = poll({"ip": "192.0.2.31", "model": model},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {**options, "request": fake_request([], model=model, code=code, bundle=LOG_BUNDLE)})
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["logCollection"], {"status": "saved", "validationStatus": "provisional_user_validation"})
+                self.assertEqual(len(opened), 1)
+                self.assertNotIn("SYNTHETIC-PRIVATE-LOG", json.dumps(result))
+
+                mismatch_calls = []
+                mismatch = poll({"ip": "192.0.2.31", "model": model},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {**options, "request": fake_request(mismatch_calls, model=model, code=code,
+                        bundle=LOG_BUNDLE, postauth_model="Bar 300")})
+                self.assertFalse(mismatch["ok"])
+                self.assertEqual(len(opened), 1)
+                self.assertFalse(any("WEB_GetCfgParamAPI" in item["path"] for item in mismatch_calls))
+
+                drift = poll({"ip": "192.0.2.31", "model": model},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {**options, "request": fake_request([], model=model, code=code,
+                        bundle=LOG_BUNDLE.replace("ExportLogBtn.onClick=i.handleExportLogData", ""))})
+                self.assertEqual(drift["logCollection"]["status"], "protocol_required")
+                self.assertEqual(len(opened), 1)
+
+    def test_bar300_log_callback_after_identity_and_safe_ack(self):
+        calls, opened, opened_at, saved = [], [], [], []
+        stream = io.BytesIO(b"<?xml version='1.0'?><LogModule>SYNTHETIC-PRIVATE-LOG</LogModule>")
+
+        def opener(options):
+            opened.append(options)
+            opened_at.append(len(calls))
+            return stream
+
+        def sink(value, metadata):
+            saved.append((value.read(), metadata))
+            return {"status": "saved"}
+
+        result = poll_huawei_bar300_device(
+            {"ip": "192.0.2.31", "model": "Bar 300"},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+            {"request": fake_request(calls, bundle=LOG_BUNDLE), "allow_insecure_tls": True,
+             "collect_logs": True, "log_opener": opener, "on_log": sink},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["logCollection"], {"status": "saved", "validationStatus": "provisional_user_validation"})
+        self.assertEqual(saved[0][1], {"ip": "192.0.2.31", "filename": "192.0.2.31.xml"})
+        self.assertTrue(opened and stream.closed)
+        self.assertNotIn("SYNTHETIC-PRIVATE-LOG", json.dumps(result))
+        self.assertNotIn("SYNTHETIC-SECRET", json.dumps(result))
+        self.assertLess(next(i for i, item in enumerate(calls) if "WEB_GetVersionInfoAPI" in item["path"]), opened_at[0])
+
+        for option, expected in (({"bundle": current_bundle()}, "protocol_required"),
+                                 ({"bundle": LOG_BUNDLE, "postauth_model": "Box 300"}, None)):
+            with self.subTest(option=option):
+                attempts = []
+                outcome = poll_huawei_bar300_device(
+                    {"ip": "192.0.2.31", "model": "Bar 300"},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {"request": fake_request(attempts, **option), "allow_insecure_tls": True,
+                     "collect_logs": True, "log_opener": opener, "on_log": sink},
+                )
+                self.assertEqual((outcome.get("logCollection") or {}).get("status"), expected)
+                self.assertEqual(len(opened), 1)
+
+        failure = poll_huawei_bar300_device(
+            {"ip": "192.0.2.31", "model": "Bar 300"},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+            {"request": fake_request([], bundle=LOG_BUNDLE), "allow_insecure_tls": True,
+             "collect_logs": True, "log_opener": lambda _options: io.BytesIO(b"synthetic"),
+             "on_log": lambda _stream, _metadata: {"status": "unknown"}},
+        )
+        self.assertEqual(failure["logCollection"]["status"], "failed")
+        self.assertEqual(failure["logCollection"]["safeError"], "log_ack_invalid")
+        failed_save = poll_huawei_bar300_device(
+            {"ip": "192.0.2.31", "model": "Bar 300"},
+            [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+            {"request": fake_request([], bundle=LOG_BUNDLE), "allow_insecure_tls": True,
+             "collect_logs": True, "log_opener": lambda _options: io.BytesIO(b"synthetic"),
+             "on_log": lambda _stream, _metadata: {"status": "failed"}},
+        )
+        self.assertEqual(failed_save["logCollection"]["status"], "failed")
+        self.assertEqual(failed_save["logCollection"]["safeError"], "log_save_failed")
+
+    def test_bar300_log_opener_rejects_wrong_mime_or_prefix(self):
+        from mvp_runtime.adapters.huawei_300 import _open_huawei_300_log_stream
+
+        class Response:
+            def __init__(self, mime, body):
+                self.status = 200
+                self.mime = mime
+                self.body = io.BytesIO(body)
+
+            def getheader(self, name):
+                return self.mime if name == "Content-Type" else None
+
+            def read(self, size):
+                return self.body.read(size)
+
+            def close(self):
+                self.body.close()
+
+        class Connection:
+            def __init__(self, response):
+                self.response = response
+                self.calls = []
+                self.closed = False
+
+            def request(self, method, path, headers=None):
+                self.calls.append((method, path, headers))
+
+            def getresponse(self):
+                return self.response
+
+            def close(self):
+                self.closed = True
+
+        for mime, body, accepted in (("application/x-octet-stream", b"<?xml?><LogModule>ok</LogModule>", True),
+                                      ("text/html", b"<?xml?><LogModule>ok</LogModule>", False),
+                                      ("application/x-octet-stream", b"<html>login</html>", False)):
+            with self.subTest(mime=mime, body=body):
+                connection = Connection(Response(mime, body))
+                with patch("mvp_runtime.adapters.huawei_300.http.client.HTTPSConnection", return_value=connection):
+                    options = {"ip": "192.0.2.31", "cookie": "SyntheticSession=synthetic",
+                               "nonce": "0.123456789012", "reject_unauthorized": False}
+                    if accepted:
+                        stream = _open_huawei_300_log_stream(options)
+                        self.assertEqual(stream.read(4096), body)
+                        stream.close()
+                    else:
+                        with self.assertRaises(Exception):
+                            _open_huawei_300_log_stream(options)
+                self.assertTrue(connection.closed or accepted)
+                self.assertEqual(connection.calls[0][0], "GET")
+                self.assertTrue(connection.calls[0][1].startswith("/log?rmd=0."))
+
     def test_box300_and_box600_shared_readers_remain_exact_and_provisional(self):
         for poll, model, code, _contract in MODEL_CASES[1:]:
             with self.subTest(model=model):

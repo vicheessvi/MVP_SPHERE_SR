@@ -357,6 +357,28 @@ class PollingTests(unittest.TestCase):
         self.assertTrue(all(item["ok"] for item in results))
         self.assertNotIn("disable_insecure_management_services", str(results))
 
+    def test_huawei_300_family_collect_logs_uses_existing_plan_option(self) -> None:
+        seen = []
+
+        def adapter(device, _credentials, options):
+            seen.append((device["model"], options["collect_logs"], callable(options["on_log"])))
+            return {"ok": True, "logCollection": {"status": "saved", "validationStatus": "provisional_user_validation"}}
+
+        adapters = {key: adapter for key in (
+            "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1"
+        )}
+        plan = {"intervalMinSeconds": 0, "intervalMaxSeconds": 0, "collectJson": False,
+                "collectLogs": True, "devices": [
+                    {"category": "vcs", "manufacturer": "Huawei", "model": model, "ip": f"192.0.2.{index}"}
+                    for index, model in enumerate(("CloudLink Bar 300", "CloudLink Box 300", "CloudLink Box 600"), 31)
+                ]}
+        results = run_plan(plan, {"ping": lambda *_args: {"ok": True, "durationMs": 1},
+            "get_credentials": lambda *_args: [{"username": "synthetic", "password": "synthetic"}],
+            "adapters": adapters, "on_log": lambda *_args: {"status": "saved"}})
+        self.assertEqual(seen, [("CloudLink Bar 300", True, True), ("CloudLink Box 300", True, True),
+                                ("CloudLink Box 600", True, True)])
+        self.assertTrue(all(result["logCollection"]["status"] == "saved" for result in results))
+
     def test_polycom_group_plan_uses_four_exact_routes_and_leaves_hdx_unsupported(self) -> None:
         seen = []
         adapters = {

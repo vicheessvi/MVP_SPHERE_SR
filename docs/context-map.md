@@ -1,5 +1,11 @@
 # Карта контекста
 
+## Feature 052 — сбор логов Huawei CloudLink 300
+
+- Сценарий остаётся в существующей опции `collectLogs` раздела опросов: режимы только логов/JSON+логи, выбранная папка с timestamp-папкой, потоковая запись и ручной импорт уже реализованы. `specs/052-cloudlink-300-log-collection/`, `mvp_runtime/polling.py`, `mvp_runtime/polling_job.py`.
+- Подтверждён точный Bar 300 export `GET /log?rmd=<nonce>` после exact model/identity и двух маркеров текущего bundle: HTTP 200, `application/x-octet-stream`, потоковый XML `LogModule` с закрывающим тегом. Полный поток проверен без сохранения содержимого. `mvp_runtime/adapters/huawei_300.py`, `specs/052-cloudlink-300-log-collection/research.md`, ADR-0055.
+- В `mvp_runtime/polling.py` добавлены три exact transport серии 300 к уже существующему `collectLogs`; Box 300/600 до отдельной проверки остаются предварительными, как и сохранение файла Bar через браузер. Новый parser событий не добавлен, JSON и логи выбираются независимо.
+
 ## Feature 051 — read-only настройки Huawei CloudLink 300
 
 - Актуальное расширение ADR-0054: общий узкий reader новых настроек подготовлен для exact Bar 300, Box 300 и Box 600, но на обеих Box новые поля остаются `provisional_user_validation` до самостоятельных реальных проверок. Отдельные model/identity gates, contract ID и прежде подтверждённые Site name сохраняются. Упоминания «Box не наследуют» ниже описывают прежние этапы Bar-only проверки, а не актуальный запрет на предварительное чтение.

@@ -1,0 +1,7 @@
+# Contract: Huawei CloudLink 300 log export v1
+
+Только exact Bar 300, Box 300, Box 600 после их собственных numeric pre-auth model и post-auth exact model плюс SN/MAC gates. Текущий bundle обязан содержать оба маркера `ExportLogBtn.onClick=i.handleExportLogData` и `handleExportLogData=function(){window.open("log?rmd="+Math.random()`. На Bar 300 live подтверждены только HTTP/MIME/XML-префикс, а не полное сохранение; `logCollection.validationStatus` для всех трёх моделей предварителен до проверки администратором каждого файла.
+
+Один read-only `GET /log?rmd=<nonce>` по HTTPS/443 с cookie текущего сеанса, `Referer` и без учётных данных/CSRF в URL. TLS по умолчанию проверяется; самоподписанный сертификат допустим только при явном разрешении данного запуска. Не вызывать соседние `WEB_CleanAllLogsAPI`, `WEB_DeleteCHRLogAPI`, `WEB_HIDLogExportRequest`, диагностический `logfile.tgz` или методы другой серии.
+
+Принимается только HTTP 200, допустимый XML/octet-stream MIME и префикс `<?xml…<LogModule` в первых 4096 байтах. На Bar 300 live подтверждён `application/x-octet-stream`; дополнительные допустимые MIME требуют XML-префикса. Поток без полного буферирования передаётся в существующий `on_log(stream, {ip, filename: "<IP>.xml"})`; ожидается ACK `saved|failed`, после него поток закрывается. Неизвестная схема → `protocol_required`, ошибка чтения/сохранения → `failed` с безопасным кодом. Ни содержимое, ни cookie не входят в JSON/status. Event analytics не является частью этого контракта.
