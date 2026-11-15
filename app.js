@@ -58,6 +58,7 @@
   const TE_LOG_EVENTS = global.MVP_HUAWEI_TE_LOG_EVENTS || (typeof module === "object" && module.exports ? require("./runtime/huawei-te-log-events") : null);
   if (!TE_LOG_EVENTS) throw new Error("Модуль анализа логов Huawei TE не загружен");
   const HUAWEI_310_LOG_EVENTS = global.MVP_HUAWEI_310_LOG_EVENTS || (typeof module === "object" && module.exports ? require("./runtime/huawei-310-log-events") : null);
+  const HUAWEI_300_LOG_EVENTS = global.MVP_HUAWEI_300_LOG_EVENTS || (typeof module === "object" && module.exports ? require("./runtime/huawei-300-log-events") : null);
   if (!HUAWEI_310_LOG_EVENTS) throw new Error("Модуль анализа логов Huawei 310 не загружен");
   const { MODULE_CATALOG, UI_TERMS, EQUIPMENT_CATEGORY_CATALOG, ANALYZED_PARAMETER_RULES, POLLING_HELP_ENTRIES } = PRODUCT_CATALOG;
   const EQUIPMENT_CATEGORY_IDS = Object.freeze(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id));
@@ -2142,7 +2143,8 @@
       const matchStatus = !ip ? "IP не указан" : candidates.length === 1 ? "Сопоставлено" : candidates.length ? "Неоднозначный IP" : "Нет в SR";
       const detectedFormat = entry.readError ? "Ошибка чтения" : classifyDeviceLogPrefix(entry.prefix, name);
       const exact310 = candidates.length === 1 && candidates[0].category === "vcs" && normalizeManufacturer(candidates[0].manufacturerNormalized || candidates[0].manufacturerRaw) === "huawei" && ["bar310", "box310", "box610"].includes(auditModelToken(candidates[0].modelRaw));
-      return { path, name, runFolder, ip, size: Number(entry.size || 0), modifiedAt: Number.isFinite(entry.lastModified) ? new Date(entry.lastModified).toISOString() : "", format: exact310 && detectedFormat === "Huawei TE XML" ? "Huawei 310 XML" : detectedFormat, matchStatus, deviceId: candidates.length === 1 ? candidates[0].id : null, deviceName: candidates.length === 1 ? candidates[0].nameRaw || candidates[0].modelRaw || "" : "" };
+      const exact300 = candidates.length === 1 && candidates[0].category === "vcs" && normalizeManufacturer(candidates[0].manufacturerNormalized || candidates[0].manufacturerRaw) === "huawei" && ["bar300", "box300", "box600"].includes(auditModelToken(candidates[0].modelRaw));
+      return { path, name, runFolder, ip, size: Number(entry.size || 0), modifiedAt: Number.isFinite(entry.lastModified) ? new Date(entry.lastModified).toISOString() : "", format: detectedFormat === "Huawei TE XML" && exact310 ? "Huawei 310 XML" : detectedFormat === "Huawei TE XML" && exact300 ? "Huawei 300 XML" : detectedFormat, matchStatus, deviceId: candidates.length === 1 ? candidates[0].id : null, deviceName: candidates.length === 1 ? candidates[0].nameRaw || candidates[0].modelRaw || "" : "" };
     });
     const formats = {};
     rows.forEach((row) => { formats[row.format] = (formats[row.format] || 0) + 1; });
@@ -2268,6 +2270,59 @@
     coverage.powerOffs = ordered.filter((item) => item.kind === "power_off").length;
     coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
     return { events: ordered, coverage, sourceSrSha256: currentState?.srImports?.at(-1)?.rawSha256 || null };
+  }
+
+  function buildHuawei300LogEventIndex(scannedEntries, currentState, modelGroup = "bar") {
+    const allowedModels = modelGroup === "box" ? ["box300", "box600"] : ["bar300"];
+    const devices = new Map((currentState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
+    const locations = new Map((currentState?.locations || []).map((item) => [item.id, item]));
+    const events = new Map();
+    const coverage = { files: 0, scannedFiles: 0, excludedFiles: 0, invalidFiles: 0, unknownStarts: 0, startsAfterShutdown: 0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
+    for (const entry of scannedEntries || []) {
+      const row = entry?.row || {};
+      if (row.format !== "Huawei 300 XML") continue;
+      const device = devices.get(row.deviceId);
+      const model = auditModelToken(device?.modelRaw);
+      if (!allowedModels.includes(model)) continue;
+      coverage.files += 1;
+      if (row.matchStatus !== "Сопоставлено" || !device || row.ip !== normalizeIpv4(device.ipNormalized || device.ipRaw)
+        || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei") { coverage.excludedFiles += 1; continue; }
+      if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; continue; }
+      coverage.scannedFiles += 1;
+      const location = locations.get(device.locationId);
+      const gapsByBoot = new Map((entry.scan.bootGaps || []).map((gap) => [gap.bootLocalAt, gap]));
+      for (const parsed of HUAWEI_300_LOG_EVENTS.deriveEvents(entry.scan.markers)) {
+        const key = `${device.id}|${parsed.kind === "power_off" ? "power_off" : "start"}|${parsed.localAt}`;
+        const source = { path: String(row.path || "").slice(0, 512), line: parsed.lineNumber, markerLines: (parsed.markerLineNumbers || []).filter(Number.isSafeInteger).slice(0, 16) };
+        const gap = parsed.kind === "unknown_start" ? gapsByBoot.get(parsed.localAt) : null;
+        const silenceGap = gap && Number.isSafeInteger(gap.gapSeconds) && gap.gapSeconds > 0
+          ? { seconds: gap.gapSeconds, minutes: gap.gapMinutes, fromLocalAt: gap.fromLocalAt, toLocalAt: gap.toLocalAt,
+              knownAction: gap.knownAction === true, clockAnomalyOrLongGap: gap.clockAnomalyOrLongGap === true } : null;
+        const prior = events.get(key);
+        if (prior) {
+          if (!prior.sources.some((item) => item.path === source.path && item.line === source.line)) prior.sources.push(source);
+          if (prior.kind === "unknown_start" && parsed.kind === "start_after_shutdown") { prior.kind = parsed.kind; prior.silenceGap = null; prior.actionMethod = parsed.method || null; if (modelGroup === "bar") prior.validationStatus = "confirmed_local_validation"; }
+          if (silenceGap && prior.kind === "unknown_start" && (!prior.silenceGap || silenceGap.seconds < prior.silenceGap.seconds)) prior.silenceGap = silenceGap;
+          continue;
+        }
+        events.set(key, { id: key, kind: parsed.kind, deviceId: device.id, deviceName: device.nameRaw || device.modelRaw || "Устройство без названия",
+          category: device.category, manufacturer: device.manufacturerRaw || "Huawei", model: device.modelRaw || "Не указано", ip: row.ip,
+          mac: device.macNormalized || device.macRaw || "Не указано", vip: Boolean(device.deviceVip || location?.vip),
+          locationId: location?.id || device.locationId || null, locationName: location?.name || "Не указано", address: location?.address || "Не указано",
+          estimatedAt: new Date(parsed.timeMs).toISOString(), deviceLocalTime: parsed.localAt, timeBasis: "device_local_unknown_timezone",
+          ruleVersion: model === "bar300" ? HUAWEI_300_LOG_EVENTS.RULE_VERSION : `huawei-${model}-log-v2`,
+          validationStatus: modelGroup === "box" ? "confirmed_user_validation" : parsed.kind === "power_off" || parsed.kind === "start_after_shutdown" ? "confirmed_local_validation" : "bar300_boot_observed",
+          actionMethod: parsed.method || null, shutdownMethod: parsed.kind === "power_off" ? parsed.method || null : null,
+          silenceGap, sources: [source] });
+      }
+    }
+    const ordered = [...events.values()].sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
+    coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
+    coverage.startsAfterShutdown = ordered.filter((item) => item.kind === "start_after_shutdown").length;
+    coverage.powerOffs = ordered.filter((item) => item.kind === "power_off").length;
+    coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
+    return { events: ordered, coverage, validationStatus: modelGroup === "box" ? "confirmed_user_validation" : "bar300_boot_observed",
+      sourceSrSha256: currentState?.srImports?.at(-1)?.rawSha256 || null };
   }
 
   function ensurePollingRun(next, input, capturedAt) {
@@ -3074,7 +3129,7 @@
     { id: "over_year", label: "Более года", maxSeconds: Infinity, color: "#bd5d65" }
   ]);
 
-  function getPowerDurationAnalytics(teAnalytics, barAnalytics, candidateState, filters) {
+  function getPowerDurationAnalytics(teAnalytics, barAnalytics, candidateState, filters, bar300Analytics = null, box300Analytics = null) {
     const locations = new Map((candidateState?.locations || []).map((item) => [item.id, item]));
     const selectedDevices = (candidateState?.inventoryDevices || []).filter((device) => {
       if (device.inCurrentSr === false) return false;
@@ -3087,7 +3142,7 @@
     });
     const selectedIds = new Set(selectedDevices.map((item) => item.id));
     const byDevice = new Map();
-    const selectedEvents = [teAnalytics, barAnalytics].filter((item) => item?.valid && !item.stale && item.validationStatus !== "provisional_user_validation").flatMap((item) => Object.values(item.groups || {}).flatMap((group) => group.events || []));
+    const selectedEvents = [teAnalytics, barAnalytics, bar300Analytics, box300Analytics].filter((item) => item?.valid && !item.stale && item.validationStatus !== "provisional_user_validation").flatMap((item) => Object.values(item.groups || {}).flatMap((group) => group.events || []));
     const starts = new Map();
     for (const event of selectedEvents) {
       if (!["confirmed_reboot", "unknown_start", "start_after_shutdown", "suspected_power_loss"].includes(event.kind)) continue;
@@ -3114,11 +3169,11 @@
 
   const POWER_HEATMAP_DAYS = Object.freeze(["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]);
 
-  function getPowerHeatmapAnalytics(teAnalytics, barAnalytics, kind) {
+  function getPowerHeatmapAnalytics(teAnalytics, barAnalytics, kind, bar300Analytics = null, box300Analytics = null) {
     const selectedKind = kind === "suspected" ? "suspected_power_loss" : "power_off";
     const cells = Array.from({ length: 7 * 24 }, (_, index) => ({ day: Math.floor(index / 24), hour: index % 24, devices: new Map(), count: 0, eventCount: 0 }));
     const seen = new Set();
-    for (const analytics of [teAnalytics, barAnalytics]) {
+    for (const analytics of [teAnalytics, barAnalytics, bar300Analytics, box300Analytics]) {
       if (!analytics?.valid || analytics.stale || analytics.validationStatus === "provisional_user_validation") continue;
       for (const event of analytics.groups?.[selectedKind]?.events || []) {
         const at = String(event.deviceLocalTime || "");
@@ -5622,6 +5677,7 @@
     buildPollingPlanExport,
     buildDeviceLogImportRows,
     buildHuaweiTeLogEventIndex,
+    buildHuawei300LogEventIndex,
     classifyDeviceLogPrefix,
     writeDeviceLogFile,
     createPollingPlan,
@@ -5818,6 +5874,8 @@
     logImportRows: [],
     teLogIndex: { events: [], coverage: null, sourceSrSha256: null },
     huawei310LogIndex: { events: [], coverage: null, sourceSrSha256: null },
+    huawei300BarLogIndex: { events: [], coverage: null, sourceSrSha256: null },
+    huawei300BoxLogIndex: { events: [], coverage: null, sourceSrSha256: null, validationStatus: "confirmed_user_validation" },
     logImportProgress: null,
     pollingProgress: null,
     pollingCancelRequested: false,
@@ -6480,6 +6538,30 @@
       ${mode === "reboots" ? `<details class="card section-gap"><summary>Запуски Huawei 310 с неустановленной причиной — ${analytics.groups.unknown_start.count}</summary><p class="muted">Не прибавляются к подтверждённым перезагрузкам.</p>${table(analytics.groups.unknown_start)}</details>` : ""}</section>`;
   }
 
+  function renderHuawei300LogAnalytics(barAnalytics, boxAnalytics, mode = "reboots") {
+    if (!barAnalytics.valid || !boxAnalytics.valid) return `<div class="error-panel section-gap" role="alert">${escapeHtml([...(barAnalytics.errors || []), ...(boxAnalytics.errors || [])].join("; "))}</div>`;
+    const barCoverage = barAnalytics.coverage || {};
+    const boxCoverage = boxAnalytics.coverage || {};
+    if (!barCoverage.files && !boxCoverage.files) return `<section class="card section-gap"><h2>Huawei CloudLink 300: события из логов</h2><p class="muted">Импортируйте XML-журналы Bar 300, Box 300 или Box 600 вместе с актуальной выгрузкой SR.</p></section>`;
+    if (barAnalytics.stale || boxAnalytics.stale) return `<section class="card section-gap"><h2>Huawei CloudLink 300: события из логов</h2><p class="warning-panel">Выгрузка SR изменилась. Импортируйте папку логов повторно.</p></section>`;
+    const table = (events) => renderRebootTable(["Локальное время терминала", "Устройство", "Модель", "IP", "Локация", "Адрес", "Тип события", "Пауза без логов", "Достоверность", "Файл и строка"], events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${event.kind === "power_off" ? "Штатное выключение (Web)" : event.kind === "start_after_shutdown" ? "Запуск после выключения" : event.kind === "suspected_power_loss" ? "Предполагаемая пауза питания" : "Запуск, причина неизвестна"}</td><td>${event.kind === "suspected_power_loss" ? `${escapeHtml(event.silenceGap.minutes)} мин; ${escapeHtml(event.silenceGap.fromLocalAt)}–${escapeHtml(event.silenceGap.toLocalAt)}` : "—"}</td><td>${event.validationStatus === "provisional_user_validation" ? "Предварительно" : event.confidence === "low" ? "Низкая" : event.kind === "power_off" || event.kind === "start_after_shutdown" ? "Подтверждено" : "Причина неизвестна"}</td><td>${escapeHtml(event.sources.map((source) => `${source.path}:${source.line}${source.markerLines.length ? ` (команда: ${source.markerLines.join(", ")})` : ""}`).join("; "))}</td></tr>`)) + (events.length > 100 ? `<p class="muted">Показаны первые 100 событий из ${events.length}; итоги рассчитаны по всем.</p>` : "");
+    const barUnknown = barAnalytics.groups.unknown_start;
+    const barSuspected = barAnalytics.groups.suspected_power_loss;
+    const boxUnknown = boxAnalytics.groups.unknown_start;
+    const boxSuspected = boxAnalytics.groups.suspected_power_loss;
+    const barPowerOff = barAnalytics.groups.power_off;
+    const barStartsAfterShutdown = barAnalytics.groups.start_after_shutdown;
+    const barGroup = mode === "power" ? barSuspected : barUnknown;
+    const boxGroup = mode === "power" ? boxSuspected : boxUnknown;
+    const boxPowerOff = boxAnalytics.groups.power_off;
+    const boxStartsAfterShutdown = boxAnalytics.groups.start_after_shutdown;
+    return `<section class="section-gap"><h2>Huawei CloudLink 300: события из логов</h2><p class="muted">Bar 300: проверено файлов ${barCoverage.scannedFiles || 0} из ${barCoverage.files || 0}; Box 300/600: ${boxCoverage.scannedFiles || 0} из ${boxCoverage.files || 0}. Ошибки разбора: ${(barCoverage.invalidFiles || 0) + (boxCoverage.invalidFiles || 0)}. Время локальное, часовой пояс не подтверждён.</p>
+      <section class="card section-gap"><h2>${mode === "power" ? "Предполагаемые отключения питания Bar 300" : "Запуски Bar 300 с неустановленной причиной"}</h2><p class="muted">${mode === "power" ? `Пауза не менее ${barAnalytics.silenceMinutes} минут перед новым запуском — лишь низкодостоверное предположение, не доказательство пропажи напряжения. Она не учитывается в подтверждённых выключениях.` : "System boot подтверждает запуск, но не его причину. Общие слова reboot/restart не считаются командой перезагрузки; подтверждённых перезагрузок по этому правилу пока нет."}</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>${mode === "power" ? "Предположений" : "Неизвестных запусков"}</span><strong>${barGroup.count}</strong></div><div class="card"><span>Устройств</span><strong>${barGroup.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${barGroup.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", barGroup.byDate, { limit: 31 })}${renderRebootChart("По часам", barGroup.byHour, { limit: 24 })}</div>${table(barGroup.events)}</section>
+      ${mode === "power" ? `<section class="card section-gap"><h2>Подтверждённые штатные выключения Bar 300</h2><p class="muted">Отдельная web-команда «shut down terminal» проверена контролируемым выключением и последующим запуском. Это не аварийное исчезновение электропитания.</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${barPowerOff.count}</strong></div><div class="card"><span>Устройств</span><strong>${barPowerOff.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${barPowerOff.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", barPowerOff.byDate, { limit: 31 })}${renderRebootChart("По часам", barPowerOff.byHour, { limit: 24 })}</div>${table(barPowerOff.events)}</section><details class="card section-gap"><summary>Запуски Bar 300 после штатного выключения — ${barStartsAfterShutdown.count}</summary><p class="muted">Команда выключения и следующий запуск есть в журнале; это не отдельная перезагрузка.</p>${table(barStartsAfterShutdown.events)}</details>` : ""}
+      <section class="card section-gap"><h2>${mode === "power" ? "Предполагаемые отключения питания Box 300/600" : "Запуски Box 300/600 с неустановленной причиной"}</h2><p class="muted">${mode === "power" ? `Пауза не менее ${boxAnalytics.silenceMinutes} минут перед неизвестным запуском имеет низкую достоверность и не доказывает потерю напряжения. Администратор проверил событийную аналитику обеих моделей.` : "System boot не доказывает перезагрузку. Общие reboot/restart не входят в подтверждённый счётчик; администратор проверил событийную аналитику обеих моделей."}</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>${mode === "power" ? "Предположений" : "Неизвестных запусков"}</span><strong>${boxGroup.count}</strong></div><div class="card"><span>Устройств</span><strong>${boxGroup.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${boxGroup.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", boxGroup.byDate, { limit: 31 })}${renderRebootChart("По часам", boxGroup.byHour, { limit: 24 })}</div>${table(boxGroup.events)}</section>
+      ${mode === "power" ? `<section class="card section-gap"><h2>Штатные выключения Box 300/600</h2><p class="muted">Учитываются только журналы с точным web-маркером «shut down terminal». Администратор подтвердил событийный анализ обеих моделей; это не доказательство аварийной потери электропитания.</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${boxPowerOff.count}</strong></div><div class="card"><span>Устройств</span><strong>${boxPowerOff.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${boxPowerOff.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", boxPowerOff.byDate, { limit: 31 })}${renderRebootChart("По часам", boxPowerOff.byHour, { limit: 24 })}</div>${table(boxPowerOff.events)}</section><details class="card section-gap"><summary>Запуски Box 300/600 после штатного выключения — ${boxStartsAfterShutdown.count}</summary><p class="muted">Запуск после команды выключения не считается перезагрузкой.</p>${table(boxStartsAfterShutdown.events)}</details>` : ""}</section>`;
+  }
+
   function renderPowerDurationDashboard(data) {
     const selected = data.buckets.find((item) => item.id === ui.powerDurationBucket) || data.buckets.at(-1);
     let offset = 0;
@@ -6525,13 +6607,16 @@
     const teSections = renderHuaweiTeLogAnalytics(teAnalytics, mode);
     const barAnalytics = getHuaweiTeLogAnalytics(ui.huawei310LogIndex, state, ui.rebootFilters);
     const huawei310Sections = renderHuawei310LogAnalytics(barAnalytics, mode);
+    const bar300Analytics = getHuaweiTeLogAnalytics(ui.huawei300BarLogIndex, state, ui.rebootFilters);
+    const box300Analytics = getHuaweiTeLogAnalytics(ui.huawei300BoxLogIndex, state, ui.rebootFilters);
+    const huawei300Sections = renderHuawei300LogAnalytics(bar300Analytics, box300Analytics, mode);
     const header = `<header class="page-header reboot-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "reboots").title)}</h1></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
     const filters = renderRebootFilters(ui.rebootFilters, analytics);
     const tabs = `<nav class="reboot-submodules" aria-label="Разделы анализа"><button type="button" data-reboot-submodule="reboots" aria-current="${mode === "reboots" ? "page" : "false"}">Анализ перезагрузок</button><button type="button" data-reboot-submodule="power" aria-current="${mode === "power" ? "page" : "false"}">Анализ отключения питания</button></nav>`;
     if (!analytics.valid) return `${header}${tabs}${filters}<div class="error-panel section-gap" role="alert">${escapeHtml(analytics.errors.join("; "))}</div>`;
-    if (mode === "power") return `${header}${tabs}${filters}${renderPowerDurationDashboard(getPowerDurationAnalytics(teAnalytics, barAnalytics, state, ui.rebootFilters))}${renderPowerHeatmap(getPowerHeatmapAnalytics(teAnalytics, barAnalytics, ui.powerHeatmapKind))}${teSections}${huawei310Sections}`;
+    if (mode === "power") return `${header}${tabs}${filters}${renderPowerDurationDashboard(getPowerDurationAnalytics(teAnalytics, barAnalytics, state, ui.rebootFilters, bar300Analytics, box300Analytics))}${renderPowerHeatmap(getPowerHeatmapAnalytics(teAnalytics, barAnalytics, ui.powerHeatmapKind, bar300Analytics, box300Analytics))}${teSections}${huawei310Sections}${huawei300Sections}`;
     const empty = analytics.emptyState ? `<div class="${analytics.emptyState === "no_events" ? "success" : "info"}-panel section-gap"><strong>${escapeHtml(rebootEmptyMessage(analytics.emptyState))}</strong></div>` : "";
-    if (["no_sr", "no_polling", "insufficient"].includes(analytics.emptyState)) return `${header}${tabs}${filters}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}${teSections}${huawei310Sections}`;
+    if (["no_sr", "no_polling", "insufficient"].includes(analytics.emptyState)) return `${header}${tabs}${filters}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}${teSections}${huawei310Sections}${huawei300Sections}`;
     return `${header}${tabs}${filters}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}
       <section class="dashboard-kpi-grid reboot-kpi-grid section-gap">
         ${renderRebootCard("Общее количество перезагрузок", analytics.summary.minimumReboots, "events")}
@@ -6552,7 +6637,7 @@
         ${renderRebootCard("Локации", analytics.details.locations.length, "byLocation")}
         ${renderRebootCard("Адреса", analytics.details.addresses.length, "byAddress")}
       </section>
-      ${renderRebootDetail(analytics)}${teSections}${huawei310Sections}`;
+      ${renderRebootDetail(analytics)}${teSections}${huawei310Sections}${huawei300Sections}`;
   }
 
   function renderAnalyticsPage(key, headers, rows, renderRow) {
@@ -7839,6 +7924,8 @@
       ui.logImportRows = [];
       ui.teLogIndex = { events: [], coverage: null, sourceSrSha256: null };
       ui.huawei310LogIndex = { events: [], coverage: null, sourceSrSha256: null };
+      ui.huawei300BarLogIndex = { events: [], coverage: null, sourceSrSha256: null };
+      ui.huawei300BoxLogIndex = { events: [], coverage: null, sourceSrSha256: null, validationStatus: "confirmed_user_validation" };
       ui.logImportSummary = null;
       render();
       const entries = [];
@@ -7865,6 +7952,8 @@
         const huawei310Model = auditModelToken(device?.modelRaw);
         const huawei310Eligible = row.matchStatus === "Сопоставлено" && row.format === "Huawei 310 XML" && device?.category === "vcs"
           && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei" && ["bar310", "box310", "box610"].includes(huawei310Model);
+        const huawei300Eligible = row.matchStatus === "Сопоставлено" && row.format === "Huawei 300 XML" && device?.category === "vcs"
+          && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei" && ["bar300", "box300", "box600"].includes(huawei310Model);
         let scan = null;
         if (eligible) {
           try { scan = await TE_LOG_EVENTS.scanFile(files[index], { model: auditModelToken(device.modelRaw) }); }
@@ -7872,14 +7961,19 @@
         } else if (huawei310Eligible) {
           try { scan = await HUAWEI_310_LOG_EVENTS.scanFile(files[index]); }
           catch { scan = { ok: false, reason: "read_failed", markers: [] }; }
+        } else if (huawei300Eligible) {
+          try { scan = await HUAWEI_300_LOG_EVENTS.scanFile(files[index]); }
+          catch { scan = { ok: false, reason: "read_failed", markers: [] }; }
         }
-        row.analysisStatus = !eligible && !huawei310Eligible ? "Вне анализа Huawei TE/310" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
+        row.analysisStatus = !eligible && !huawei310Eligible && !huawei300Eligible ? "Вне анализа Huawei TE/310/300" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
         scans.push({ row, scan });
         ui.logImportProgress = { processed: index + 1, total: files.length };
         if ((index + 1) % 8 === 0 || index + 1 === files.length) { render(); await new Promise((resolve) => global.setTimeout(resolve, 0)); }
       }
       ui.teLogIndex = buildHuaweiTeLogEventIndex(scans, state);
       ui.huawei310LogIndex = buildHuawei310LogEventIndex(scans, state);
+      ui.huawei300BarLogIndex = buildHuawei300LogEventIndex(scans, state, "bar");
+      ui.huawei300BoxLogIndex = buildHuawei300LogEventIndex(scans, state, "box");
       ui.logImportRows = imported.rows;
       ui.logImportSummary = imported.summary;
       ui.logImportProgress = null;

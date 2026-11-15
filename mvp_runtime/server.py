@@ -40,6 +40,7 @@ PUBLIC_FILES = {
     "/runtime/polling-recovery.js": ("runtime/polling-recovery.js", "text/javascript; charset=utf-8"),
     "/runtime/huawei-te-log-events.js": ("runtime/huawei-te-log-events.js", "text/javascript; charset=utf-8"),
     "/runtime/huawei-310-log-events.js": ("runtime/huawei-310-log-events.js", "text/javascript; charset=utf-8"),
+    "/runtime/huawei-300-log-events.js": ("runtime/huawei-300-log-events.js", "text/javascript; charset=utf-8"),
     "/runtime/sphere.js": ("runtime/sphere.js", "text/javascript; charset=utf-8"),
 }
 JOB_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)$")

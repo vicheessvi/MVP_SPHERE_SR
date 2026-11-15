@@ -22,6 +22,7 @@
   const pollingRecovery = typeof require === "function" ? require("./runtime/polling-recovery") : global.MVP_POLLING_RECOVERY;
   const teLogEvents = typeof require === "function" ? require("./runtime/huawei-te-log-events") : global.MVP_HUAWEI_TE_LOG_EVENTS;
   const huawei310LogEvents = typeof require === "function" ? require("./runtime/huawei-310-log-events") : global.MVP_HUAWEI_310_LOG_EVENTS;
+  const huawei300LogEvents = typeof require === "function" ? require("./runtime/huawei-300-log-events") : global.MVP_HUAWEI_300_LOG_EVENTS;
   const fixtures = global.MvpSphereSRFixtures;
   const timelineExpected = global.MvpSphereSRTimelineExpectations;
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
@@ -2687,6 +2688,116 @@
     assertEqual(teLogEvents.parseEventLine("[Debug][Main] 2026-02-30 10:00:00 LOG_MOD_MC 9 System start", 1), null);
     const file = typeof Blob === "function" ? new Blob([log]) : { size: log.length, slice: (start, end) => ({ arrayBuffer: async () => new TextEncoder().encode(log.slice(start, end)).buffer }) };
     assertEqual(teLogEvents.deriveEvents((await teLogEvents.scanFile(file)).markers).length, 3);
+  });
+
+  test("CloudLink 300: запуск и часовая пауза не становятся подтверждённой перезагрузкой", async () => {
+    const header = "<?xml version='1.0'?><LogModule>\n";
+    const line = (at, module, message) => `[${at}.000+03:00][Info][System] ${module} 7 ${message}\n`;
+    const xml = header + line("2026-01-01 09:00:00", "LOG_MOD_MC", "Other activity")
+      + line("2026-01-01 10:05:00", "LOG_MOD_MC", "System:System boot; component restart; reboot")
+      + "</LogModule>";
+    const scan = huawei300LogEvents.scanText(xml);
+    assert(scan.ok);
+    assertEqual(scan.markers.length, 1);
+    assertEqual(scan.bootGaps[0].gapSeconds, 65 * 60);
+    assertEqual(huawei300LogEvents.deriveEvents(scan.markers)[0].kind, "unknown_start");
+    assertEqual((await huawei300LogEvents.scanFile(new Blob([xml]))).markers.length, 1);
+    assertEqual(huawei300LogEvents.scanText(xml.replace("</LogModule>", "")).reason, "incomplete_log");
+    assertEqual(huawei300LogEvents.scanText(header + line("2026-02-30 10:00:00", "LOG_MOD_MC", "System boot") + "</LogModule>").markers.length, 0);
+    assertEqual(huawei300LogEvents.scanText(header + line("2026-01-01 10:00:00", "LOG_MOD_WEB", "System boot") + "</LogModule>").markers.length, 0);
+    assertEqual(huawei300LogEvents.scanText("<?xml version='1.0'?><Other/> ").ok, false);
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [
+      { id: "bar300-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Bar 300", ipNormalized: "192.0.2.30", inCurrentSr: true },
+      { id: "box300-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Box 300", ipNormalized: "192.0.2.32", inCurrentSr: true },
+      { id: "box600-test", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Box 600", ipNormalized: "192.0.2.60", inCurrentSr: true }
+    ];
+    const row = (id, ip, path) => ({ path, ip, format: "Huawei 300 XML", matchStatus: "Сопоставлено", deviceId: id });
+    const entries = [
+      { row: row("bar300-test", "192.0.2.30", "run1/192.0.2.30.xml"), scan },
+      { row: row("bar300-test", "192.0.2.30", "run2/192.0.2.30.xml"), scan },
+      { row: row("box300-test", "192.0.2.32", "run/192.0.2.32.xml"), scan },
+      { row: row("box600-test", "192.0.2.60", "run/192.0.2.60.xml"), scan }
+    ];
+    const bar = api.buildHuawei300LogEventIndex(entries, state, "bar");
+    const box = api.buildHuawei300LogEventIndex(entries, state, "box");
+    assertEqual(bar.events.length, 1);
+    assertEqual(bar.events[0].sources.length, 2);
+    assertEqual(bar.coverage.confirmedReboots, 0);
+    assertEqual(bar.coverage.powerOffs, 0);
+    assertEqual(box.events.length, 2);
+    assertEqual(box.validationStatus, "confirmed_user_validation");
+    assert(box.events.every((event) => event.validationStatus === "confirmed_user_validation"), "Box event validation status must be confirmed");
+    assert(box.events.some((event) => event.ruleVersion === "huawei-box300-log-v2"), "Box 300 rule version must remain model-specific");
+    assert(box.events.some((event) => event.ruleVersion === "huawei-box600-log-v2"), "Box 600 rule version must remain model-specific");
+    assert(!JSON.stringify(bar).includes("Other activity"));
+    const barAnalytics = api.getHuaweiTeLogAnalytics(bar, state, { period: "all", logSilenceMinutes: "60" });
+    const boxAnalytics = api.getHuaweiTeLogAnalytics(box, state, { period: "all", logSilenceMinutes: "60" });
+    assertEqual(barAnalytics.groups.suspected_power_loss.count, 1);
+    assertEqual(barAnalytics.groups.confirmed_reboot.count, 0);
+    assertEqual(boxAnalytics.groups.suspected_power_loss.count, 2);
+    assertEqual(api.getPowerDurationAnalytics(null, null, state, {}, barAnalytics).observedDevices, 1);
+    assertEqual(api.getPowerHeatmapAnalytics(null, null, "suspected", barAnalytics).totalEvents, 1);
+    assertEqual(api.getPowerDurationAnalytics(null, null, state, {}, barAnalytics, boxAnalytics).observedDevices, 3);
+    assertEqual(api.getPowerHeatmapAnalytics(null, null, "suspected", barAnalytics, boxAnalytics).totalEvents, 3);
+    const wrongIp = api.buildHuawei300LogEventIndex([{ row: row("bar300-test", "192.0.2.31", "run/wrong.xml"), scan }], state);
+    assertEqual(wrongIp.events.length, 0);
+    const ambiguous = api.buildHuawei300LogEventIndex([{ row: { ...row("bar300-test", "192.0.2.30", "run/ambiguous.xml"), matchStatus: "Неоднозначный IP" }, scan }], state);
+    assertEqual(ambiguous.events.length, 0);
+    const imported = api.buildDeviceLogImportRows([{ name: "192.0.2.30.xml", relativePath: "run/192.0.2.30.xml", size: xml.length, prefix: new TextEncoder().encode(xml.slice(0, 2048)) }], state);
+    assertEqual(imported.rows[0].format, "Huawei 300 XML");
+  });
+
+  test("Bar 300: отдельная web-команда выключения отделена от перезагрузки", () => {
+    const line = (at, module, message) => `[${at}.000+03:00][Info][System] ${module} 7 ${message}\n`;
+    const xml = "<?xml version='1.0'?><LogModule>\n"
+      + line("2026-11-15 14:52:23", "LOG_MOD_MC", "System:System boot success")
+      + line("2026-11-15 14:57:45", "LOG_MOD_WEB", "User web user shut down terminal")
+      + line("2026-11-15 14:59:23", "LOG_MOD_MC", "System reboot")
+      + line("2026-11-15 14:59:24", "LOG_MOD_MC", "System:System boot success")
+      + "</LogModule>";
+    const scan = huawei300LogEvents.scanText(xml);
+    assert(scan.ok);
+    assertEqual(scan.markers.filter((item) => item.kind === "web_shutdown_command").length, 1);
+    const derived = huawei300LogEvents.deriveEvents(scan.markers);
+    assertEqual(derived.filter((item) => item.kind === "power_off").length, 1);
+    assertEqual(derived.filter((item) => item.kind === "start_after_shutdown").length, 1);
+    assertEqual(derived.filter((item) => item.kind === "confirmed_reboot").length, 0);
+    assertEqual(derived.filter((item) => item.kind === "unknown_start").length, 1);
+    const failed = huawei300LogEvents.scanText(xml.replace("shut down terminal", "shut down terminal failed"));
+    assertEqual(huawei300LogEvents.deriveEvents(failed.markers).filter((item) => item.kind === "power_off").length, 0);
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [
+      { id: "bar300-action", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Bar 300", ipNormalized: "192.0.2.30", inCurrentSr: true },
+      { id: "box300-action", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Box 300", ipNormalized: "192.0.2.32", inCurrentSr: true },
+      { id: "box600-action", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei", modelRaw: "Box 600", ipNormalized: "192.0.2.60", inCurrentSr: true }
+    ];
+    const rows = [
+      { row: { path: "first/192.0.2.30.xml", ip: "192.0.2.30", format: "Huawei 300 XML", matchStatus: "Сопоставлено", deviceId: "bar300-action" }, scan },
+      { row: { path: "second/192.0.2.30.xml", ip: "192.0.2.30", format: "Huawei 300 XML", matchStatus: "Сопоставлено", deviceId: "bar300-action" }, scan },
+      { row: { path: "first/192.0.2.32.xml", ip: "192.0.2.32", format: "Huawei 300 XML", matchStatus: "Сопоставлено", deviceId: "box300-action" }, scan },
+      { row: { path: "first/192.0.2.60.xml", ip: "192.0.2.60", format: "Huawei 300 XML", matchStatus: "Сопоставлено", deviceId: "box600-action" }, scan }
+    ];
+    const bar = api.buildHuawei300LogEventIndex(rows, state, "bar");
+    const box = api.buildHuawei300LogEventIndex(rows, state, "box");
+    assertEqual(bar.coverage.powerOffs, 1);
+    assertEqual(bar.coverage.startsAfterShutdown, 1);
+    assertEqual(bar.coverage.confirmedReboots, 0);
+    assertEqual(bar.events.find((item) => item.kind === "power_off").sources.length, 2);
+    assert(!JSON.stringify(bar).includes("User web user"));
+    const barAnalytics = api.getHuaweiTeLogAnalytics(bar, state, { period: "all" });
+    const boxAnalytics = api.getHuaweiTeLogAnalytics(box, state, { period: "all" });
+    assertEqual(barAnalytics.groups.power_off.count, 1);
+    assertEqual(barAnalytics.groups.start_after_shutdown.count, 1);
+    assertEqual(barAnalytics.groups.suspected_power_loss.count, 0);
+    assertEqual(api.getPowerHeatmapAnalytics(null, null, "confirmed", barAnalytics).totalEvents, 1);
+    assertEqual(api.getPowerDurationAnalytics(null, null, state, {}, barAnalytics).observedDevices, 1);
+    assertEqual(box.coverage.powerOffs, 2);
+    assert(box.events.filter((item) => item.kind === "power_off").every((item) => item.validationStatus === "confirmed_user_validation"));
+    assertEqual(api.getPowerDurationAnalytics(null, null, state, {}, barAnalytics, boxAnalytics).observedDevices, 3);
+    assertEqual(api.getPowerHeatmapAnalytics(null, null, "confirmed", barAnalytics, boxAnalytics).totalEvents, 3);
   });
 
   test("Bar 310 считает только подтверждённую web-перезагрузку", async () => {
