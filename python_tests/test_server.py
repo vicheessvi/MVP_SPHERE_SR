@@ -100,6 +100,37 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(job.join(2)["logsSaved"], 1)
 
+    def test_polycom_tgz_log_stream_has_gzip_content_type(self) -> None:
+        cookie, csrf = self.harness.session()
+        data = b"\x1f\x8bSYNTHETIC-GZIP-STREAM"
+        def runner(_plan, options):
+            log_result = options["on_log"](io.BytesIO(data), {"ip": "192.0.2.31", "filename": "192.0.2.31.tgz",
+                "format": "polycom_syslog_tgz_v1", "index": 0, "total": 1})
+            options["on_progress"]({"stage": "processed", "result": {"ok": True, "logCollection": log_result}})
+        job = create_polling_job({"plan": {"schemaVersion": 3, "devices": [{"ip": "192.0.2.31"}], "collectLogs": True},
+                                  "credentials": [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "run_plan": runner})
+        session_id = cookie.split("=", 1)[1]
+        with self.harness.server.state.lock:
+            self.harness.server.state.jobs[job.id] = job
+            self.harness.server.state.sessions[session_id].active_job_id = job.id
+        pending = None
+        for _ in range(200):
+            status, _, body = self.harness.request("GET", f"/api/polling/jobs/{job.id}", headers={"Cookie": cookie})
+            pending = json.loads(body).get("pendingLog")
+            if pending: break
+            time.sleep(0.005)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["format"], "polycom_syslog_tgz_v1")
+        status, headers, body = self.harness.request("GET", f"/api/polling/jobs/{job.id}/log/{pending['logId']}",
+                                                     headers={"Cookie": cookie, "X-MVP-CSRF": csrf})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("content-type"), "application/gzip")
+        self.assertEqual(body, data)
+        status, _, _ = self.harness.request("POST", f"/api/polling/jobs/{job.id}/log/{pending['logId']}/ack",
+            headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body=b'{"saved":true}')
+        self.assertEqual(status, 200)
+        self.assertEqual(job.join(2)["logsSaved"], 1)
+
     def setUp(self) -> None:
         self.harness = ServerHarness()
 

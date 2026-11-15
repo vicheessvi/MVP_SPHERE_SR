@@ -1397,6 +1397,22 @@
       return { status: "read", value: { enabled: true, mode: "manual", modeCode: "Manual", primaryServer: primary, secondaryServer: secondary },
         source, ...(missing.length ? { unconfirmedFields: missing } : {}) };
     }
+    if (key === "ssh" && ["enabled", "disabled"].includes(value)
+      && getCaseInsensitive(supplied, "ruleVersion") === "polycom-ssh-source-priority-v1") {
+      const basis = getCaseInsensitive(supplied, "basis");
+      const meaning = getCaseInsensitive(supplied, "meaning");
+      if (basis === "legacy_api_fallback" && meaning === "ssh_audit_proxy"
+        && source === oneName("security.remoteaccess.ssh.enabled")) {
+        return { status: "read", value, source, basis, meaning, ruleVersion: "polycom-ssh-source-priority-v1" };
+      }
+      const direct = /^POST \/rest\/config:((?:security|system)\.[a-z0-9._-]{5,120})$/.exec(source);
+      if (basis === "ssh_service_direct" && meaning === "ssh_service_setting" && direct
+        && direct[1].includes("ssh") && direct[1] !== "security.remoteaccess.ssh.enabled"
+        && !/(?:password|secret|private|community|key)/.test(direct[1])
+        && getCaseInsensitive(supplied, "validationStatus") === "provisional_user_validation") {
+        return { status: "read", value, source, basis, meaning, ruleVersion: "polycom-ssh-source-priority-v1" };
+      }
+    }
     if (key === "ssh" && source === oneName("security.remoteaccess.ssh.enabled") && getCaseInsensitive(supplied, "meaning") === "legacy_api_over_ssh_only"
       && isPlainObject(value) && typeof value.legacyApiOverSshEnabled === "boolean" && value.sshServiceEnabled === null
       && JSON.stringify(getCaseInsensitive(supplied, "unconfirmedFields")) === JSON.stringify(["sshServiceEnabled"])) {
@@ -1483,9 +1499,12 @@
       const value = getCaseInsensitive(supplied, "value");
       const source = String(getCaseInsensitive(supplied, "source") || "");
       const exact310SettingsRead = bar310SettingsConfirmed || (boxSettingsAccepted && getCaseInsensitive(supplied, "validationStatus") === boxSettingsValidation);
-      if (polycomSettingsAccepted && status === "read" && getCaseInsensitive(supplied, "validationStatus") === polycomValidation) {
+      const polycomFieldValidation = getCaseInsensitive(supplied, "validationStatus");
+      const directSshProvisional = key === "ssh" && polycomValidation === "confirmed_user_validation"
+        && polycomFieldValidation === "provisional_user_validation" && getCaseInsensitive(supplied, "basis") === "ssh_service_direct";
+      if (polycomSettingsAccepted && status === "read" && (polycomFieldValidation === polycomValidation || directSshProvisional)) {
         const polycomField = projectPolycomSetting(key, supplied);
-        if (polycomField) projectedFields[key] = { ...polycomField, validationStatus: polycomValidation };
+        if (polycomField) projectedFields[key] = { ...polycomField, validationStatus: polycomFieldValidation };
       } else if (key === "autoUpdate" && exact310SettingsRead && status === "read" && ["enabled", "disabled"].includes(value)
         && ["GET /v1/om/config/service:serverType", "GET /v1/om/config/service+auto-config:serverType"].includes(source)
         && getCaseInsensitive(supplied, "basis") === "server_type_audit_rule"
@@ -2199,6 +2218,7 @@
   function classifyDeviceLogPrefix(prefix, filename) {
     const bytes = prefix instanceof Uint8Array ? prefix : new Uint8Array(prefix || []);
     if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) return "ZIP (без распаковки)";
+    if (/\.tgz$/i.test(String(filename || "")) && bytes.length >= 3 && bytes[0] === 0x1f && bytes[1] === 0x8b && bytes[2] === 0x08) return "TGZ (без распаковки)";
     const head = new TextDecoder("utf-8", { fatal: false }).decode(bytes.subarray(0, 2048)).replace(/^\uFEFF/, "").trimStart();
     if (head.startsWith("<?xml") && /<LogModule(?:\s|>)/.test(head)) return "Huawei TE XML";
     if (head.startsWith("<?xml")) return "XML (неизвестная схема)";
@@ -2219,13 +2239,14 @@
       const name = String(entry.name || "");
       const path = String(entry.relativePath || name).replace(/\\/g, "/");
       const runFolder = path.split("/").slice(0, -1).reverse().find((part) => /^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d(?:-\d+)?$/.test(part)) || "";
-      const ip = normalizeIpv4(name.replace(/\.(?:xml|zip|txt|log)$/i, ""));
+      const ip = normalizeIpv4(name.replace(/\.(?:xml|zip|txt|log|tgz)$/i, ""));
       const candidates = ip ? byIp.get(ip) || [] : [];
       const matchStatus = !ip ? "IP не указан" : candidates.length === 1 ? "Сопоставлено" : candidates.length ? "Неоднозначный IP" : "Нет в SR";
       const detectedFormat = entry.readError ? "Ошибка чтения" : classifyDeviceLogPrefix(entry.prefix, name);
       const exact310 = candidates.length === 1 && candidates[0].category === "vcs" && normalizeManufacturer(candidates[0].manufacturerNormalized || candidates[0].manufacturerRaw) === "huawei" && ["bar310", "box310", "box610"].includes(auditModelToken(candidates[0].modelRaw));
       const exact300 = candidates.length === 1 && candidates[0].category === "vcs" && normalizeManufacturer(candidates[0].manufacturerNormalized || candidates[0].manufacturerRaw) === "huawei" && ["bar300", "box300", "box600"].includes(auditModelToken(candidates[0].modelRaw));
-      return { path, name, runFolder, ip, size: Number(entry.size || 0), modifiedAt: Number.isFinite(entry.lastModified) ? new Date(entry.lastModified).toISOString() : "", format: detectedFormat === "Huawei TE XML" && exact310 ? "Huawei 310 XML" : detectedFormat === "Huawei TE XML" && exact300 ? "Huawei 300 XML" : detectedFormat, matchStatus, deviceId: candidates.length === 1 ? candidates[0].id : null, deviceName: candidates.length === 1 ? candidates[0].nameRaw || candidates[0].modelRaw || "" : "" };
+      const exactPolycom = candidates.length === 1 && candidates[0].category === "vcs" && normalizeManufacturer(candidates[0].manufacturerNormalized || candidates[0].manufacturerRaw) === "polycom" && ["group300", "group310", "group500", "group700"].includes(auditModelToken(candidates[0].modelRaw));
+      return { path, name, runFolder, ip, size: Number(entry.size || 0), modifiedAt: Number.isFinite(entry.lastModified) ? new Date(entry.lastModified).toISOString() : "", format: detectedFormat === "Huawei TE XML" && exact310 ? "Huawei 310 XML" : detectedFormat === "Huawei TE XML" && exact300 ? "Huawei 300 XML" : detectedFormat === "TGZ (без распаковки)" && exactPolycom ? "Polycom Group TGZ" : detectedFormat, matchStatus, deviceId: candidates.length === 1 ? candidates[0].id : null, deviceName: candidates.length === 1 ? candidates[0].nameRaw || candidates[0].modelRaw || "" : "" };
     });
     const formats = {};
     rows.forEach((row) => { formats[row.format] = (formats[row.format] || 0) + 1; });
@@ -3573,6 +3594,11 @@
     if (getCaseInsensitive(setting, "validationStatus") === "provisional_user_validation") return "Требует проверки";
     if (status !== "read") return "Нет данных";
     const value = getCaseInsensitive(setting, "value");
+    if (field === "ssh" && getCaseInsensitive(setting, "basis") === "legacy_api_fallback"
+      && getCaseInsensitive(setting, "ruleVersion") === "polycom-ssh-source-priority-v1"
+      && ["enabled", "disabled"].includes(value)) {
+      return `${value === "enabled" ? "Включено" : "Выключено"} (по Legacy API over SSH)`;
+    }
     if (value === "enabled") return "Включено";
     if (value === "disabled") return "Отключено";
     if (field === "ntp" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string") {
@@ -3607,6 +3633,7 @@
     if (!headers.length || originalRows.length !== devices.length) return { ok: false, errors: ["Список устройств нужно загрузить заново"] };
     const factByHeader = new Map([
       ["snmp v2", [["SNMP v2, факт", "snmpV2"]]],
+      ["ssh", [["SSH, факт", "ssh"]]],
       ["автообновление", [["Автообновление, факт", "autoUpdate"]]],
       ["автодозвон", [["Автодозвон, факт", "autoAnswer"]]],
       ["ntp", [["NTP, факт", "ntp"]]],
@@ -6062,9 +6089,15 @@
 
   async function writeDeviceLogFile(runDirectory, jobId, pending) {
     const filename = String(pending?.filename || "");
-    if (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}\.xml$/.test(filename) || filename !== `${pending?.ip}.xml`) throw new Error("log_filename_invalid");
-    const response = await global.fetch(`/api/polling/jobs/${encodeURIComponent(jobId)}/log/${encodeURIComponent(pending.logId)}`, { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/xml", "X-MVP-CSRF": String(global.__MVP_CSRF__ || "") } });
+    const ip = normalizeIpv4(pending?.ip);
+    const format = String(pending?.format || "");
+    const xml = ip && filename === `${ip}.xml` && (format === "xml" || !format);
+    const tgz = ip && filename === `${ip}.tgz` && format === "polycom_syslog_tgz_v1";
+    if (!xml && !tgz) throw new Error("log_filename_invalid");
+    const expectedMime = tgz ? "application/gzip" : "application/xml";
+    const response = await global.fetch(`/api/polling/jobs/${encodeURIComponent(jobId)}/log/${encodeURIComponent(pending.logId)}`, { credentials: "same-origin", cache: "no-store", headers: { Accept: expectedMime, "X-MVP-CSRF": String(global.__MVP_CSRF__ || "") } });
     if (!response.ok || !response.body) throw new Error("log_stream_unavailable");
+    if (String(response.headers?.get("Content-Type") || "").split(";", 1)[0].trim().toLowerCase() !== expectedMime) throw new Error("log_stream_format_invalid");
     const fileHandle = await runDirectory.handle.getFileHandle(filename, { create: true });
     const writable = await fileHandle.createWritable({ keepExistingData: false });
     const reader = response.body.getReader();
@@ -8062,7 +8095,8 @@
           try { scan = await HUAWEI_300_LOG_EVENTS.scanFile(files[index]); }
           catch { scan = { ok: false, reason: "read_failed", markers: [] }; }
         }
-        row.analysisStatus = !eligible && !huawei310Eligible && !huawei300Eligible ? "Вне анализа Huawei TE/310/300" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
+        row.analysisStatus = row.format === "Polycom Group TGZ" && row.matchStatus === "Сопоставлено" ? "Архив Polycom: только метаданные"
+          : !eligible && !huawei310Eligible && !huawei300Eligible ? "Вне анализа Huawei TE/310/300" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
         scans.push({ row, scan });
         ui.logImportProgress = { processed: index + 1, total: files.length };
         if ((index + 1) % 8 === 0 || index + 1 === files.length) { render(); await new Promise((resolve) => global.setTimeout(resolve, 0)); }

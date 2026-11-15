@@ -1,8 +1,13 @@
 # Карта контекста
 
+## Feature 056 — сбор логов Polycom RealPresence Group
+
+- `specs/056-polycom-group-log-collection/`, ADR-0059. Exact Group 310 после текущих model/identity gates и двух download-маркеров использует только `GET /a_getsyslog.cgi` по HTTPS/443 с cookie сеанса; контрольный полный архив `.tgz` проверен в памяти без сохранения. Администратор затем отдельно подтвердил успешный сбор на exact Group 300/310/500/700; новые `logCollection` имеют `confirmed_user_validation`, исторические предварительные файлы не переписываются. Обычный JSON-опрос не меняется.
+- `mvp_runtime/polling.py`, `polling_job.py`, `server.py`, `app.js` расширяют существующий независимый `collectLogs` строго согласованным `<IP>.tgz`/gzip-вариантом, сохраняя XML Huawei. Браузер пишет оригинал только в выбранную timestamp-папку и ACK; ручной импорт показывает метаданные Polycom без распаковки/событийного анализа. Тесты: `python_tests/test_polycom_group.py`, `test_polling.py`, `test_polling_job.py`, `test_server.py`, `tests.js`.
+
 ## Feature 055 — новые read-only настройки Polycom RealPresence Group
 
-- `specs/055-polycom-group-settings-read/`, ADR-0058. На exact Group 310 после model/identity и текущих bundle markers по одному сверены девять групп: Telnet, Web Access/HTTPS-only/порт, SNMP service+v2, автообновление, два режима автоответа, NTP с двумя адресами, отсутствующий Wi-Fi, Legacy API over SSH и действие долгого нажатия. Только подтверждённые значения получают `confirmed_user_validation`; SSH service и сон остаются неизвестными.
+- `specs/055-polycom-group-settings-read/`, ADR-0058. На exact Group 310 после model/identity и текущих bundle markers по одному сверены девять групп: Telnet, Web Access/HTTPS-only/порт, SNMP service+v2, автообновление, два режима автоответа, NTP с двумя адресами, отсутствующий Wi-Fi, SSH и действие долгого нажатия. Поправка SSH: видимый `Enable SSH Service` имеет приоритет только при точной связке меню/bundle/config; когда пункта нет, `Enable Legacy API Over SSH` даёт помеченный `legacy_api_fallback`. На текущем Group 310 fallback подтверждён, прямой путь предварителен до доступной прошивки. Режим сна остаётся неизвестным.
 - Общий guarded core `mvp_runtime/adapters/polycom_group.py` условно применяет те же узкие read-only чтения к exact Group 300/500/700. Администратор отдельно подтвердил новые поля всех трёх моделей; успешные новые результаты всех четырёх exact Group получают `confirmed_user_validation`, а прежние provisional JSON сохраняют старый статус. Group 300 со старой HTTPS-несовместимой прошивкой всё ещё не переходит на HTTP с паролем. `app.js` строго проецирует модель/контракт/источник и показывает составные факты в существующей XLSX-сверке. Проверки: `python_tests/test_polycom_group.py`, `tests.js`; Справочник: `product-catalog.js`.
 
 ## Feature 054 — аналитика логов Huawei CloudLink 300

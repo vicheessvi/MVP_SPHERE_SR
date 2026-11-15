@@ -11,7 +11,9 @@ Production route: existing exact Group 300/310/500/700 HTTPS adapter. Only after
 | Auto-answer | `comm.callsetting.callfeatures.autoanswer.answersinglecall`, `...answermultipointcall` | independent `Yes/No` strings |
 | NTP | `time.timeserver.mode`, `time.timeserver.address`, `time.timeserver.address1` | bounded strings; second address uses bundle-confirmed instance 1 |
 | Wi-Fi | no menu exposure in these exact models | `not_exposed` only |
-| SSH | `security.remoteaccess.ssh.enabled` | string boolean for `Enable Legacy API Over SSH` only; SSH service state stays unknown |
+| SSH | primary: exact boolean FQ name declared by current `Enable SSH Service` menu + bundle (not yet observed); fallback: `security.remoteaccess.ssh.enabled` | `True/False` → `enabled/disabled`; preserve `basis` and source, never call fallback when visible primary read fails |
 | Power | `system.remote.hangupkeylongpressfunc` | bounded action code; no sleep inference |
 
 An absent bundle marker gives `protocol_required`. A failed or malformed read gives `unavailable` for that field only. Unknown enum code is not translated to enabled/disabled. Sensitive neighboring config names are excluded from requests and all outputs. After separate administrator validation, new successful exact Group 300/310/500/700 results carry `confirmed_user_validation`; previously imported provisional files remain provisional. Group 300 has no HTTP credential fallback, and a confirmed device does not prove compatibility with its older HTTPS-incompatible firmware. No claim is made about TCP listener state.
+
+SSH amendment: inspect the bounded, bundle-declared settings menu only after exact model/identity. A unique visible label for `Enable SSH Service` must map to one boolean model field and one non-secret SSH-related config name in the same bundle. The name is not hardcoded or guessed. If the label is absent, use the separately validated Legacy API key with `basis=legacy_api_fallback`; if present but mapping/read is invalid, return unknown. Direct-source results are provisional until tested on firmware exposing the primary control. Historical JSON remains unchanged.

@@ -126,7 +126,7 @@ class PollingJob:
     def status(self) -> dict[str, Any]:
         with self._condition:
             pending_log = self._pending_log
-            safe_log = {key: pending_log[key] for key in ("logId", "filename", "ip") } if pending_log else None
+            safe_log = {key: pending_log[key] for key in ("logId", "filename", "ip", "format") } if pending_log else None
             return {**self._state, "currentDevice": copy.deepcopy(self._state["currentDevice"]), "pendingResult": self._pending is not None, "pendingLog": safe_log}
 
     def result(self) -> dict[str, Any] | None:
@@ -227,9 +227,13 @@ class PollingJob:
 
     def _wait_for_log(self, stream: Any, context: dict[str, Any]) -> dict[str, Any]:
         ip = str(context.get("ip") or "")
-        if normalize_ipv4(ip) != ip or context.get("filename") != f"{ip}.xml" or not callable(getattr(stream, "read", None)):
+        filename = str(context.get("filename") or "")
+        supplied_format = context.get("format")
+        log_format = "xml" if filename == f"{ip}.xml" and supplied_format in (None, "xml") else (
+            "polycom_syslog_tgz_v1" if filename == f"{ip}.tgz" and supplied_format == "polycom_syslog_tgz_v1" else None)
+        if normalize_ipv4(ip) != ip or log_format is None or not callable(getattr(stream, "read", None)):
             return {"status": "failed", "safeError": "log_metadata_invalid"}
-        pending = {"logId": secrets.token_urlsafe(18), "filename": str(context["filename"]), "ip": ip, "stream": stream, "claimed": False}
+        pending = {"logId": secrets.token_urlsafe(18), "filename": filename, "ip": ip, "format": log_format, "stream": stream, "claimed": False}
         with self._condition:
             self._pending_log = pending
             self._log_ack_decision = None

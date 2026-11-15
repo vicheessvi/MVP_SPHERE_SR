@@ -37,10 +37,12 @@ TE20_POWER_TASK = "set_te20_power_settings"
 POWER_SLEEP_VALUES = frozenset({0, 1, 5, 10, 15, 30, 60})
 NTP_SERVER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,40}\Z")
 LOG_TRANSPORTS = frozenset({"huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_310_rest_v1",
-                            "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1"})
+                            "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1",
+                            "polycom_group300_web_v1", "polycom_group310_web_v1", "polycom_group500_web_v1", "polycom_group700_web_v1"})
 LOG_ADAPTER_KEYS = frozenset({"vcs/huawei/te20-legacy", "vcs/huawei/te-family", "vcs/huawei/bar310",
                               "vcs/huawei/box310", "vcs/huawei/box610", "vcs/huawei/bar300",
-                              "vcs/huawei/box300", "vcs/huawei/box600"})
+                              "vcs/huawei/box300", "vcs/huawei/box600",
+                              "vcs/polycom/group300", "vcs/polycom/group310", "vcs/polycom/group500", "vcs/polycom/group700"})
 
 
 def validate_ntp_changes(plan: dict[str, Any], requested_tasks: list[str]) -> None:

@@ -431,6 +431,23 @@ class PollingTests(unittest.TestCase):
         self.assertFalse(results[4]["networkAttempted"])
         self.assertEqual(results[4]["vendorPolling"]["status"], "protocol_required")
 
+    def test_polycom_group_collect_logs_uses_same_independent_plan_option(self) -> None:
+        seen = []
+        def adapter(device, _credentials, options):
+            seen.append((device["model"], options["collect_logs"], callable(options["on_log"])))
+            return {"ok": True, "logCollection": {"status": "saved"}}
+        adapters = {f"polycom_group{number}_web_v1": adapter for number in (300, 310, 500, 700)}
+        devices = [{"category": "vcs", "manufacturer": "Polycom", "model": f"RealPresence Group {number}",
+                    "ip": f"192.0.2.{index}"} for index, number in enumerate((300, 310, 500, 700), 31)]
+        results = run_plan({"intervalMinSeconds": 0, "intervalMaxSeconds": 0, "collectJson": False,
+                            "collectLogs": True, "devices": devices}, {
+            "ping": lambda *_args: {"ok": True, "durationMs": 1},
+            "get_credentials": lambda *_args: [{"username": "synthetic", "password": "synthetic"}],
+            "adapters": adapters, "on_log": lambda *_args: {"status": "saved"},
+        })
+        self.assertEqual(seen, [(f"RealPresence Group {number}", True, True) for number in (300, 310, 500, 700)])
+        self.assertTrue(all(item["logCollection"]["status"] == "saved" for item in results))
+
     def test_mixed_huawei_extron_plan_keeps_adapters_separate_and_other_huawei_offline(self) -> None:
         calls = []
 

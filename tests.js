@@ -2249,6 +2249,47 @@
     assertEqual(api.buildDeviceSettingsAuditRows({ ...list500, headers, rows: [row500] }, state500).rows[0][report500.headers.indexOf("Telnet, факт")], "Требует проверки");
   });
 
+  test("Polycom SSH предпочитает службу и явно помечает резервный Legacy API", () => {
+    const model = "RealPresence Group 310";
+    const base = { ok: true, adapterKey: "vcs/polycom/group310",
+      vendorPolling: { contract: "polycom-group310-web-v1", model, evidenceStatus: "confirmed_user_validation" },
+      webBlocks: { "Device Info": { Model: model } } };
+    const fallbackField = { status: "read", value: "enabled", source: "POST /rest/config:security.remoteaccess.ssh.enabled",
+      basis: "legacy_api_fallback", meaning: "ssh_audit_proxy", ruleVersion: "polycom-ssh-source-priority-v1",
+      validationStatus: "confirmed_user_validation" };
+    const fallback = api.pollingPayloadProjection({ ...base, deviceSettings: { model, validationStatus: "confirmed_user_validation", fields: { ssh: fallbackField } } });
+    assertEqual(fallback.deviceSettings.fields.ssh.value, "enabled");
+    assertEqual(fallback.deviceSettings.fields.ssh.basis, "legacy_api_fallback");
+    const headers = [...srHeaders(), "Telnet/HTTP", "SSH"];
+    const row = srRow({ IP: "192.0.2.31", Производитель: "Polycom", Модель: model, SSH: "Включено" });
+    const list = api.parseManagementTargetRows({ headers, rows: [row] });
+    assert(list.ok, list.errors?.join("; "));
+    const state = api.createDemoState();
+    state.pollingResults = [{ id: "polycom-ssh-1", filename: "192.0.2.31.json", filenameIp: "192.0.2.31",
+      internalIp: "192.0.2.31", matchStatus: "unmatched", capturedAt: "2026-11-15T10:00:00Z",
+      parseStatus: "parsed", operationalStatus: "success", normalizedData: fallback }];
+    const report = api.buildDeviceSettingsAuditRows({ ...list, headers, rows: [row] }, state);
+    assert(report.ok);
+    assertEqual(report.rows[0][report.headers.indexOf("SSH, факт")], "Включено (по Legacy API over SSH)");
+
+    const directField = { ...fallbackField, value: "disabled", source: "POST /rest/config:security.synthetic.sshservice.enabled",
+      basis: "ssh_service_direct", meaning: "ssh_service_setting", validationStatus: "provisional_user_validation" };
+    const direct = api.pollingPayloadProjection({ ...base, deviceSettings: { model, validationStatus: "confirmed_user_validation", fields: { ssh: directField } } });
+    assertEqual(direct.deviceSettings.fields.ssh.value, "disabled");
+    assertEqual(direct.deviceSettings.fields.ssh.basis, "ssh_service_direct");
+    assertEqual(direct.deviceSettings.fields.ssh.validationStatus, "provisional_user_validation");
+    state.pollingResults[0].normalizedData = direct;
+    assertEqual(api.buildDeviceSettingsAuditRows({ ...list, headers, rows: [row] }, state).rows[0][report.headers.indexOf("SSH, факт")], "Требует проверки");
+    const forged = api.pollingPayloadProjection({ ...base, deviceSettings: { model, validationStatus: "confirmed_user_validation",
+      fields: { ssh: { ...directField, source: "POST /rest/config:security.ssh.password", validationStatus: "confirmed_user_validation" } } } });
+    assert(!forged.deviceSettings?.fields?.ssh, "unconfirmed SSH key must be rejected");
+    const historical = api.pollingPayloadProjection({ ...base, deviceSettings: { model, validationStatus: "confirmed_user_validation",
+      fields: { ssh: { status: "read", value: { legacyApiOverSshEnabled: true, sshServiceEnabled: null },
+        source: "POST /rest/config:security.remoteaccess.ssh.enabled", meaning: "legacy_api_over_ssh_only",
+        unconfirmedFields: ["sshServiceEnabled"], validationStatus: "confirmed_user_validation" } } } });
+    assertEqual(historical.deviceSettings.fields.ssh.value.sshServiceEnabled, null);
+  });
+
   test("HTTP, Telnet, SSH, автоответ, NTP и Wi-Fi Bar 300 сохраняются только при точной модели и источнике", () => {
     const payload = { ok: true, adapterKey: "vcs/huawei/bar300", webBlocks: { "Device Info": { Model: "Bar 300" } }, deviceSettings: { fields: { http: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enable_http" }, telnet: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enabletelnet" }, ssh: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:enable_ssh" }, autoAnswer: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:autoreply" }, ntp: { status: "read", value: { enabled: true, modeCode: 1, server: "ntp.example.test" }, source: "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" }, wifi: { status: "read", value: { modeCode: 0, clientEnabled: false, accessPointEnabled: false }, source: "WEB_GetWifiStatModeAPI:ucWifiMode" }, snmpV2: { status: "not_exposed", value: null, reason: "version_not_supported" }, autoUpdate: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:cloudType", serverTypeCode: 7, basis: "server_type_audit_rule", ruleVersion: "bar300-cloud-type-audit-v1", meaning: "firmware_update_capability" }, powerManagement: { status: "read", value: { sleepTimeCode: 10, sleepMode: "interval", networkWakeEnabled: false }, source: "WEB_GetCfgParamAPI:sleepTime,enable_wol", unconfirmedFields: ["faceWake", "clearMemoryInSleep", "automaticRestart"] } } } };
     assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.http.value, "disabled");
@@ -2751,6 +2792,33 @@
     assertEqual(pollingRecovery.validate(recovery).plan.collectJson, false);
   });
 
+  test("Архив Polycom TGZ импортируется как метаданные точной модели без разбора событий", () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = [300, 310, 500, 700].map((number, index) => ({ id: `polycom-${number}`, inCurrentSr: true,
+      category: "vcs", manufacturerRaw: "Polycom", manufacturerNormalized: "polycom",
+      modelRaw: `RealPresence Group ${number}`, ipNormalized: `192.0.2.${index + 30}`, nameRaw: `Synthetic Group ${number}` }));
+    const gzip = new Uint8Array([0x1f, 0x8b, 0x08, 0, 1, 2]);
+    const entries = state.inventoryDevices.map((device) => ({ name: `${device.ipNormalized}.tgz`,
+      relativePath: `logs/2026-11-15_10-00-00/${device.ipNormalized}.tgz`, size: 100,
+      lastModified: Date.UTC(2026, 10, 15), prefix: gzip }));
+    const rows = api.buildDeviceLogImportRows(entries, state);
+    assertEqual(rows.summary.matched, 4);
+    assert(rows.rows.every((row) => row.format === "Polycom Group TGZ" && row.matchStatus === "Сопоставлено"));
+    assertEqual(rows.rows[0].runFolder, "2026-11-15_10-00-00");
+    assertEqual(api.classifyDeviceLogPrefix(gzip, "sample.tgz"), "TGZ (без распаковки)");
+    const bad = api.buildDeviceLogImportRows([{ ...entries[0], prefix: new Uint8Array([0, 1, 2]) }], state);
+    assertEqual(bad.rows[0].format, "Неизвестный формат");
+    const wrongName = api.buildDeviceLogImportRows([{ ...entries[0], name: "192.0.2.30-extra.tgz" }], state);
+    assertEqual(wrongName.rows[0].matchStatus, "IP не указан");
+    const ambiguous = { ...state, inventoryDevices: [state.inventoryDevices[0], { ...state.inventoryDevices[0], id: "duplicate" }] };
+    assertEqual(api.buildDeviceLogImportRows([entries[0]], ambiguous).rows[0].matchStatus, "Неоднозначный IP");
+    const wrongModel = { ...state, inventoryDevices: [{ ...state.inventoryDevices[0], modelRaw: "HDX 7000" }] };
+    assertEqual(api.buildDeviceLogImportRows([entries[0]], wrongModel).rows[0].format, "TGZ (без распаковки)");
+    assertEqual(api.buildHuaweiTeLogEventIndex([{ row: rows.rows[0], scan: { ok: true, markers: [] } }], state).events.length, 0);
+    assertEqual(api.buildHuawei310LogEventIndex([{ row: rows.rows[0], scan: { ok: true, markers: [] } }], state).events.length, 0);
+    assertEqual(api.buildHuawei300LogEventIndex([{ row: rows.rows[0], scan: { ok: true, markers: [] } }], state).events.length, 0);
+  });
+
   test("Лог Huawei TE различает подтверждённый reboot, выключение и неизвестный запуск", async () => {
     const log = [
       "<?xml version='1.0' encoding='UTF-8'?>", "<LogModule>",
@@ -3184,7 +3252,7 @@
     let readIndex = 0;
     let closed = false;
     let filename = null;
-    global.fetch = async () => ({ ok: true, body: { getReader: () => ({ read: async () => readIndex < chunks.length ? { done: false, value: chunks[readIndex++] } : { done: true }, cancel: async () => {} }) } });
+    global.fetch = async () => ({ ok: true, headers: { get: () => "application/xml" }, body: { getReader: () => ({ read: async () => readIndex < chunks.length ? { done: false, value: chunks[readIndex++] } : { done: true }, cancel: async () => {} }) } });
     const runDirectory = { handle: { getFileHandle: async (name) => { filename = name; return { createWritable: async () => ({ write: async (bytes) => written.push(bytes), close: async () => { closed = true; }, abort: async () => {} }) }; } } };
     try {
       await api.writeDeviceLogFile(runDirectory, "synthetic-job", { filename: "192.0.2.20.xml", ip: "192.0.2.20", logId: "synthetic-log" });
@@ -3195,6 +3263,37 @@
       try { await api.writeDeviceLogFile(runDirectory, "synthetic-job", { filename: "../bad.xml", ip: "192.0.2.20", logId: "synthetic-log" }); }
       catch { rejected = true; }
       assert(rejected);
+    } finally { global.fetch = originalFetch; }
+  });
+
+  test("Архив лога Polycom сохраняется как .tgz с точным MIME без распаковки", async () => {
+    const originalFetch = global.fetch;
+    const gzipBytes = new Uint8Array([0x1f, 0x8b, 0x08, 0, 1, 2, 3, 4]);
+    const written = [];
+    let fetchAccept = null;
+    let fileRequests = 0;
+    let mime = "application/gzip";
+    global.fetch = async (_path, options) => {
+      fetchAccept = options.headers.Accept;
+      let sent = false;
+      return { ok: true, headers: { get: () => mime }, body: { getReader: () => ({ read: async () => sent ? { done: true } : (sent = true, { done: false, value: gzipBytes }), cancel: async () => {} }) } };
+    };
+    const runDirectory = { handle: { getFileHandle: async () => { fileRequests += 1; return { createWritable: async () => ({ write: async (bytes) => written.push(bytes), close: async () => {}, abort: async () => {} }) }; } } };
+    const pending = { filename: "192.0.2.31.tgz", ip: "192.0.2.31", format: "polycom_syslog_tgz_v1", logId: "synthetic-log" };
+    try {
+      await api.writeDeviceLogFile(runDirectory, "synthetic-job", pending);
+      assertEqual(fetchAccept, "application/gzip");
+      assertEqual(fileRequests, 1);
+      assertEqual(written.length, 1);
+      assertEqual(written[0][0], 0x1f);
+      let rejected = false;
+      try { await api.writeDeviceLogFile(runDirectory, "synthetic-job", { ...pending, format: "xml" }); } catch { rejected = true; }
+      assert(rejected, "mismatched tgz format must be rejected");
+      mime = "text/html";
+      rejected = false;
+      try { await api.writeDeviceLogFile(runDirectory, "synthetic-job", pending); } catch { rejected = true; }
+      assert(rejected, "HTML response must not be saved as tgz");
+      assertEqual(fileRequests, 1);
     } finally { global.fetch = originalFetch; }
   });
 

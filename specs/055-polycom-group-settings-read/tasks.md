@@ -58,11 +58,24 @@
 - [x] T028 [P] Update the reference and architecture notes in `product-catalog.js`, `docs/context-map.md`, `docs/decisions/ADR-0058-polycom-group-settings-read.md`, `AGENTS.md`.
 - [x] T029 Run `node tests.js`, Python unit tests, `node scripts/validate-reference.js`, syntax/secret/diff checks; remove temporary probes from `scripts/`.
 
+## Phase 7: SSH source-priority amendment (User Story 1)
+
+**Goal**: Prefer the actual SSH Service switch when current firmware exposes it; otherwise use a clearly labelled Legacy API fallback.
+**Independent Test**: A synthetic primary menu/bundle selects its exact boolean key; the current Group 310 menu selects the known fallback; a visible but unreadable primary never falls back.
+
+- [x] T030 [US1] Add failing primary/absent/unreadable SSH switch contract tests in `python_tests/test_polycom_group.py`.
+- [x] T031 [US1] Implement exact menu/bundle-derived primary source and explicit Legacy fallback after model/identity in `mvp_runtime/adapters/polycom_group.py`.
+- [x] T032 [US1] Add failing direct/fallback/historical SSH projection and audit-label tests in `tests.js`.
+- [x] T033 [US1] Implement strict basis/source projection and qualified fallback presentation in `app.js`.
+- [x] T034 [US1] Verify current Group 310 fallback read-only in memory, with no raw responses or credentials saved.
+- [x] T035 Update `product-catalog.js`, `AGENTS.md`, `docs/context-map.md`, `docs/implementation-log.md`, `docs/decisions/ADR-0058-polycom-group-settings-read.md`; run full tests/reference/syntax/secret scan and remove probes.
+
 ## Dependencies & execution order
 
 - T001–T004 block all stories. Within US1 each field's test precedes its implementation; fields are checked in the user's stated order. T022 follows the nine fields.
 - US2 depends on the shared reader from US1. US3 depends on emitted settings and may add its tests before the corresponding UI implementation.
 - Polish follows the three stories; T028 touches separate documentation files and may be prepared independently after evidence is stable.
+- SSH amendment: T030 → T031 and T032 → T033; T034/T035 follow both. Primary-path operational validation requires a later device exposing the switch and is not claimed by synthetic tests.
 
 ## Implementation strategy
 

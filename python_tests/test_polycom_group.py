@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import unittest
 
 from mvp_runtime.adapters.polycom_group import (
     PolycomContractError,
+    _validate_polycom_log_response,
     _read_exact_config_value,
     poll_polycom_group300_device,
     poll_polycom_group310_device,
@@ -65,6 +67,17 @@ SSH_LEGACY_BUNDLE_MARKERS = ' '.join((
     'SECURITY_REMOTEACCESS_SSH_ENABLED:"security.remoteaccess.ssh.enabled"',
     'name:"enableSshAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_SSH_ENABLED',
 ))
+SSH_MENU_REFERENCE = 'baseDataUrl:"data/settingdata.json"'
+SSH_PRIMARY_SYNTHETIC_NAME = "security.synthetic.sshservice.enabled"
+SSH_PRIMARY_SYNTHETIC_BUNDLE = ' '.join((
+    'SYNTHETIC_SSH_SERVICE_ENABLED:"security.synthetic.sshservice.enabled"',
+    'name:"syntheticSshService",type:"boolean",varsName:configfqnames.SYNTHETIC_SSH_SERVICE_ENABLED',
+))
+SSH_LEGACY_MENU = {"viewData": [{"viewclass": "Draco.view.adminsettings.security.GlobalSecurityAccessView",
+                                "items": [{"name": "enableSshAccess", "label": "ENABLE_LEGACY_API_OVER_SSH"}]}]}
+SSH_PRIMARY_MENU = {"viewData": [{"viewclass": "Draco.view.adminsettings.security.GlobalSecurityAccessView",
+                                 "items": [{"name": "syntheticSshService", "label": "ENABLE_SSH_SERVICE"},
+                                           {"name": "enableSshAccess", "label": "ENABLE_LEGACY_API_OVER_SSH"}]}]}
 POWER_BUTTON_BUNDLE_MARKERS = ' '.join((
     'SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC:"system.remote.hangupkeylongpressfunc"',
     'addIndividualStoreVar("hangupButtonLongPress","SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC")',
@@ -94,6 +107,7 @@ FULL_SETTING_VALUES = {
     NTP_MODE_NAME: "Manual", NTP_PRIMARY_NAME: "ntp1.example.test", NTP_SECONDARY_NAME: "",
     SSH_LEGACY_NAME: "True", POWER_BUTTON_NAME: "Power_Off",
 }
+LOG_BUNDLE = MAIN_BUNDLE + ' createDownloadLogsClickHandler:function(){window.open("/a_getsyslog.cgi","_self")}'
 SYNTHETIC_PASSWORD = "SYNTHETIC-PASSWORD-NEVER-OUTPUT"
 WRAPPERS = {
     "RealPresence Group 300": poll_polycom_group300_device,
@@ -108,6 +122,92 @@ def response(body, status=200, headers=None):
 
 
 class PolycomGroupTests(unittest.TestCase):
+    def test_polycom_log_response_requires_tgz_gzip_and_bounded_length(self):
+        headers = [("Content-Length", "1024"), ("Content-Disposition", 'attachment; filename="systemlog.tgz"')]
+        self.assertEqual(_validate_polycom_log_response(200, headers, b"\x1f\x8b\x08synthetic"), 1024)
+        for status, changed, prefix in (
+            (404, headers, b"\x1f\x8b\x08synthetic"),
+            (200, headers, b"<html>Error</html>"),
+            (200, [("Content-Length", "1024"), ("Content-Disposition", 'attachment; filename="systemlog.xml"')], b"\x1f\x8b\x08synthetic"),
+            (200, [("Content-Length", "0"), headers[1]], b"\x1f\x8b\x08synthetic"),
+            (200, [("Content-Length", str(65 * 1024 * 1024)), headers[1]], b"\x1f\x8b\x08synthetic"),
+            (200, [("Content-Length", "1024"), headers[1], ("Content-Type", "text/html")], b"\x1f\x8b\x08synthetic"),
+        ):
+            with self.subTest(status=status, headers=changed):
+                with self.assertRaises(PolycomContractError):
+                    _validate_polycom_log_response(status, changed, prefix)
+
+    def test_group310_log_collection_is_guarded_and_failure_isolated(self):
+        calls = []
+        opened = []
+        metadata = []
+        data = b"\x1f\x8bSYNTHETIC-ARCHIVE"
+        def opener(options):
+            opened.append({"ip": options["ip"], "reject_unauthorized": options["reject_unauthorized"]})
+            return io.BytesIO(data)
+        def sink(stream, info):
+            metadata.append(info)
+            self.assertEqual(stream.read(128), data)
+            return {"status": "saved"}
+        result = poll_polycom_group310_device(
+            {"ip": "192.0.2.31", "model": "RealPresence Group 310"},
+            [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+            {"request": self.fake_request(calls, bundle=LOG_BUNDLE), "collect_logs": True,
+             "log_opener": opener, "on_log": sink},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["logCollection"], {"status": "saved", "validationStatus": "confirmed_user_validation"})
+        self.assertEqual(metadata, [{"ip": "192.0.2.31", "filename": "192.0.2.31.tgz", "format": "polycom_syslog_tgz_v1"}])
+        self.assertEqual(opened, [{"ip": "192.0.2.31", "reject_unauthorized": True}])
+        self.assertNotIn(SYNTHETIC_PASSWORD, json.dumps(result))
+        self.assertNotIn("SYNTHETIC-ARCHIVE", json.dumps(result))
+        self.assertEqual(json.loads(calls[-1]["body"]), {"action": "Logout"})
+
+        failed = poll_polycom_group310_device(
+            {"ip": "192.0.2.31", "model": "RealPresence Group 310"},
+            [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+            {"request": self.fake_request([], bundle=LOG_BUNDLE), "collect_logs": True,
+             "log_opener": opener, "on_log": lambda _stream, _info: {"status": "failed"}},
+        )
+        self.assertTrue(failed["ok"])
+        self.assertEqual(failed["logCollection"]["status"], "failed")
+        self.assertEqual(failed["logCollection"]["safeError"], "log_save_failed")
+
+        not_supported = poll_polycom_group310_device(
+            {"ip": "192.0.2.31", "model": "RealPresence Group 310"},
+            [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+            {"request": self.fake_request([], bundle=MAIN_BUNDLE), "collect_logs": True,
+             "log_opener": lambda _options: self.fail("Drifted bundle must not open log"), "on_log": sink},
+        )
+        self.assertTrue(not_supported["ok"])
+        self.assertEqual(not_supported["logCollection"]["status"], "protocol_required")
+
+        wrong = poll_polycom_group310_device(
+            {"ip": "192.0.2.31", "model": "RealPresence Group 310"},
+            [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+            {"request": self.fake_request([], model="RealPresence Group 500", bundle=LOG_BUNDLE), "collect_logs": True,
+             "log_opener": lambda _options: self.fail("Wrong model must not open log"), "on_log": sink},
+        )
+        self.assertFalse(wrong["ok"])
+
+    def test_other_exact_group_models_log_export_is_confirmed_after_individual_checks(self):
+        data = b"\x1f\x8bSYNTHETIC-ARCHIVE"
+        for model, wrapper in WRAPPERS.items():
+            if model.endswith("310"):
+                continue
+            with self.subTest(model=model):
+                calls = []
+                seen = []
+                result = wrapper({"ip": "192.0.2.31", "model": model},
+                    [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}], {
+                        "request": self.fake_request(calls, model=model, bundle=LOG_BUNDLE),
+                        "collect_logs": True, "log_opener": lambda _options: io.BytesIO(data),
+                        "on_log": lambda stream, metadata: seen.append((metadata["filename"], metadata["format"], stream.read(128))) or {"status": "saved"},
+                    })
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["logCollection"], {"status": "saved", "validationStatus": "confirmed_user_validation"})
+                self.assertEqual(seen, [("192.0.2.31.tgz", "polycom_syslog_tgz_v1", data)])
+                self.assertEqual(json.loads(calls[-1]["body"]), {"action": "Logout"})
     def test_narrow_config_reader_rejects_neighbor_fields_and_secure_values(self):
         name = "security.remoteaccess.telnet.enabled"
         calls = []
@@ -126,7 +226,7 @@ class PolycomGroupTests(unittest.TestCase):
             with self.assertRaises(PolycomContractError):
                 _read_exact_config_value(malformed, name)
 
-    def fake_request(self, calls, *, model="RealPresence Group 310", bundle=MAIN_BUNDLE, accept=True, accepted_username="synthetic-user", fail_path=None, serial="SYNTHETIC-SERIAL", mac="02:00:00:00:00:31", system_name="Synthetic Room", config_values=None):
+    def fake_request(self, calls, *, model="RealPresence Group 310", bundle=MAIN_BUNDLE, accept=True, accepted_username="synthetic-user", fail_path=None, serial="SYNTHETIC-SERIAL", mac="02:00:00:00:00:31", system_name="Synthetic Room", config_values=None, menu_data=None):
         def request(options):
             calls.append(options)
             path, method = options["path"], options["method"]
@@ -145,6 +245,8 @@ class PolycomGroupTests(unittest.TestCase):
                 return response('<title>Polycom</title><script src="main.js?build=123456"></script>')
             if method == "GET" and path == "/main.js?build=123456":
                 return {"status_code": 200, "headers": [("Content-Encoding", "gzip")], "body": gzip.compress(bundle.encode("utf-8"))}
+            if method == "GET" and path == "/data/settingdata.json":
+                return response(menu_data if menu_data is not None else {"viewData": []})
             if method == "GET" and path == "/rest/system":
                 return response({
                     "model": model,
@@ -340,21 +442,58 @@ class PolycomGroupTests(unittest.TestCase):
         self.assertEqual(drift["deviceSettings"]["fields"]["ntp"]["status"], "protocol_required")
         self.assertFalse(any(json.loads(call["body"])["names"] == [NTP_MODE_NAME] for call in calls if call["path"] == "/rest/config"))
 
-    def test_group310_ssh_legacy_api_is_not_claimed_as_ssh_service(self):
-        bundle = MAIN_BUNDLE + " " + SSH_LEGACY_BUNDLE_MARKERS
-        result, calls = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "True"})
+    def test_group310_ssh_legacy_fallback_is_qualified_when_service_absent(self):
+        bundle = MAIN_BUNDLE + " " + SSH_LEGACY_BUNDLE_MARKERS + " " + SSH_MENU_REFERENCE
+        result, calls = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "True"}, menu_data=SSH_LEGACY_MENU)
         self.assertTrue(result["ok"])
         self.assertEqual(result["deviceSettings"]["fields"]["ssh"], {
-            "status": "read", "value": {"legacyApiOverSshEnabled": True, "sshServiceEnabled": None},
-            "source": f"POST /rest/config:{SSH_LEGACY_NAME}", "meaning": "legacy_api_over_ssh_only",
-            "unconfirmedFields": ["sshServiceEnabled"], "validationStatus": "confirmed_user_validation"})
+            "status": "read", "value": "enabled", "source": f"POST /rest/config:{SSH_LEGACY_NAME}",
+            "basis": "legacy_api_fallback", "meaning": "ssh_audit_proxy", "ruleVersion": "polycom-ssh-source-priority-v1",
+            "validationStatus": "confirmed_user_validation"})
         self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
                          [[MAC_NAME], [SSH_LEGACY_NAME]])
-        disabled, _ = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "False"})
-        self.assertEqual(disabled["deviceSettings"]["fields"]["ssh"]["value"],
-                         {"legacyApiOverSshEnabled": False, "sshServiceEnabled": None})
-        unknown, _ = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "unknown"})
+        disabled, _ = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "False"}, menu_data=SSH_LEGACY_MENU)
+        self.assertEqual(disabled["deviceSettings"]["fields"]["ssh"]["value"], "disabled")
+        unknown, _ = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "unknown"}, menu_data=SSH_LEGACY_MENU)
         self.assertEqual(unknown["deviceSettings"]["fields"]["ssh"]["status"], "unavailable")
+
+    def test_group310_ssh_service_takes_priority_only_with_exact_menu_bundle_evidence(self):
+        bundle = MAIN_BUNDLE + " " + SSH_LEGACY_BUNDLE_MARKERS + " " + SSH_MENU_REFERENCE + " " + SSH_PRIMARY_SYNTHETIC_BUNDLE
+        values = {SSH_LEGACY_NAME: "True", SSH_PRIMARY_SYNTHETIC_NAME: "False"}
+        direct, calls = self.run_poll(bundle=bundle, config_values=values, menu_data=SSH_PRIMARY_MENU)
+        self.assertTrue(direct["ok"])
+        self.assertEqual(direct["deviceSettings"]["fields"]["ssh"], {
+            "status": "read", "value": "disabled", "source": f"POST /rest/config:{SSH_PRIMARY_SYNTHETIC_NAME}",
+            "basis": "ssh_service_direct", "meaning": "ssh_service_setting", "ruleVersion": "polycom-ssh-source-priority-v1",
+            "validationStatus": "provisional_user_validation"})
+        names = [json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"]
+        self.assertIn([SSH_PRIMARY_SYNTHETIC_NAME], names)
+        self.assertNotIn([SSH_LEGACY_NAME], names)
+
+        unreadable, calls = self.run_poll(bundle=bundle, config_values={**values, SSH_PRIMARY_SYNTHETIC_NAME: "unknown"}, menu_data=SSH_PRIMARY_MENU)
+        self.assertEqual(unreadable["deviceSettings"]["fields"]["ssh"]["status"], "unavailable")
+        self.assertNotIn([SSH_LEGACY_NAME], [json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"])
+
+        malformed, calls = self.run_poll(bundle=bundle.replace('name:"syntheticSshService",type:"boolean"', 'name:"syntheticSshService",type:"string"'),
+                                         config_values=values, menu_data=SSH_PRIMARY_MENU)
+        self.assertEqual(malformed["deviceSettings"]["fields"]["ssh"]["status"], "protocol_required")
+        self.assertNotIn([SSH_LEGACY_NAME], [json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"])
+        hidden_menu = {"viewData": [{"viewclass": "Draco.view.adminsettings.security.GlobalSecurityAccessView",
+                                     "items": [{"name": "syntheticSshService", "label": "ENABLE_SSH_SERVICE", "hidden": True},
+                                               {"name": "enableSshAccess", "label": "ENABLE_LEGACY_API_OVER_SSH"}]}]}
+        hidden, _ = self.run_poll(bundle=bundle, config_values=values, menu_data=hidden_menu)
+        self.assertEqual(hidden["deviceSettings"]["fields"]["ssh"]["basis"], "legacy_api_fallback")
+        bad_menu, calls = self.run_poll(bundle=bundle, config_values=values, menu_data={"viewData": "invalid"})
+        self.assertEqual(bad_menu["deviceSettings"]["fields"]["ssh"]["status"], "protocol_required")
+        self.assertNotIn([SSH_LEGACY_NAME], [json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"])
+        wrong_label_menu = {"viewData": [{"viewclass": "Draco.view.adminsettings.security.GlobalSecurityAccessView",
+                                          "items": [{"name": "syntheticSshService", "label": "DISABLE_SSH_SERVICE"}]}]}
+        wrong_label, calls = self.run_poll(bundle=bundle, config_values=values, menu_data=wrong_label_menu)
+        self.assertEqual(wrong_label["deviceSettings"]["fields"]["ssh"]["status"], "protocol_required")
+        self.assertNotIn([SSH_LEGACY_NAME], [json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"])
+        wrong_model, calls = self.run_poll(bundle=bundle, observed="RealPresence Group 500", config_values=values, menu_data=SSH_PRIMARY_MENU)
+        self.assertFalse(wrong_model["ok"])
+        self.assertFalse(any(call["path"] == "/data/settingdata.json" for call in calls))
 
     def test_group310_power_long_press_does_not_infer_sleep(self):
         bundle = MAIN_BUNDLE + " " + POWER_BUTTON_BUNDLE_MARKERS

@@ -119,9 +119,11 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         return
 
     def _stream_log(self, job: Any, log_id: str, stream: Any) -> None:
+        pending = job.status().get("pendingLog") or {}
+        content_type = "application/gzip" if pending.get("logId") == log_id and pending.get("format") == "polycom_syslog_tgz_v1" else "application/xml"
         self.send_response(HTTPStatus.OK)
         self._security_headers()
-        self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Type", content_type)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         try:

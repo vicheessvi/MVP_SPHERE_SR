@@ -72,6 +72,8 @@ SSH_LEGACY_BUNDLE_MARKERS = (
     'SECURITY_REMOTEACCESS_SSH_ENABLED:"security.remoteaccess.ssh.enabled"',
     'name:"enableSshAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_SSH_ENABLED',
 )
+SSH_MENU_REFERENCE = 'baseDataUrl:"data/settingdata.json"'
+SSH_SOURCE_RULE_VERSION = "polycom-ssh-source-priority-v1"
 POWER_BUTTON_BUNDLE_MARKERS = (
     'SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC:"system.remote.hangupkeylongpressfunc"',
     'addIndividualStoreVar("hangupButtonLongPress","SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC")',
@@ -96,6 +98,12 @@ TIME_PATH = "/rest/system/time"
 UPTIME_PATH = "/rest/system/uptime"
 CONFIG_PATH = "/rest/config"
 SESSION_PATH = "/rest/session"
+LOG_PATH = "/a_getsyslog.cgi"
+LOG_MAX_BYTES = 64 * 1024 * 1024
+LOG_BUNDLE_MARKERS = (
+    "createDownloadLogsClickHandler:function()",
+    'window.open("/a_getsyslog.cgi","_self")',
+)
 
 CONTRACTS = {
     310: {"id": "polycom-group310-web-v1", "model": "RealPresence Group 310", "evidence": "confirmed_user_validation"},
@@ -179,6 +187,79 @@ def _header_values(headers: Any, name: str) -> list[str]:
     return []
 
 
+def _validate_polycom_log_response(status: int, headers: Any, prefix: bytes) -> int:
+    """Accept only the exact bundle-confirmed gzip archive response, without MIME guessing."""
+    if status != 200:
+        raise PolycomContractError("log_contract_unconfirmed")
+    length_values = _header_values(headers, "Content-Length")
+    disposition = _header_values(headers, "Content-Disposition")
+    mime = _header_values(headers, "Content-Type")
+    encoding = _header_values(headers, "Content-Encoding")
+    if len(length_values) != 1 or not re.fullmatch(r"[0-9]{1,12}", length_values[0]):
+        raise PolycomContractError("log_contract_unconfirmed")
+    length = int(length_values[0])
+    if length <= 0 or length > LOG_MAX_BYTES or len(prefix) > length:
+        raise PolycomContractError("log_response_too_large" if length > LOG_MAX_BYTES else "log_contract_unconfirmed")
+    if len(disposition) != 1 or not re.search(r"\bfilename\*?\s*=\s*(?:\"[^\"\r\n;]{1,200}\.tgz\"|[^\s;\r\n]{1,200}\.tgz)(?:;|\s|$)", disposition[0], re.I):
+        raise PolycomContractError("log_contract_unconfirmed")
+    if len(mime) > 1 or (mime and mime[0].split(";", 1)[0].strip().lower() not in {
+        "application/gzip", "application/x-gzip", "application/octet-stream", "application/x-octet-stream"}):
+        raise PolycomContractError("log_contract_unconfirmed")
+    if len(encoding) > 1 or (encoding and encoding[0].strip().lower() != "identity"):
+        raise PolycomContractError("log_contract_unconfirmed")
+    if not isinstance(prefix, bytes) or not prefix.startswith(b"\x1f\x8b\x08"):
+        raise PolycomContractError("log_contract_unconfirmed")
+    return length
+
+
+class _PolycomLogStream:
+    def __init__(self, connection: http.client.HTTPSConnection, response: http.client.HTTPResponse,
+                 prefix: bytes, expected_bytes: int):
+        self._connection = connection
+        self._response = response
+        self._prefix = prefix
+        self._remaining = expected_bytes
+
+    def read(self, size: int) -> bytes:
+        if size <= 0 or self._remaining <= 0:
+            return b""
+        if self._prefix:
+            chunk, self._prefix = self._prefix[:size], self._prefix[size:]
+        else:
+            chunk = self._response.read(min(size, self._remaining))
+        if not chunk:
+            raise PolycomContractError("log_stream_incomplete")
+        self._remaining -= len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        self._response.close()
+        self._connection.close()
+
+
+def _open_polycom_log_stream(options: dict[str, Any]) -> _PolycomLogStream:
+    from mvp_runtime.polling import normalize_ipv4
+
+    ip = normalize_ipv4(options.get("ip"))
+    cookie = str(options.get("cookie") or "")
+    if not ip or not re.fullmatch(r"session_id=[A-Za-z0-9._~+/=-]{1,512}", cookie):
+        raise PolycomContractError("log_contract_unconfirmed")
+    connection = http.client.HTTPSConnection(ip, 443, timeout=30,
+                                             context=_tls_context(options.get("reject_unauthorized") is not False))
+    try:
+        connection.request("GET", LOG_PATH, headers={
+            "Cookie": cookie, "Referer": f"https://{ip}/index.html", "Accept": "*/*",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0 Safari/537.36",
+        })
+        response = connection.getresponse()
+        prefix = response.read(4096)
+        length = _validate_polycom_log_response(response.status, response.getheaders(), prefix)
+        return _PolycomLogStream(connection, response, prefix, length)
+    except BaseException:
+        connection.close()
+        raise
+
+
 def _body_text(response: dict[str, Any], decoded_limit: int = 1024 * 1024) -> str:
     body = response.get("body")
     if isinstance(body, str):
@@ -254,9 +335,10 @@ def _safe_mac(value: Any) -> str | None:
     return value.upper().replace("-", ":") if isinstance(value, str) and MAC_PATTERN.fullmatch(value) else None
 
 
-def _read_exact_config_value(perform: Callable[..., dict[str, Any]], name: str) -> str:
+def _read_exact_config_value(perform: Callable[..., dict[str, Any]], name: str,
+                             *, bundle_confirmed_name: str | None = None) -> str:
     """Read one bundle-confirmed, non-secret setting without a neighboring config dump."""
-    if name not in SAFE_CONFIG_NAMES:
+    if name not in SAFE_CONFIG_NAMES and name != bundle_confirmed_name:
         raise PolycomContractError("configuration_name_unconfirmed")
     config = _json_response(perform("POST", CONFIG_PATH, {"names": [name]}, maximum=65536))
     values = config.get("vars") if isinstance(config, dict) else None
@@ -269,6 +351,60 @@ def _read_exact_config_value(perform: Callable[..., dict[str, Any]], name: str) 
     if not isinstance(value, str) or len(value) > 256 or any(ord(char) < 32 for char in value):
         raise PolycomContractError("configuration_schema_unconfirmed")
     return value
+
+
+def _discover_ssh_service_name(main_bundle: str, menu: Any) -> str | None:
+    """Derive a primary SSH-service key only from a unique current-menu boolean field."""
+    views = menu.get("viewData") if isinstance(menu, dict) else None
+    if not isinstance(views, list) or len(views) > 256:
+        raise PolycomContractError("ssh_service_menu_unconfirmed")
+    matches: list[tuple[str, bool]] = []
+    for view in views:
+        if not isinstance(view, dict):
+            continue
+        viewclass = view.get("viewclass")
+        items = view.get("items")
+        if not isinstance(items, list) or len(items) > 128:
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("label")
+            if not isinstance(label, str) or len(label) > 120:
+                continue
+            lower = label.casefold()
+            if "ssh" not in lower or "service" not in lower or "legacy" in lower:
+                continue
+            if "enable" not in lower and "включ" not in lower:
+                raise PolycomContractError("ssh_service_menu_unconfirmed")
+            name = item.get("name")
+            in_access = isinstance(viewclass, str) and "security" in viewclass.casefold() and "access" in viewclass.casefold()
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{2,80}", name) \
+                    or item.get("hidden") not in (None, False, True) or not in_access:
+                raise PolycomContractError("ssh_service_menu_unconfirmed")
+            matches.append((name, item.get("hidden") is True))
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise PolycomContractError("ssh_service_menu_unconfirmed")
+    field_name, hidden = matches[0]
+    if hidden:
+        return None
+    field_pattern = re.compile(r'name:"' + re.escape(field_name)
+                               + r'",type:"boolean",varsName:configfqnames\.([A-Z][A-Z0-9_]{3,100})')
+    constants = field_pattern.findall(main_bundle)
+    if len(constants) != 1:
+        raise PolycomContractError("ssh_service_contract_unconfirmed")
+    constant = constants[0]
+    names = re.findall(r"\b" + re.escape(constant) + r':"([^"\r\n]{1,160})"', main_bundle)
+    if len(names) != 1:
+        raise PolycomContractError("ssh_service_contract_unconfirmed")
+    name = names[0]
+    if not re.fullmatch(r"(?:security|system)\.[a-z0-9._-]{5,120}", name) or "ssh" not in name \
+            or name == SETTING_CONFIG_NAMES["ssh"][0] \
+            or any(term in name for term in ("password", "secret", "private", "community", "key")):
+        raise PolycomContractError("ssh_service_contract_unconfirmed")
+    return name
 
 
 def _polycom_string_bool(value: str) -> bool | None:
@@ -552,22 +688,44 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
                     raise
                 device_settings["fields"]["ntp"] = {"status": "unavailable", "value": None}
                 resource_errors["settings.ntp"] = _error_code(error)
-        if all(marker in main_text for marker in SSH_LEGACY_BUNDLE_MARKERS):
+        if SSH_MENU_REFERENCE in main_text:
             try:
-                ssh_name = SETTING_CONFIG_NAMES["ssh"][0]
-                legacy_api_enabled = _polycom_string_bool(_read_exact_config_value(perform, ssh_name))
-                if legacy_api_enabled is None:
-                    raise PolycomContractError("configuration_value_unconfirmed")
-                device_settings["fields"]["ssh"] = {
-                    "status": "read", "value": {"legacyApiOverSshEnabled": legacy_api_enabled, "sshServiceEnabled": None},
-                    "source": f"POST /rest/config:{ssh_name}", "meaning": "legacy_api_over_ssh_only",
-                    "unconfirmedFields": ["sshServiceEnabled"],
-                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
-                }
+                menu_response = perform("GET", "/data/settingdata.json", maximum=4 * 1024 * 1024)
+                if int(menu_response.get("status_code") or 0) != 200:
+                    raise PolycomContractError("ssh_service_menu_unavailable")
+                try:
+                    menu = json.loads(_body_text(menu_response, 4 * 1024 * 1024))
+                except (json.JSONDecodeError, UnicodeError) as error:
+                    raise PolycomContractError("ssh_service_menu_unavailable") from error
+                primary_name = _discover_ssh_service_name(main_text, menu)
+                if primary_name is not None:
+                    enabled = _polycom_string_bool(_read_exact_config_value(
+                        perform, primary_name, bundle_confirmed_name=primary_name))
+                    if enabled is None:
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    device_settings["fields"]["ssh"] = {
+                        "status": "read", "value": "enabled" if enabled else "disabled",
+                        "source": f"POST /rest/config:{primary_name}", "basis": "ssh_service_direct",
+                        "meaning": "ssh_service_setting", "ruleVersion": SSH_SOURCE_RULE_VERSION,
+                        "validationStatus": "provisional_user_validation",
+                    }
+                elif all(marker in main_text for marker in SSH_LEGACY_BUNDLE_MARKERS):
+                    ssh_name = SETTING_CONFIG_NAMES["ssh"][0]
+                    legacy_enabled = _polycom_string_bool(_read_exact_config_value(perform, ssh_name))
+                    if legacy_enabled is None:
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    device_settings["fields"]["ssh"] = {
+                        "status": "read", "value": "enabled" if legacy_enabled else "disabled",
+                        "source": f"POST /rest/config:{ssh_name}", "basis": "legacy_api_fallback",
+                        "meaning": "ssh_audit_proxy", "ruleVersion": SSH_SOURCE_RULE_VERSION,
+                        "validationStatus": settings_validation,
+                    }
             except BaseException as error:
                 if isinstance(error, (KeyboardInterrupt, SystemExit)):
                     raise
-                device_settings["fields"]["ssh"] = {"status": "unavailable", "value": None}
+                code = _error_code(error)
+                status = "protocol_required" if code in {"ssh_service_menu_unconfirmed", "ssh_service_contract_unconfirmed"} else "unavailable"
+                device_settings["fields"]["ssh"] = {"status": status, "value": None}
                 resource_errors["settings.ssh"] = _error_code(error)
         if all(marker in main_text for marker in POWER_BUTTON_BUNDLE_MARKERS):
             try:
@@ -668,6 +826,35 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
             "readMode": "targeted",
             "diagnostics": {"attemptedResourceKeys": ["system", "mac", "status", "systemTime", "uptime"], "resourceErrors": resource_errors},
         }
+        if settings.get("collect_logs") is True:
+            validation = "confirmed_user_validation"
+            on_log = settings.get("on_log")
+            if not callable(on_log):
+                result["logCollection"] = {"status": "failed", "safeError": "log_sink_unavailable", "validationStatus": validation}
+            elif not all(marker in main_text for marker in LOG_BUNDLE_MARKERS) or not cookies.get("session_id"):
+                result["logCollection"] = {"status": "protocol_required", "validationStatus": validation}
+            else:
+                stream = None
+                try:
+                    opener = settings.get("log_opener") or _open_polycom_log_stream
+                    stream = opener({"ip": ip, "cookie": f"session_id={cookies['session_id']}",
+                                     "reject_unauthorized": reject_unauthorized})
+                    ack = on_log(stream, {"ip": ip, "filename": f"{ip}.tgz", "format": "polycom_syslog_tgz_v1"})
+                    if not isinstance(ack, dict) or ack.get("status") not in {"saved", "failed"}:
+                        raise PolycomContractError("log_ack_invalid")
+                    result["logCollection"] = {"status": ack["status"], "validationStatus": validation,
+                                               **({} if ack["status"] == "saved" else {"safeError": "log_save_failed"})}
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    result["logCollection"] = {"status": "failed", "safeError": _error_code(error),
+                                               "validationStatus": validation}
+                finally:
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
     except BaseException as error:
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise

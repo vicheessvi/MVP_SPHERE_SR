@@ -19,6 +19,56 @@ def wait_until(predicate, timeout: float = 2.0):
 
 
 class PollingJobTests(unittest.TestCase):
+    def test_polycom_tgz_log_requires_exact_filename_and_explicit_format(self) -> None:
+        data = b"\x1f\x8bSYNTHETIC-GZIP"
+        decisions = []
+        def runner(_plan, options):
+            decisions.append(options["on_log"](io.BytesIO(data), {"ip": "192.0.2.31", "filename": "192.0.2.31.tgz",
+                "format": "polycom_syslog_tgz_v1", "index": 0, "total": 1}))
+            options["on_progress"]({"stage": "processed", "result": {"ok": True, "logCollection": decisions[-1]}})
+        job = create_polling_job({"plan": {"devices": [{"ip": "192.0.2.31"}], "collectLogs": True},
+                                  "credentials": [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "run_plan": runner})
+        pending = wait_until(lambda: job.status()["pendingLog"])
+        self.assertEqual(pending["filename"], "192.0.2.31.tgz")
+        self.assertEqual(pending["format"], "polycom_syslog_tgz_v1")
+        self.assertNotIn("SYNTHETIC-SECRET", json.dumps(job.status()))
+        stream = job.log_stream(pending["logId"])
+        self.assertEqual(stream.read(128), data)
+        self.assertTrue(job.acknowledge_log(pending["logId"], True))
+        self.assertEqual(job.join(2)["logsSaved"], 1)
+        self.assertEqual(decisions, [{"status": "saved"}])
+
+        failures = []
+        def invalid_runner(_plan, options):
+            for context in ({"ip": "192.0.2.31", "filename": "192.0.2.31.tgz"},
+                            {"ip": "192.0.2.31", "filename": "192.0.2.32.tgz", "format": "polycom_syslog_tgz_v1"},
+                            {"ip": "192.0.2.31", "filename": "192.0.2.31.xml", "format": "polycom_syslog_tgz_v1"}):
+                failures.append(options["on_log"](io.BytesIO(data), context))
+        invalid = create_polling_job({"plan": {"devices": [{"ip": "192.0.2.31"}], "collectLogs": True},
+                                      "credentials": [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "run_plan": invalid_runner})
+        self.assertEqual(invalid.join(2)["status"], "completed")
+        self.assertTrue(all(item["status"] == "failed" and item["safeError"] == "log_metadata_invalid" for item in failures))
+
+    def test_failed_polycom_log_ack_does_not_stop_next_device(self) -> None:
+        outcomes = []
+        def runner(_plan, options):
+            for index, ip in enumerate(("192.0.2.31", "192.0.2.32")):
+                outcome = options["on_log"](io.BytesIO(b"\x1f\x8bSYNTHETIC"), {"ip": ip, "filename": f"{ip}.tgz",
+                    "format": "polycom_syslog_tgz_v1", "index": index, "total": 2})
+                outcomes.append(outcome)
+                options["on_progress"]({"stage": "processed", "result": {"ok": True, "logCollection": outcome}})
+        job = create_polling_job({"plan": {"devices": [{"ip": "192.0.2.31"}, {"ip": "192.0.2.32"}], "collectLogs": True},
+                                  "credentials": [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}], "run_plan": runner})
+        first = wait_until(lambda: job.status()["pendingLog"])
+        self.assertTrue(job.acknowledge_log(first["logId"], False))
+        second = wait_until(lambda: (job.status()["pendingLog"] if job.status()["pendingLog"]
+                               and job.status()["pendingLog"]["logId"] != first["logId"] else None))
+        self.assertEqual(second["ip"], "192.0.2.32")
+        self.assertTrue(job.acknowledge_log(second["logId"], True))
+        finished = job.join(2)
+        self.assertEqual((finished["processed"], finished["logsFailed"], finished["logsSaved"]), (2, 1, 1))
+        self.assertEqual([item["status"] for item in outcomes], ["failed", "saved"])
+
     def test_log_stream_waits_for_ack_and_exposes_only_safe_metadata(self) -> None:
         source = io.BytesIO(b"<?xml version='1.0'?><LogModule>synthetic</LogModule>")
         decisions = []
