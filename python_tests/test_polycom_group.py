@@ -7,6 +7,8 @@ import json
 import unittest
 
 from mvp_runtime.adapters.polycom_group import (
+    PolycomContractError,
+    _read_exact_config_value,
     poll_polycom_group300_device,
     poll_polycom_group310_device,
     poll_polycom_group500_device,
@@ -23,7 +25,75 @@ MAIN_BUNDLE = ' '.join((
     'url:"/rest/config",generateReadJson:function(a){c={names:d}}',
     'SYSTEM_NETWORK_WIRED_ETHERNET_MACADDRESS:"system.network.wired.ethernet.macaddress"',
 ))
+TELNET_BUNDLE_MARKERS = ' '.join((
+    'SECURITY_REMOTEACCESS_TELNET_ENABLED:"security.remoteaccess.telnet.enabled"',
+    'name:"enableTelnetAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_TELNET_ENABLED',
+))
+HTTP_BUNDLE_MARKERS = ' '.join((
+    'SECURITY_REMOTEACCESS_WEB_ENABLED:"security.remoteaccess.web.enabled"',
+    'SECURITY_REMOTEACCESS_WEB_HTTPSONLY:"security.remoteaccess.web.httpsonly"',
+    'SECURITY_REMOTEACCESS_WEB_HTTPPORT:"security.remoteaccess.web.httpport"',
+    'name:"enableWebAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_WEB_ENABLED',
+    'name:"httpsOnly",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_WEB_HTTPSONLY',
+    'name:"webAccessPort",type:"int",varsName:configfqnames.SECURITY_REMOTEACCESS_WEB_HTTPPORT',
+))
+SNMP_BUNDLE_MARKERS = ' '.join((
+    'MANAGEMENT_SNMP_ENABLED:"management.snmp.enabled"',
+    'MANAGEMENT_SNMP_VERSIONTWO:"management.snmp.versiontwo"',
+    'name:"enableSNMPAccess",type:"boolean",varsName:configfqnames.MANAGEMENT_SNMP_ENABLED',
+    'varsName:configfqnames.MANAGEMENT_SNMP_VERSIONTWO',
+))
+AUTO_UPDATE_BUNDLE_MARKERS = ' '.join((
+    'SOFTUPDATE_POLLINGENABLED:"softupdate.pollingenabled"',
+    'name:"enableAutomaticUpdates",type:"boolean",varsName:configfqnames.SOFTUPDATE_POLLINGENABLED',
+))
+AUTO_ANSWER_BUNDLE_MARKERS = ' '.join((
+    'COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERSINGLECALL:"comm.callsetting.callfeatures.autoanswer.answersinglecall"',
+    'COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL:"comm.callsetting.callfeatures.autoanswer.answermultipointcall"',
+    'name:"autoAnswerSingleCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERSINGLECALL',
+    'name:"autoAnswerMultiPointCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL',
+))
+NTP_BUNDLE_MARKERS = ' '.join((
+    'TIME_TIMESERVER_MODE:"time.timeserver.mode"',
+    'TIME_TIMESERVER_ADDRESS:"time.timeserver.address"',
+    'name:"timeServerMode",type:"string",varsName:configfqnames.TIME_TIMESERVER_MODE',
+    'name:"timeServerAddress",type:"string",varsName:configfqnames.TIME_TIMESERVER_ADDRESS',
+    'name:"secondaryTimeServerAddress",type:"string",varsName:configfqnames.TIME_TIMESERVER_ADDRESS,instanceName:"1"',
+    'a[b-1]+=c.instanceName',
+))
+SSH_LEGACY_BUNDLE_MARKERS = ' '.join((
+    'SECURITY_REMOTEACCESS_SSH_ENABLED:"security.remoteaccess.ssh.enabled"',
+    'name:"enableSshAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_SSH_ENABLED',
+))
+POWER_BUTTON_BUNDLE_MARKERS = ' '.join((
+    'SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC:"system.remote.hangupkeylongpressfunc"',
+    'addIndividualStoreVar("hangupButtonLongPress","SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC")',
+))
 MAC_NAME = "system.network.wired.ethernet.macaddress"
+TELNET_NAME = "security.remoteaccess.telnet.enabled"
+HTTP_WEB_NAME = "security.remoteaccess.web.enabled"
+HTTP_ONLY_NAME = "security.remoteaccess.web.httpsonly"
+HTTP_PORT_NAME = "security.remoteaccess.web.httpport"
+SNMP_SERVICE_NAME = "management.snmp.enabled"
+SNMP_V2_NAME = "management.snmp.versiontwo"
+AUTO_UPDATE_NAME = "softupdate.pollingenabled"
+AUTO_ANSWER_SINGLE_NAME = "comm.callsetting.callfeatures.autoanswer.answersinglecall"
+AUTO_ANSWER_MULTI_NAME = "comm.callsetting.callfeatures.autoanswer.answermultipointcall"
+NTP_MODE_NAME = "time.timeserver.mode"
+NTP_PRIMARY_NAME = "time.timeserver.address"
+NTP_SECONDARY_NAME = "time.timeserver.address1"
+SSH_LEGACY_NAME = "security.remoteaccess.ssh.enabled"
+POWER_BUTTON_NAME = "system.remote.hangupkeylongpressfunc"
+FULL_SETTINGS_BUNDLE = " ".join((MAIN_BUNDLE, TELNET_BUNDLE_MARKERS, HTTP_BUNDLE_MARKERS,
+                                 SNMP_BUNDLE_MARKERS, AUTO_UPDATE_BUNDLE_MARKERS, AUTO_ANSWER_BUNDLE_MARKERS,
+                                 NTP_BUNDLE_MARKERS, SSH_LEGACY_BUNDLE_MARKERS, POWER_BUTTON_BUNDLE_MARKERS))
+FULL_SETTING_VALUES = {
+    TELNET_NAME: "False", HTTP_WEB_NAME: "True", HTTP_ONLY_NAME: "False", HTTP_PORT_NAME: "80",
+    SNMP_SERVICE_NAME: "False", SNMP_V2_NAME: "True", AUTO_UPDATE_NAME: "False",
+    AUTO_ANSWER_SINGLE_NAME: "Yes", AUTO_ANSWER_MULTI_NAME: "No",
+    NTP_MODE_NAME: "Manual", NTP_PRIMARY_NAME: "ntp1.example.test", NTP_SECONDARY_NAME: "",
+    SSH_LEGACY_NAME: "True", POWER_BUTTON_NAME: "Power_Off",
+}
 SYNTHETIC_PASSWORD = "SYNTHETIC-PASSWORD-NEVER-OUTPUT"
 WRAPPERS = {
     "RealPresence Group 300": poll_polycom_group300_device,
@@ -38,7 +108,25 @@ def response(body, status=200, headers=None):
 
 
 class PolycomGroupTests(unittest.TestCase):
-    def fake_request(self, calls, *, model="RealPresence Group 310", bundle=MAIN_BUNDLE, accept=True, accepted_username="synthetic-user", fail_path=None, serial="SYNTHETIC-SERIAL", mac="02:00:00:00:00:31", system_name="Synthetic Room"):
+    def test_narrow_config_reader_rejects_neighbor_fields_and_secure_values(self):
+        name = "security.remoteaccess.telnet.enabled"
+        calls = []
+
+        def perform(method, path, body=None, maximum=None):
+            calls.append((method, path, body, maximum))
+            return response({"vars": [{"name": name, "value": "False", "isSecure": False}]})
+
+        self.assertEqual(_read_exact_config_value(perform, name), "False")
+        self.assertEqual(calls, [("POST", "/rest/config", {"names": [name]}, 65536)])
+        for rows in ([{"name": name, "value": "False"}, {"name": "password", "value": SYNTHETIC_PASSWORD}],
+                     [{"name": "other", "value": "False"}],
+                     [{"name": name, "value": SYNTHETIC_PASSWORD, "isSecure": True}]):
+            def malformed(method, path, body=None, maximum=None):
+                return response({"vars": rows})
+            with self.assertRaises(PolycomContractError):
+                _read_exact_config_value(malformed, name)
+
+    def fake_request(self, calls, *, model="RealPresence Group 310", bundle=MAIN_BUNDLE, accept=True, accepted_username="synthetic-user", fail_path=None, serial="SYNTHETIC-SERIAL", mac="02:00:00:00:00:31", system_name="Synthetic Room", config_values=None):
         def request(options):
             calls.append(options)
             path, method = options["path"], options["method"]
@@ -78,8 +166,14 @@ class PolycomGroupTests(unittest.TestCase):
             if method == "GET" and path == "/rest/system/uptime":
                 return response(8000.5)
             if method == "POST" and path == "/rest/config":
-                self.assertEqual(json.loads(options["body"]), {"names": [MAC_NAME]})
-                return response({"vars": [{"name": MAC_NAME, "value": mac, "result": "SUCCESS", "isSecure": False, "password": SYNTHETIC_PASSWORD}]})
+                names = json.loads(options["body"])["names"]
+                self.assertEqual(len(names), 1)
+                if names == [MAC_NAME]:
+                    return response({"vars": [{"name": MAC_NAME, "value": mac, "result": "SUCCESS", "isSecure": False, "password": SYNTHETIC_PASSWORD}]})
+                if config_values and names[0] in config_values:
+                    configured = config_values[names[0]]
+                    return response(configured if isinstance(configured, dict) else {"vars": [{"name": names[0], "value": configured, "isSecure": False}]})
+                raise AssertionError(f"Unexpected config name: {names[0]}")
             raise AssertionError(f"Unexpected synthetic request: {method} {path}")
 
         return request
@@ -113,6 +207,171 @@ class PolycomGroupTests(unittest.TestCase):
         self.assertNotIn("SYNTHETIC-COOKIE", json.dumps(result))
         self.assertNotIn("SYNTHETIC-SESSION", json.dumps(result))
         self.assertTrue(all(call["reject_unauthorized"] for call in calls))
+
+    def test_group310_wifi_is_not_exposed_and_never_read_from_config(self):
+        result, calls = self.run_poll(bundle=MAIN_BUNDLE + " " + TELNET_BUNDLE_MARKERS,
+                                      config_values={TELNET_NAME: "False"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deviceSettings"]["fields"]["wifi"], {"status": "not_exposed", "value": None})
+        names = [name for call in calls if call["path"] == "/rest/config"
+                 for name in json.loads(call["body"])["names"]]
+        self.assertFalse(any("wifi" in name.casefold() or "wireless" in name.casefold() for name in names))
+
+    def test_group310_telnet_exact_read_and_fail_closed_values(self):
+        bundle = MAIN_BUNDLE + " " + TELNET_BUNDLE_MARKERS
+        result, calls = self.run_poll(bundle=bundle, config_values={TELNET_NAME: "False"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deviceSettings"]["fields"]["telnet"], {
+            "status": "read", "value": "disabled", "source": f"POST /rest/config:{TELNET_NAME}",
+            "validationStatus": "confirmed_user_validation"})
+        self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
+                         [[MAC_NAME], [TELNET_NAME]])
+        enabled, _ = self.run_poll(bundle=bundle, config_values={TELNET_NAME: "True"})
+        self.assertEqual(enabled["deviceSettings"]["fields"]["telnet"]["value"], "enabled")
+        unknown, _ = self.run_poll(bundle=bundle, config_values={TELNET_NAME: "unknown"})
+        self.assertEqual(unknown["deviceSettings"]["fields"]["telnet"]["status"], "unavailable")
+        self.assertTrue(unknown["ok"])
+        drift, drift_calls = self.run_poll(bundle=MAIN_BUNDLE + ' SECURITY_REMOTEACCESS_TELNET_ENABLED:"security.remoteaccess.telnet.enabled"')
+        self.assertEqual(drift["deviceSettings"]["fields"]["telnet"]["status"], "protocol_required")
+        self.assertFalse(any(json.loads(call["body"])["names"] == [TELNET_NAME] for call in drift_calls if call["path"] == "/rest/config"))
+
+    def test_group310_http_setting_is_inverse_of_https_only_without_port_claim(self):
+        bundle = MAIN_BUNDLE + " " + HTTP_BUNDLE_MARKERS
+        allowed, calls = self.run_poll(bundle=bundle, config_values={HTTP_WEB_NAME: "True", HTTP_ONLY_NAME: "False", HTTP_PORT_NAME: "80"})
+        self.assertTrue(allowed["ok"])
+        self.assertEqual(allowed["deviceSettings"]["fields"]["http"], {
+            "status": "read", "value": "enabled", "source": f"POST /rest/config:{HTTP_WEB_NAME},{HTTP_ONLY_NAME},{HTTP_PORT_NAME}",
+            "webAccessEnabled": True, "httpsOnly": False, "configuredPort": 80,
+            "meaning": "web_http_allowed", "validationStatus": "confirmed_user_validation"})
+        self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
+                         [[MAC_NAME], [HTTP_WEB_NAME], [HTTP_ONLY_NAME], [HTTP_PORT_NAME]])
+        restricted, _ = self.run_poll(bundle=bundle, config_values={HTTP_WEB_NAME: "True", HTTP_ONLY_NAME: "True", HTTP_PORT_NAME: "80"})
+        self.assertEqual(restricted["deviceSettings"]["fields"]["http"]["value"], "disabled")
+        web_off, _ = self.run_poll(bundle=bundle, config_values={HTTP_WEB_NAME: "False", HTTP_ONLY_NAME: "False", HTTP_PORT_NAME: "80"})
+        self.assertEqual(web_off["deviceSettings"]["fields"]["http"]["value"], "disabled")
+        invalid, _ = self.run_poll(bundle=bundle, config_values={HTTP_WEB_NAME: "True", HTTP_ONLY_NAME: "unexpected", HTTP_PORT_NAME: "80"})
+        self.assertTrue(invalid["ok"])
+        self.assertEqual(invalid["deviceSettings"]["fields"]["http"]["status"], "unavailable")
+        drift, calls = self.run_poll(bundle=MAIN_BUNDLE + HTTP_BUNDLE_MARKERS.replace('name:"webAccessPort",type:"int",varsName:configfqnames.SECURITY_REMOTEACCESS_WEB_HTTPPORT', ''))
+        self.assertEqual(drift["deviceSettings"]["fields"]["http"]["status"], "protocol_required")
+        self.assertFalse(any(json.loads(call["body"])["names"] == [HTTP_WEB_NAME] for call in calls if call["path"] == "/rest/config"))
+
+    def test_group310_snmpv2_needs_service_and_version(self):
+        bundle = MAIN_BUNDLE + " " + SNMP_BUNDLE_MARKERS
+        disabled, calls = self.run_poll(bundle=bundle, config_values={SNMP_SERVICE_NAME: "False", SNMP_V2_NAME: "True"})
+        self.assertTrue(disabled["ok"])
+        self.assertEqual(disabled["deviceSettings"]["fields"]["snmpV2"], {
+            "status": "read", "value": "disabled", "source": f"POST /rest/config:{SNMP_SERVICE_NAME},{SNMP_V2_NAME}",
+            "serviceEnabled": False, "configuredEnabled": True, "validationStatus": "confirmed_user_validation"})
+        self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
+                         [[MAC_NAME], [SNMP_SERVICE_NAME], [SNMP_V2_NAME]])
+        enabled, _ = self.run_poll(bundle=bundle, config_values={SNMP_SERVICE_NAME: "True", SNMP_V2_NAME: "True"})
+        self.assertEqual(enabled["deviceSettings"]["fields"]["snmpV2"]["value"], "enabled")
+        other_version, _ = self.run_poll(bundle=bundle, config_values={SNMP_SERVICE_NAME: "True", SNMP_V2_NAME: "False"})
+        self.assertEqual(other_version["deviceSettings"]["fields"]["snmpV2"]["value"], "disabled")
+        unknown, _ = self.run_poll(bundle=bundle, config_values={SNMP_SERVICE_NAME: "True", SNMP_V2_NAME: "unknown"})
+        self.assertTrue(unknown["ok"])
+        self.assertEqual(unknown["deviceSettings"]["fields"]["snmpV2"]["status"], "unavailable")
+        drift, calls = self.run_poll(bundle=MAIN_BUNDLE + SNMP_BUNDLE_MARKERS.replace('varsName:configfqnames.MANAGEMENT_SNMP_VERSIONTWO', ''))
+        self.assertEqual(drift["deviceSettings"]["fields"]["snmpV2"]["status"], "protocol_required")
+        self.assertFalse(any(json.loads(call["body"])["names"] == [SNMP_SERVICE_NAME] for call in calls if call["path"] == "/rest/config"))
+
+    def test_group310_auto_update_is_exact_polling_switch(self):
+        bundle = MAIN_BUNDLE + " " + AUTO_UPDATE_BUNDLE_MARKERS
+        disabled, calls = self.run_poll(bundle=bundle, config_values={AUTO_UPDATE_NAME: "False"})
+        self.assertTrue(disabled["ok"])
+        self.assertEqual(disabled["deviceSettings"]["fields"]["autoUpdate"], {
+            "status": "read", "value": "disabled", "source": f"POST /rest/config:{AUTO_UPDATE_NAME}",
+            "validationStatus": "confirmed_user_validation"})
+        self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
+                         [[MAC_NAME], [AUTO_UPDATE_NAME]])
+        enabled, _ = self.run_poll(bundle=bundle, config_values={AUTO_UPDATE_NAME: "True"})
+        self.assertEqual(enabled["deviceSettings"]["fields"]["autoUpdate"]["value"], "enabled")
+        invalid, _ = self.run_poll(bundle=bundle, config_values={AUTO_UPDATE_NAME: "unknown"})
+        self.assertTrue(invalid["ok"])
+        self.assertEqual(invalid["deviceSettings"]["fields"]["autoUpdate"]["status"], "unavailable")
+
+    def test_group310_auto_answer_preserves_distinct_call_modes(self):
+        bundle = MAIN_BUNDLE + " " + AUTO_ANSWER_BUNDLE_MARKERS
+        result, calls = self.run_poll(bundle=bundle, config_values={AUTO_ANSWER_SINGLE_NAME: "Yes", AUTO_ANSWER_MULTI_NAME: "No"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deviceSettings"]["fields"]["autoAnswer"], {
+            "status": "read", "value": {"pointToPoint": "enabled", "multipoint": "disabled"},
+            "source": f"POST /rest/config:{AUTO_ANSWER_SINGLE_NAME},{AUTO_ANSWER_MULTI_NAME}",
+            "validationStatus": "confirmed_user_validation"})
+        self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
+                         [[MAC_NAME], [AUTO_ANSWER_SINGLE_NAME], [AUTO_ANSWER_MULTI_NAME]])
+        opposite, _ = self.run_poll(bundle=bundle, config_values={AUTO_ANSWER_SINGLE_NAME: "No", AUTO_ANSWER_MULTI_NAME: "Yes"})
+        self.assertEqual(opposite["deviceSettings"]["fields"]["autoAnswer"]["value"],
+                         {"pointToPoint": "disabled", "multipoint": "enabled"})
+        partial, _ = self.run_poll(bundle=bundle, config_values={AUTO_ANSWER_SINGLE_NAME: "unknown", AUTO_ANSWER_MULTI_NAME: "No"})
+        self.assertEqual(partial["deviceSettings"]["fields"]["autoAnswer"]["status"], "read")
+        self.assertEqual(partial["deviceSettings"]["fields"]["autoAnswer"]["value"],
+                         {"pointToPoint": None, "multipoint": "disabled"})
+        self.assertEqual(partial["deviceSettings"]["fields"]["autoAnswer"]["unconfirmedFields"], ["pointToPoint"])
+        drift, calls = self.run_poll(bundle=MAIN_BUNDLE + AUTO_ANSWER_BUNDLE_MARKERS.replace(
+            'name:"autoAnswerMultiPointCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL', ''))
+        self.assertEqual(drift["deviceSettings"]["fields"]["autoAnswer"]["status"], "protocol_required")
+        self.assertFalse(any(json.loads(call["body"])["names"] == [AUTO_ANSWER_SINGLE_NAME] for call in calls if call["path"] == "/rest/config"))
+
+    def test_group310_ntp_manual_reads_two_exact_instances_without_leaking_servers(self):
+        bundle = MAIN_BUNDLE + " " + NTP_BUNDLE_MARKERS
+        values = {NTP_MODE_NAME: "Manual", NTP_PRIMARY_NAME: "ntp1.example.test", NTP_SECONDARY_NAME: ""}
+        result, calls = self.run_poll(bundle=bundle, config_values=values)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deviceSettings"]["fields"]["ntp"], {
+            "status": "read", "value": {"enabled": True, "mode": "manual", "modeCode": "Manual",
+                                        "primaryServer": "ntp1.example.test", "secondaryServer": ""},
+            "source": f"POST /rest/config:{NTP_MODE_NAME},{NTP_PRIMARY_NAME},{NTP_SECONDARY_NAME}",
+            "validationStatus": "confirmed_user_validation"})
+        self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
+                         [[MAC_NAME], [NTP_MODE_NAME], [NTP_PRIMARY_NAME], [NTP_SECONDARY_NAME]])
+        self.assertNotIn("ntp1.example.test", json.dumps(result.get("diagnostics") or {}))
+        unknown, calls = self.run_poll(bundle=bundle, config_values={NTP_MODE_NAME: "Unexpected"})
+        self.assertEqual(unknown["deviceSettings"]["fields"]["ntp"]["status"], "unavailable")
+        self.assertFalse(any(json.loads(call["body"])["names"] == [NTP_PRIMARY_NAME] for call in calls if call["path"] == "/rest/config"))
+        partial, _ = self.run_poll(bundle=bundle, config_values={NTP_MODE_NAME: "Manual", NTP_PRIMARY_NAME: "ntp1.example.test", NTP_SECONDARY_NAME: {"vars": [{"name": "other", "value": ""}]}})
+        self.assertEqual(partial["deviceSettings"]["fields"]["ntp"]["status"], "read")
+        self.assertEqual(partial["deviceSettings"]["fields"]["ntp"]["value"]["secondaryServer"], None)
+        self.assertEqual(partial["deviceSettings"]["fields"]["ntp"]["unconfirmedFields"], ["secondaryServer"])
+        secret, _ = self.run_poll(bundle=bundle, config_values={NTP_MODE_NAME: "Manual", NTP_PRIMARY_NAME: SYNTHETIC_PASSWORD, NTP_SECONDARY_NAME: ""})
+        self.assertNotIn(SYNTHETIC_PASSWORD, json.dumps(secret))
+        drift, calls = self.run_poll(bundle=MAIN_BUNDLE + NTP_BUNDLE_MARKERS.replace('a[b-1]+=c.instanceName', ''))
+        self.assertEqual(drift["deviceSettings"]["fields"]["ntp"]["status"], "protocol_required")
+        self.assertFalse(any(json.loads(call["body"])["names"] == [NTP_MODE_NAME] for call in calls if call["path"] == "/rest/config"))
+
+    def test_group310_ssh_legacy_api_is_not_claimed_as_ssh_service(self):
+        bundle = MAIN_BUNDLE + " " + SSH_LEGACY_BUNDLE_MARKERS
+        result, calls = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "True"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deviceSettings"]["fields"]["ssh"], {
+            "status": "read", "value": {"legacyApiOverSshEnabled": True, "sshServiceEnabled": None},
+            "source": f"POST /rest/config:{SSH_LEGACY_NAME}", "meaning": "legacy_api_over_ssh_only",
+            "unconfirmedFields": ["sshServiceEnabled"], "validationStatus": "confirmed_user_validation"})
+        self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
+                         [[MAC_NAME], [SSH_LEGACY_NAME]])
+        disabled, _ = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "False"})
+        self.assertEqual(disabled["deviceSettings"]["fields"]["ssh"]["value"],
+                         {"legacyApiOverSshEnabled": False, "sshServiceEnabled": None})
+        unknown, _ = self.run_poll(bundle=bundle, config_values={SSH_LEGACY_NAME: "unknown"})
+        self.assertEqual(unknown["deviceSettings"]["fields"]["ssh"]["status"], "unavailable")
+
+    def test_group310_power_long_press_does_not_infer_sleep(self):
+        bundle = MAIN_BUNDLE + " " + POWER_BUTTON_BUNDLE_MARKERS
+        result, calls = self.run_poll(bundle=bundle, config_values={POWER_BUTTON_NAME: "Power_Off"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deviceSettings"]["fields"]["powerManagement"], {
+            "status": "read", "value": {"hangupLongPressAction": "power_off", "actionCode": "Power_Off", "sleepMode": None},
+            "source": f"POST /rest/config:{POWER_BUTTON_NAME}", "meaning": "remote_hangup_long_press",
+            "unconfirmedFields": ["sleepMode"], "validationStatus": "confirmed_user_validation"})
+        self.assertEqual([json.loads(call["body"])["names"] for call in calls if call["path"] == "/rest/config"],
+                         [[MAC_NAME], [POWER_BUTTON_NAME]])
+        unknown, _ = self.run_poll(bundle=bundle, config_values={POWER_BUTTON_NAME: "Unrecognized_Action"})
+        self.assertEqual(unknown["deviceSettings"]["fields"]["powerManagement"]["status"], "unavailable")
+        drift, calls = self.run_poll(bundle=MAIN_BUNDLE + POWER_BUTTON_BUNDLE_MARKERS.replace(
+            'addIndividualStoreVar("hangupButtonLongPress","SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC")', ''))
+        self.assertEqual(drift["deviceSettings"]["fields"]["powerManagement"]["status"], "protocol_required")
+        self.assertFalse(any(json.loads(call["body"])["names"] == [POWER_BUTTON_NAME] for call in calls if call["path"] == "/rest/config"))
 
     def test_wrong_model_fails_before_optional_reads(self):
         result, calls = self.run_poll(observed="RealPresence Group 500")
@@ -175,8 +434,44 @@ class PolycomGroupTests(unittest.TestCase):
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["webBlocks"]["Device Info"]["Model"], model)
                 self.assertEqual(result["siteName"]["value"], result["webBlocks"]["Device Info"]["System Name"])
-                expected = "provisional_user_validation" if model.endswith("300") else "confirmed_user_validation"
-                self.assertEqual(result["vendorPolling"]["evidenceStatus"], expected)
+                self.assertEqual(result["vendorPolling"]["evidenceStatus"], "confirmed_user_validation")
+
+    def test_shared_setting_reader_respects_each_exact_group_model_and_drift(self):
+        for model in WRAPPERS:
+            with self.subTest(model=model):
+                result, calls = self.run_poll(model=model, bundle=FULL_SETTINGS_BUNDLE,
+                                              config_values=FULL_SETTING_VALUES)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["deviceSettings"]["validationStatus"], "confirmed_user_validation")
+                self.assertEqual(result["deviceSettings"]["fields"]["wifi"]["status"], "not_exposed")
+                self.assertEqual(result["deviceSettings"]["fields"]["http"]["value"], "enabled")
+                self.assertEqual(result["deviceSettings"]["fields"]["snmpV2"]["value"], "disabled")
+                self.assertEqual(result["deviceSettings"]["fields"]["powerManagement"]["value"]["sleepMode"], None)
+                self.assertTrue(all(call["method"] in ("GET", "POST") for call in calls))
+                self.assertNotIn(SYNTHETIC_PASSWORD, json.dumps(result))
+        wrong, calls = self.run_poll(model="RealPresence Group 500", observed="RealPresence Group 310",
+                                     bundle=FULL_SETTINGS_BUNDLE, config_values=FULL_SETTING_VALUES)
+        self.assertFalse(wrong["ok"])
+        self.assertEqual(wrong["safeError"], "target_model_mismatch")
+        self.assertFalse(any(json.loads(call["body"])["names"] == [TELNET_NAME] for call in calls if call["path"] == "/rest/config"))
+        drift, _ = self.run_poll(model="RealPresence Group 700", bundle=FULL_SETTINGS_BUNDLE.replace(
+            'name:"enableWebAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_WEB_ENABLED', ''),
+            config_values=FULL_SETTING_VALUES)
+        self.assertTrue(drift["ok"])
+        self.assertEqual(drift["deviceSettings"]["fields"]["http"]["status"], "protocol_required")
+        self.assertEqual(drift["deviceSettings"]["fields"]["telnet"]["status"], "read")
+        malformed, _ = self.run_poll(model="RealPresence Group 300", bundle=FULL_SETTINGS_BUNDLE,
+                                     config_values={**FULL_SETTING_VALUES, AUTO_UPDATE_NAME: "unrecognized"})
+        self.assertTrue(malformed["ok"])
+        self.assertEqual(malformed["deviceSettings"]["fields"]["autoUpdate"]["status"], "unavailable")
+        self.assertEqual(malformed["deviceSettings"]["fields"]["telnet"]["status"], "read")
+
+    def test_group300_https_validation_failure_never_sends_credentials_or_http_fallback(self):
+        result, calls = self.run_poll(model="RealPresence Group 300", fail_path="/login.html")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failedStage"], "validation")
+        self.assertFalse(any(call["path"] == "/rest/session" for call in calls))
+        self.assertFalse(any("http://" in call["path"] for call in calls))
 
     def test_missing_system_name_is_not_invented_as_site_name(self):
         result, _ = self.run_poll(system_name=None)

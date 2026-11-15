@@ -1,5 +1,10 @@
 # Карта контекста
 
+## Feature 055 — новые read-only настройки Polycom RealPresence Group
+
+- `specs/055-polycom-group-settings-read/`, ADR-0058. На exact Group 310 после model/identity и текущих bundle markers по одному сверены девять групп: Telnet, Web Access/HTTPS-only/порт, SNMP service+v2, автообновление, два режима автоответа, NTP с двумя адресами, отсутствующий Wi-Fi, Legacy API over SSH и действие долгого нажатия. Только подтверждённые значения получают `confirmed_user_validation`; SSH service и сон остаются неизвестными.
+- Общий guarded core `mvp_runtime/adapters/polycom_group.py` условно применяет те же узкие read-only чтения к exact Group 300/500/700. Администратор отдельно подтвердил новые поля всех трёх моделей; успешные новые результаты всех четырёх exact Group получают `confirmed_user_validation`, а прежние provisional JSON сохраняют старый статус. Group 300 со старой HTTPS-несовместимой прошивкой всё ещё не переходит на HTTP с паролем. `app.js` строго проецирует модель/контракт/источник и показывает составные факты в существующей XLSX-сверке. Проверки: `python_tests/test_polycom_group.py`, `tests.js`; Справочник: `product-catalog.js`.
+
 ## Feature 054 — аналитика логов Huawei CloudLink 300
 
 - Отдельный потоковый парсер `runtime/huawei-300-log-events.js` принимает полный XML `LogModule`, извлекает проверенный на Bar 300 `LOG_MOD_MC/System boot`, отдельную подтверждённую штатную web-команду `LOG_MOD_WEB/shut down terminal` и паузы перед запуском. Общие `reboot`/`restart` не подтверждают перезагрузку; следующий boot после команды выключения не считается перезагрузкой или предполагаемой потерей питания. Сырые строки не сохраняются. `specs/054-cloudlink-300-log-analytics/`, ADR-0057.
@@ -160,7 +165,7 @@
 - Спецификация, evidence review, контракт и проверки: `specs/031-polycom-group-polling/`.
 - Общий read-only HTTPS core с четырьмя exact-model wrappers: `mvp_runtime/adapters/polycom_group.py`.
 - Маршрутизация: `mvp_runtime/polling.py`, `runtime/device-catalog.json`, `app.js`; Справочник: `product-catalog.js`.
-- Group 310 подтверждён контролируемым и пользовательским опросом; Group 500 и 700 отдельно подтверждены пользователем. Group 300 остаётся provisional. Причина прежнего единичного model mismatch на Group 500 неизвестна.
+- На этапе feature 031 Group 310/500/700 были подтверждены, а Group 300 оставался предварительным. Позднее администратор подтвердил проверенный Group 300 в feature 055; старое ограничение прошивки 4.1.5 и причина единичного model mismatch Group 500 не исчезли.
 - Group 300 с 4.1.5-180072 доступен по HTTP, но HTTPS-опрос остановился до credentials; 5.0+ — только кандидат для испытания, не подтверждённая гарантия. Решение: `docs/decisions/ADR-0032-polycom-group-polling.md`.
 - Решение и ограничение pre-auth model check: `docs/decisions/ADR-0032-polycom-group-polling.md`.
 
@@ -322,7 +327,7 @@
 - `START_MVP_SPHERE_SR.py` — полный режим; прямой `index.html` — ручной режим.
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
-- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1 web-CGI contract Huawei TE20, общий guarded HTTPS web-CGI contract Huawei TE30/TE40/TE50/TE60, три отдельных HTTPS contract Huawei Bar 310/Box 310/Box 610 и read-only HTTPS web contract Polycom RealPresence Group 310/500/700. Обычный `/v1`-опрос Huawei 310 подтверждён эксплуатацией; отдельная opt-in HTTP-only задача Huawei Box 310/610 пока provisional. Polycom Group 300 маршрутизируется на отдельный exact-model provisional-контракт до пользовательской проверки; HDX и остальные неподтверждённые модели остаются `protocol_required`.
+- Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1 web-CGI contract Huawei TE20, общий guarded HTTPS web-CGI contract Huawei TE30/40/50/60, три отдельных HTTPS contract Huawei Bar 310/Box 310/Box 610 и read-only HTTPS web contract Polycom RealPresence Group 300/310/500/700 на проверенных устройствах. Обычный `/v1`-опрос Huawei 310 подтверждён эксплуатацией; отдельная opt-in HTTP-only задача Huawei Box 310/610 пока provisional. У Group 300 старая HTTP-only прошивка остаётся несовместимой с защищённым опросом; HDX и остальные неподтверждённые модели остаются `protocol_required`.
 - Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE20/TE30/TE40/TE50/TE60 и Bar 310 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Bar 310 изменяет только `enable_http=0`, а неподдерживаемый firmware-параметр Telnet не записывает и показывает `not_exposed`. Реальная write-проверка выполнена на TE20 и TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. Достаточно подтверждённо изменить значения в меню кодека; TCP listener не влияет на статус отчёта.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 

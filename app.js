@@ -1351,6 +1351,68 @@
     return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJsonValue(value[key])]));
   }
 
+  function projectPolycomSetting(key, supplied) {
+    const value = getCaseInsensitive(supplied, "value");
+    const source = String(getCaseInsensitive(supplied, "source") || "");
+    const binary = ["enabled", "disabled"];
+    const oneName = (name) => `POST /rest/config:${name}`;
+    if (key === "telnet" && source === oneName("security.remoteaccess.telnet.enabled") && binary.includes(value)) return { status: "read", value, source };
+    if (key === "autoUpdate" && source === oneName("softupdate.pollingenabled") && binary.includes(value)) return { status: "read", value, source };
+    if (key === "http" && source === oneName("security.remoteaccess.web.enabled,security.remoteaccess.web.httpsonly,security.remoteaccess.web.httpport")
+      && getCaseInsensitive(supplied, "meaning") === "web_http_allowed"
+      && typeof getCaseInsensitive(supplied, "webAccessEnabled") === "boolean"
+      && typeof getCaseInsensitive(supplied, "httpsOnly") === "boolean"
+      && Number.isSafeInteger(getCaseInsensitive(supplied, "configuredPort"))
+      && getCaseInsensitive(supplied, "configuredPort") >= 1 && getCaseInsensitive(supplied, "configuredPort") <= 65535
+      && value === (supplied.webAccessEnabled && !supplied.httpsOnly ? "enabled" : "disabled")) {
+      return { status: "read", value, source, webAccessEnabled: supplied.webAccessEnabled, httpsOnly: supplied.httpsOnly,
+        configuredPort: supplied.configuredPort, meaning: "web_http_allowed" };
+    }
+    if (key === "snmpV2" && source === oneName("management.snmp.enabled,management.snmp.versiontwo")
+      && typeof getCaseInsensitive(supplied, "serviceEnabled") === "boolean"
+      && typeof getCaseInsensitive(supplied, "configuredEnabled") === "boolean"
+      && value === (supplied.serviceEnabled && supplied.configuredEnabled ? "enabled" : "disabled")) {
+      return { status: "read", value, source, serviceEnabled: supplied.serviceEnabled, configuredEnabled: supplied.configuredEnabled };
+    }
+    if (key === "autoAnswer" && source === oneName("comm.callsetting.callfeatures.autoanswer.answersinglecall,comm.callsetting.callfeatures.autoanswer.answermultipointcall") && isPlainObject(value)) {
+      const pointToPoint = getCaseInsensitive(value, "pointToPoint");
+      const multipoint = getCaseInsensitive(value, "multipoint");
+      const allowed = ["enabled", "disabled", null];
+      if (!allowed.includes(pointToPoint) || !allowed.includes(multipoint) || (pointToPoint === null && multipoint === null)) return null;
+      const missing = [pointToPoint === null ? "pointToPoint" : null, multipoint === null ? "multipoint" : null].filter(Boolean);
+      const declared = getCaseInsensitive(supplied, "unconfirmedFields");
+      if (missing.length && (!Array.isArray(declared) || JSON.stringify(declared) !== JSON.stringify(missing))) return null;
+      return { status: "read", value: { pointToPoint, multipoint }, source, ...(missing.length ? { unconfirmedFields: missing } : {}) };
+    }
+    if (key === "ntp" && source === oneName("time.timeserver.mode,time.timeserver.address,time.timeserver.address1") && isPlainObject(value)
+      && value.enabled === true && value.mode === "manual" && value.modeCode === "Manual") {
+      const primary = getCaseInsensitive(value, "primaryServer");
+      const secondary = getCaseInsensitive(value, "secondaryServer");
+      const safeServer = (server, allowEmpty) => server === null || (typeof server === "string" && server.length <= 255
+        && (allowEmpty || server.length > 0) && !/[\u0000-\u001f]/.test(server));
+      if (!safeServer(primary, false) || !safeServer(secondary, true) || (primary === null && secondary === null)) return null;
+      const missing = [primary === null ? "primaryServer" : null, secondary === null ? "secondaryServer" : null].filter(Boolean);
+      const declared = getCaseInsensitive(supplied, "unconfirmedFields");
+      if (missing.length && (!Array.isArray(declared) || JSON.stringify(declared) !== JSON.stringify(missing))) return null;
+      return { status: "read", value: { enabled: true, mode: "manual", modeCode: "Manual", primaryServer: primary, secondaryServer: secondary },
+        source, ...(missing.length ? { unconfirmedFields: missing } : {}) };
+    }
+    if (key === "ssh" && source === oneName("security.remoteaccess.ssh.enabled") && getCaseInsensitive(supplied, "meaning") === "legacy_api_over_ssh_only"
+      && isPlainObject(value) && typeof value.legacyApiOverSshEnabled === "boolean" && value.sshServiceEnabled === null
+      && JSON.stringify(getCaseInsensitive(supplied, "unconfirmedFields")) === JSON.stringify(["sshServiceEnabled"])) {
+      return { status: "read", value: { legacyApiOverSshEnabled: value.legacyApiOverSshEnabled, sshServiceEnabled: null }, source,
+        meaning: "legacy_api_over_ssh_only", unconfirmedFields: ["sshServiceEnabled"] };
+    }
+    if (key === "powerManagement" && source === oneName("system.remote.hangupkeylongpressfunc")
+      && getCaseInsensitive(supplied, "meaning") === "remote_hangup_long_press" && isPlainObject(value)
+      && value.hangupLongPressAction === "power_off" && value.actionCode === "Power_Off" && value.sleepMode === null
+      && JSON.stringify(getCaseInsensitive(supplied, "unconfirmedFields")) === JSON.stringify(["sleepMode"])) {
+      return { status: "read", value: { hangupLongPressAction: "power_off", actionCode: "Power_Off", sleepMode: null }, source,
+        meaning: "remote_hangup_long_press", unconfirmedFields: ["sleepMode"] };
+    }
+    return null;
+  }
+
   function pollingPayloadProjection(payload) {
     if (!isPlainObject(payload)) return {};
     const projected = {
@@ -1392,6 +1454,20 @@
     const exact300SettingsRead = bar300SettingsConfirmed || box300SettingsAccepted;
     const boxSettingsValidation = boxModelExact ? getCaseInsensitive(suppliedSettings, "validationStatus") : null;
     const boxSettingsAccepted = ["provisional_user_validation", "confirmed_user_validation"].includes(boxSettingsValidation);
+    const polycomModel = ["group300", "group310", "group500", "group700"].includes(observedModel) ? observedModel : null;
+    const polycomVendor = getCaseInsensitive(payload, "vendorPolling");
+    const polycomValidation = getCaseInsensitive(suppliedSettings, "validationStatus");
+    const polycomVendorEvidence = getCaseInsensitive(polycomVendor, "evidenceStatus");
+    const polycomSettingsAccepted = Boolean(polycomModel
+      && projected.adapterKey === `vcs/polycom/${polycomModel}`
+      && getCaseInsensitive(polycomVendor, "contract") === `polycom-${polycomModel}-web-v1`
+      && auditModelToken(getCaseInsensitive(polycomVendor, "model")) === polycomModel
+      && ["provisional_user_validation", "confirmed_user_validation"].includes(polycomVendorEvidence)
+      && (polycomModel === "group300" || polycomVendorEvidence === "confirmed_user_validation")
+      && auditModelToken(getCaseInsensitive(suppliedSettings, "model")) === polycomModel
+      && ["provisional_user_validation", "confirmed_user_validation"].includes(polycomValidation)
+      && (polycomValidation !== "confirmed_user_validation" || polycomVendorEvidence === "confirmed_user_validation")
+      && getCaseInsensitive(payload, "ok") === true);
     const projectedFields = {};
     const approvedReadSources = {
       telnet: new Set(["WEB_GetCfgParamAPI:enabletelnet", "managementActions.after.telnetPort23"]),
@@ -1407,7 +1483,10 @@
       const value = getCaseInsensitive(supplied, "value");
       const source = String(getCaseInsensitive(supplied, "source") || "");
       const exact310SettingsRead = bar310SettingsConfirmed || (boxSettingsAccepted && getCaseInsensitive(supplied, "validationStatus") === boxSettingsValidation);
-      if (key === "autoUpdate" && exact310SettingsRead && status === "read" && ["enabled", "disabled"].includes(value)
+      if (polycomSettingsAccepted && status === "read" && getCaseInsensitive(supplied, "validationStatus") === polycomValidation) {
+        const polycomField = projectPolycomSetting(key, supplied);
+        if (polycomField) projectedFields[key] = { ...polycomField, validationStatus: polycomValidation };
+      } else if (key === "autoUpdate" && exact310SettingsRead && status === "read" && ["enabled", "disabled"].includes(value)
         && ["GET /v1/om/config/service:serverType", "GET /v1/om/config/service+auto-config:serverType"].includes(source)
         && getCaseInsensitive(supplied, "basis") === "server_type_audit_rule"
         && getCaseInsensitive(supplied, "ruleVersion") === "bar310-server-type-audit-v1") {
@@ -1492,7 +1571,7 @@
         } else delete projectedFields[key];
       }
     }
-    if (getCaseInsensitive(payload, "ok") === true) {
+    if (getCaseInsensitive(payload, "ok") === true && ["vcs/huawei/te20-legacy", "vcs/huawei/te-family", "vcs/huawei/bar310", "vcs/huawei/box310", "vcs/huawei/box610"].includes(projected.adapterKey)) {
       const actions = getCaseInsensitive(payload, "managementActions");
       const verified = Array.isArray(actions) ? actions.find((item) => getCaseInsensitive(item, "id") === "disable_insecure_management_services" && ["applied", "already_compliant"].includes(normalizeText(getCaseInsensitive(item, "status")))) : null;
       const after = getCaseInsensitive(verified, "after");
@@ -1502,7 +1581,9 @@
         if (["enabled", "disabled"].includes(legacyValue)) projectedFields[key] = { status: "read", value: legacyValue, source: `managementActions.after.${legacyKey}` };
       }
     }
-    if (Object.keys(projectedFields).length) projected.deviceSettings = { fields: projectedFields, ...(boxSettingsAccepted ? { validationStatus: boxSettingsValidation } : {}) };
+    if (Object.keys(projectedFields).length) projected.deviceSettings = { fields: projectedFields,
+      ...(boxSettingsAccepted ? { validationStatus: boxSettingsValidation } : {}),
+      ...(polycomSettingsAccepted ? { validationStatus: polycomValidation } : {}) };
     return stableJsonValue(projected);
   }
 
@@ -3496,6 +3577,22 @@
     if (value === "disabled") return "Отключено";
     if (field === "ntp" && isPlainObject(value) && typeof value.enabled === "boolean" && [0, 1].includes(value.modeCode) && typeof value.server === "string") {
       return `${value.enabled ? "Включено" : "Отключено"}; тип: ${value.modeCode === 1 ? "Вручную" : "Автоматически"}; сервер: ${value.server || "не указан"}`;
+    }
+    if (field === "ntp" && isPlainObject(value) && value.enabled === true && value.mode === "manual" && value.modeCode === "Manual"
+      && (typeof value.primaryServer === "string" || value.primaryServer === null)
+      && (typeof value.secondaryServer === "string" || value.secondaryServer === null)) {
+      return `Включено; режим: Вручную; основной сервер: ${value.primaryServer || "не указан"}; дополнительный: ${value.secondaryServer || "не указан"}`;
+    }
+    if (field === "autoAnswer" && isPlainObject(value) && ["enabled", "disabled", null].includes(value.pointToPoint)
+      && ["enabled", "disabled", null].includes(value.multipoint)) {
+      const label = (mode) => mode === "enabled" ? "включено" : mode === "disabled" ? "отключено" : "нет данных";
+      return `Одноточечные: ${label(value.pointToPoint)}; многоточечные: ${label(value.multipoint)}`;
+    }
+    if (field === "ssh" && isPlainObject(value) && typeof value.legacyApiOverSshEnabled === "boolean" && value.sshServiceEnabled === null) {
+      return `Legacy API over SSH: ${value.legacyApiOverSshEnabled ? "включено" : "отключено"}; служба SSH: нет данных`;
+    }
+    if (field === "powerManagement" && isPlainObject(value) && value.hangupLongPressAction === "power_off" && value.sleepMode === null) {
+      return "Длительное нажатие: выключение; спящий режим: нет данных";
     }
     if (field === "wifi" && isPlainObject(value) && typeof value.clientEnabled === "boolean" && typeof value.accessPointEnabled === "boolean") {
       return `Клиент: ${value.clientEnabled ? "включён" : "отключён"}; точка доступа: ${value.accessPointEnabled ? "включена" : "отключена"}${typeof value.preferredNetworkEnabled === "boolean" ? `; приоритет Wi-Fi: ${value.preferredNetworkEnabled ? "включён" : "отключён"}` : ""}`;

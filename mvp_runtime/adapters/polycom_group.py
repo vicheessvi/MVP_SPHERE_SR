@@ -19,6 +19,63 @@ from mvp_runtime.adapters.device_settings import unknown_device_settings
 
 
 MAC_NAME = "system.network.wired.ethernet.macaddress"
+SETTING_CONFIG_NAMES = {
+    "telnet": ("security.remoteaccess.telnet.enabled",),
+    "http": ("security.remoteaccess.web.enabled", "security.remoteaccess.web.httpsonly",
+             "security.remoteaccess.web.httpport"),
+    "snmpV2": ("management.snmp.enabled", "management.snmp.versiontwo"),
+    "autoUpdate": ("softupdate.pollingenabled",),
+    "autoAnswer": ("comm.callsetting.callfeatures.autoanswer.answersinglecall",
+                   "comm.callsetting.callfeatures.autoanswer.answermultipointcall"),
+    "ntp": ("time.timeserver.mode", "time.timeserver.address", "time.timeserver.address1"),
+    "ssh": ("security.remoteaccess.ssh.enabled",),
+    "powerManagement": ("system.remote.hangupkeylongpressfunc",),
+}
+SAFE_CONFIG_NAMES = frozenset({name for names in SETTING_CONFIG_NAMES.values() for name in names})
+TELNET_BUNDLE_MARKERS = (
+    'SECURITY_REMOTEACCESS_TELNET_ENABLED:"security.remoteaccess.telnet.enabled"',
+    'name:"enableTelnetAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_TELNET_ENABLED',
+)
+HTTP_BUNDLE_MARKERS = (
+    'SECURITY_REMOTEACCESS_WEB_ENABLED:"security.remoteaccess.web.enabled"',
+    'SECURITY_REMOTEACCESS_WEB_HTTPSONLY:"security.remoteaccess.web.httpsonly"',
+    'SECURITY_REMOTEACCESS_WEB_HTTPPORT:"security.remoteaccess.web.httpport"',
+    'name:"enableWebAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_WEB_ENABLED',
+    'name:"httpsOnly",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_WEB_HTTPSONLY',
+    'name:"webAccessPort",type:"int",varsName:configfqnames.SECURITY_REMOTEACCESS_WEB_HTTPPORT',
+)
+SNMP_BUNDLE_MARKERS = (
+    'MANAGEMENT_SNMP_ENABLED:"management.snmp.enabled"',
+    'MANAGEMENT_SNMP_VERSIONTWO:"management.snmp.versiontwo"',
+    'name:"enableSNMPAccess",type:"boolean",varsName:configfqnames.MANAGEMENT_SNMP_ENABLED',
+    'varsName:configfqnames.MANAGEMENT_SNMP_VERSIONTWO',
+)
+AUTO_UPDATE_BUNDLE_MARKERS = (
+    'SOFTUPDATE_POLLINGENABLED:"softupdate.pollingenabled"',
+    'name:"enableAutomaticUpdates",type:"boolean",varsName:configfqnames.SOFTUPDATE_POLLINGENABLED',
+)
+AUTO_ANSWER_BUNDLE_MARKERS = (
+    'COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERSINGLECALL:"comm.callsetting.callfeatures.autoanswer.answersinglecall"',
+    'COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL:"comm.callsetting.callfeatures.autoanswer.answermultipointcall"',
+    'name:"autoAnswerSingleCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERSINGLECALL',
+    'name:"autoAnswerMultiPointCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL',
+)
+NTP_BUNDLE_MARKERS = (
+    'TIME_TIMESERVER_MODE:"time.timeserver.mode"',
+    'TIME_TIMESERVER_ADDRESS:"time.timeserver.address"',
+    'name:"timeServerMode",type:"string",varsName:configfqnames.TIME_TIMESERVER_MODE',
+    'name:"timeServerAddress",type:"string",varsName:configfqnames.TIME_TIMESERVER_ADDRESS',
+    'name:"secondaryTimeServerAddress",type:"string",varsName:configfqnames.TIME_TIMESERVER_ADDRESS,instanceName:"1"',
+    'a[b-1]+=c.instanceName',
+)
+SSH_LEGACY_BUNDLE_MARKERS = (
+    'SECURITY_REMOTEACCESS_SSH_ENABLED:"security.remoteaccess.ssh.enabled"',
+    'name:"enableSshAccess",type:"boolean",varsName:configfqnames.SECURITY_REMOTEACCESS_SSH_ENABLED',
+)
+POWER_BUTTON_BUNDLE_MARKERS = (
+    'SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC:"system.remote.hangupkeylongpressfunc"',
+    'addIndividualStoreVar("hangupButtonLongPress","SYSTEM_REMOTE_HANGUPKEYLONGPRESSFUNC")',
+)
 MAC_PATTERN = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 SCRIPT_PATTERN = re.compile(r"(?:^|/)\b(login|main)\.js\?build=([0-9]{1,12})$")
 SCRIPT_SRC_PATTERN = re.compile(r"<script\b[^>]*\bsrc\s*=\s*['\"]([^'\"]+)['\"]", re.I)
@@ -42,7 +99,7 @@ SESSION_PATH = "/rest/session"
 
 CONTRACTS = {
     310: {"id": "polycom-group310-web-v1", "model": "RealPresence Group 310", "evidence": "confirmed_user_validation"},
-    300: {"id": "polycom-group300-web-v1", "model": "RealPresence Group 300", "evidence": "provisional_user_validation"},
+    300: {"id": "polycom-group300-web-v1", "model": "RealPresence Group 300", "evidence": "confirmed_user_validation"},
     500: {"id": "polycom-group500-web-v1", "model": "RealPresence Group 500", "evidence": "confirmed_user_validation"},
     700: {"id": "polycom-group700-web-v1", "model": "RealPresence Group 700", "evidence": "confirmed_user_validation"},
 }
@@ -197,6 +254,33 @@ def _safe_mac(value: Any) -> str | None:
     return value.upper().replace("-", ":") if isinstance(value, str) and MAC_PATTERN.fullmatch(value) else None
 
 
+def _read_exact_config_value(perform: Callable[..., dict[str, Any]], name: str) -> str:
+    """Read one bundle-confirmed, non-secret setting without a neighboring config dump."""
+    if name not in SAFE_CONFIG_NAMES:
+        raise PolycomContractError("configuration_name_unconfirmed")
+    config = _json_response(perform("POST", CONFIG_PATH, {"names": [name]}, maximum=65536))
+    values = config.get("vars") if isinstance(config, dict) else None
+    if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict) or values[0].get("name") != name:
+        raise PolycomContractError("configuration_schema_unconfirmed")
+    row = values[0]
+    if row.get("isSecure") not in (None, False, "False", "false"):
+        raise PolycomContractError("configuration_schema_unconfirmed")
+    value = row.get("value")
+    if not isinstance(value, str) or len(value) > 256 or any(ord(char) < 32 for char in value):
+        raise PolycomContractError("configuration_schema_unconfirmed")
+    return value
+
+
+def _polycom_string_bool(value: str) -> bool | None:
+    normalized = value.strip().casefold()
+    return True if normalized == "true" else False if normalized == "false" else None
+
+
+def _polycom_yes_no(value: str) -> str | None:
+    normalized = value.strip().casefold()
+    return "enabled" if normalized == "yes" else "disabled" if normalized == "no" else None
+
+
 def _planned_model(device: dict[str, Any]) -> str:
     return re.sub(r"\s+", " ", str(device.get("modelRaw") or device.get("model") or device.get("modelNormalized") or "").strip().casefold())
 
@@ -335,6 +419,174 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
         if not serial and not mac:
             raise PolycomContractError("stable_identity_missing")
 
+        device_settings = unknown_device_settings(contract["model"], not_exposed=("wifi",))
+        settings_validation = "confirmed_user_validation"
+        device_settings["validationStatus"] = settings_validation
+        if all(marker in main_text for marker in TELNET_BUNDLE_MARKERS):
+            try:
+                telnet_name = SETTING_CONFIG_NAMES["telnet"][0]
+                enabled = _polycom_string_bool(_read_exact_config_value(perform, telnet_name))
+                if enabled is None:
+                    raise PolycomContractError("configuration_value_unconfirmed")
+                device_settings["fields"]["telnet"] = {
+                    "status": "read", "value": "enabled" if enabled else "disabled",
+                    "source": f"POST /rest/config:{telnet_name}",
+                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                }
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                device_settings["fields"]["telnet"] = {"status": "unavailable", "value": None}
+                resource_errors["settings.telnet"] = _error_code(error)
+        if all(marker in main_text for marker in HTTP_BUNDLE_MARKERS):
+            try:
+                web_name, only_name, port_name = SETTING_CONFIG_NAMES["http"]
+                web_enabled = _polycom_string_bool(_read_exact_config_value(perform, web_name))
+                https_only = _polycom_string_bool(_read_exact_config_value(perform, only_name))
+                port_raw = _read_exact_config_value(perform, port_name)
+                if web_enabled is None or https_only is None or not re.fullmatch(r"[0-9]{1,5}", port_raw):
+                    raise PolycomContractError("configuration_value_unconfirmed")
+                configured_port = int(port_raw)
+                if not 1 <= configured_port <= 65535:
+                    raise PolycomContractError("configuration_value_unconfirmed")
+                device_settings["fields"]["http"] = {
+                    "status": "read", "value": "enabled" if web_enabled and not https_only else "disabled",
+                    "source": f"POST /rest/config:{web_name},{only_name},{port_name}",
+                    "webAccessEnabled": web_enabled, "httpsOnly": https_only, "configuredPort": configured_port,
+                    "meaning": "web_http_allowed",
+                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                }
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                device_settings["fields"]["http"] = {"status": "unavailable", "value": None}
+                resource_errors["settings.http"] = _error_code(error)
+        if all(marker in main_text for marker in SNMP_BUNDLE_MARKERS):
+            try:
+                service_name, version_name = SETTING_CONFIG_NAMES["snmpV2"]
+                service_enabled = _polycom_string_bool(_read_exact_config_value(perform, service_name))
+                configured_enabled = _polycom_string_bool(_read_exact_config_value(perform, version_name))
+                if service_enabled is None or configured_enabled is None:
+                    raise PolycomContractError("configuration_value_unconfirmed")
+                device_settings["fields"]["snmpV2"] = {
+                    "status": "read", "value": "enabled" if service_enabled and configured_enabled else "disabled",
+                    "source": f"POST /rest/config:{service_name},{version_name}",
+                    "serviceEnabled": service_enabled, "configuredEnabled": configured_enabled,
+                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                }
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                device_settings["fields"]["snmpV2"] = {"status": "unavailable", "value": None}
+                resource_errors["settings.snmpV2"] = _error_code(error)
+        if all(marker in main_text for marker in AUTO_UPDATE_BUNDLE_MARKERS):
+            try:
+                auto_name = SETTING_CONFIG_NAMES["autoUpdate"][0]
+                enabled = _polycom_string_bool(_read_exact_config_value(perform, auto_name))
+                if enabled is None:
+                    raise PolycomContractError("configuration_value_unconfirmed")
+                device_settings["fields"]["autoUpdate"] = {
+                    "status": "read", "value": "enabled" if enabled else "disabled",
+                    "source": f"POST /rest/config:{auto_name}",
+                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                }
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                device_settings["fields"]["autoUpdate"] = {"status": "unavailable", "value": None}
+                resource_errors["settings.autoUpdate"] = _error_code(error)
+        if all(marker in main_text for marker in AUTO_ANSWER_BUNDLE_MARKERS):
+            answer_names = SETTING_CONFIG_NAMES["autoAnswer"]
+            modes: dict[str, str | None] = {}
+            unconfirmed: list[str] = []
+            for label, name in zip(("pointToPoint", "multipoint"), answer_names):
+                try:
+                    mode = _polycom_yes_no(_read_exact_config_value(perform, name))
+                    if mode is None:
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    modes[label] = mode
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    modes[label] = None
+                    unconfirmed.append(label)
+                    resource_errors[f"settings.autoAnswer.{label}"] = _error_code(error)
+            if len(unconfirmed) < 2:
+                device_settings["fields"]["autoAnswer"] = {
+                    "status": "read", "value": modes,
+                    "source": f"POST /rest/config:{','.join(answer_names)}",
+                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                    **({"unconfirmedFields": unconfirmed} if unconfirmed else {}),
+                }
+            else:
+                device_settings["fields"]["autoAnswer"] = {"status": "unavailable", "value": None}
+        if all(marker in main_text for marker in NTP_BUNDLE_MARKERS):
+            try:
+                mode_name, primary_name, secondary_name = SETTING_CONFIG_NAMES["ntp"]
+                raw_mode = _read_exact_config_value(perform, mode_name)
+                if raw_mode.casefold() != "manual":
+                    raise PolycomContractError("configuration_value_unconfirmed")
+                servers: dict[str, str | None] = {}
+                unconfirmed_servers: list[str] = []
+                for label, name in (("primaryServer", primary_name), ("secondaryServer", secondary_name)):
+                    try:
+                        raw_server = _read_exact_config_value(perform, name)
+                        safe_server = "" if label == "secondaryServer" and raw_server == "" else _safe_text(raw_server, secrets, 255)
+                        if safe_server is None:
+                            raise PolycomContractError("configuration_value_unconfirmed")
+                        servers[label] = safe_server
+                    except BaseException as error:
+                        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                            raise
+                        servers[label] = None
+                        unconfirmed_servers.append(label)
+                        resource_errors[f"settings.ntp.{label}"] = _error_code(error)
+                device_settings["fields"]["ntp"] = {
+                    "status": "read", "value": {"enabled": True, "mode": "manual", "modeCode": raw_mode, **servers},
+                    "source": f"POST /rest/config:{mode_name},{primary_name},{secondary_name}",
+                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                    **({"unconfirmedFields": unconfirmed_servers} if unconfirmed_servers else {}),
+                }
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                device_settings["fields"]["ntp"] = {"status": "unavailable", "value": None}
+                resource_errors["settings.ntp"] = _error_code(error)
+        if all(marker in main_text for marker in SSH_LEGACY_BUNDLE_MARKERS):
+            try:
+                ssh_name = SETTING_CONFIG_NAMES["ssh"][0]
+                legacy_api_enabled = _polycom_string_bool(_read_exact_config_value(perform, ssh_name))
+                if legacy_api_enabled is None:
+                    raise PolycomContractError("configuration_value_unconfirmed")
+                device_settings["fields"]["ssh"] = {
+                    "status": "read", "value": {"legacyApiOverSshEnabled": legacy_api_enabled, "sshServiceEnabled": None},
+                    "source": f"POST /rest/config:{ssh_name}", "meaning": "legacy_api_over_ssh_only",
+                    "unconfirmedFields": ["sshServiceEnabled"],
+                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                }
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                device_settings["fields"]["ssh"] = {"status": "unavailable", "value": None}
+                resource_errors["settings.ssh"] = _error_code(error)
+        if all(marker in main_text for marker in POWER_BUTTON_BUNDLE_MARKERS):
+            try:
+                power_name = SETTING_CONFIG_NAMES["powerManagement"][0]
+                action_code = _read_exact_config_value(perform, power_name)
+                if action_code != "Power_Off":
+                    raise PolycomContractError("configuration_value_unconfirmed")
+                device_settings["fields"]["powerManagement"] = {
+                    "status": "read", "value": {"hangupLongPressAction": "power_off", "actionCode": action_code, "sleepMode": None},
+                    "source": f"POST /rest/config:{power_name}", "meaning": "remote_hangup_long_press",
+                    "unconfirmedFields": ["sleepMode"],
+                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                }
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                device_settings["fields"]["powerManagement"] = {"status": "unavailable", "value": None}
+                resource_errors["settings.powerManagement"] = _error_code(error)
+
         status_rows: list[dict[str, Any]] = []
         try:
             status_data = _json_response(perform("GET", STATUS_PATH))
@@ -411,7 +663,7 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
             "webInterface": {"ok": True, "evidence": "Polycom Group web REST read-only", "insecureTls": not reject_unauthorized, "tlsProfile": "system_default"},
             "webBlocks": web_blocks,
             "siteName": site_name,
-            "deviceSettings": unknown_device_settings(contract["model"], not_exposed=("wifi",)),
+            "deviceSettings": device_settings,
             "rawResources": sanitize_result({"system": safe_system, "status": status_rows, "systemTime": device_time, "uptime": uptime}),
             "readMode": "targeted",
             "diagnostics": {"attemptedResourceKeys": ["system", "mac", "status", "systemTime", "uptime"], "resourceErrors": resource_errors},

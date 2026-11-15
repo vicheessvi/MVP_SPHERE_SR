@@ -2165,6 +2165,90 @@
     assert(!unverified.deviceSettings);
   });
 
+  test("Polycom Group: точная проекция настроек сохраняет раздельные факты без секретов", () => {
+    const model = "RealPresence Group 310";
+    const adapterKey = "vcs/polycom/group310";
+    const validationStatus = "confirmed_user_validation";
+    const source = (names) => `POST /rest/config:${names}`;
+    const fields = {
+      telnet: { status: "read", value: "disabled", source: source("security.remoteaccess.telnet.enabled"), validationStatus },
+      http: { status: "read", value: "enabled", source: source("security.remoteaccess.web.enabled,security.remoteaccess.web.httpsonly,security.remoteaccess.web.httpport"), webAccessEnabled: true, httpsOnly: false, configuredPort: 80, meaning: "web_http_allowed", validationStatus },
+      snmpV2: { status: "read", value: "disabled", source: source("management.snmp.enabled,management.snmp.versiontwo"), serviceEnabled: false, configuredEnabled: true, validationStatus },
+      autoUpdate: { status: "read", value: "disabled", source: source("softupdate.pollingenabled"), validationStatus },
+      autoAnswer: { status: "read", value: { pointToPoint: "enabled", multipoint: "disabled" }, source: source("comm.callsetting.callfeatures.autoanswer.answersinglecall,comm.callsetting.callfeatures.autoanswer.answermultipointcall"), validationStatus },
+      ntp: { status: "read", value: { enabled: true, mode: "manual", modeCode: "Manual", primaryServer: "ntp1.example.test", secondaryServer: "" }, source: source("time.timeserver.mode,time.timeserver.address,time.timeserver.address1"), validationStatus },
+      wifi: { status: "not_exposed", value: null },
+      ssh: { status: "read", value: { legacyApiOverSshEnabled: true, sshServiceEnabled: null }, source: source("security.remoteaccess.ssh.enabled"), meaning: "legacy_api_over_ssh_only", unconfirmedFields: ["sshServiceEnabled"], validationStatus },
+      powerManagement: { status: "read", value: { hangupLongPressAction: "power_off", actionCode: "Power_Off", sleepMode: null }, source: source("system.remote.hangupkeylongpressfunc"), meaning: "remote_hangup_long_press", unconfirmedFields: ["sleepMode"], validationStatus },
+      extraSecret: { status: "read", value: "SYNTHETIC-PASSWORD", source: "unknown" }
+    };
+    const payload = { ok: true, adapterKey, vendorPolling: { contract: "polycom-group310-web-v1", model, evidenceStatus: "confirmed_user_validation" }, webBlocks: { "Device Info": { Model: model, "System Name": "Synthetic Room" } }, siteName: { status: "read", value: "Synthetic Room", source: "polycom_system_name" }, deviceSettings: { model, validationStatus, fields } };
+    const projected = api.pollingPayloadProjection(payload);
+    assertEqual(projected.siteName.value, "Synthetic Room");
+    assertEqual(Object.keys(projected.deviceSettings.fields).length, 9);
+    assertEqual(projected.deviceSettings.fields.http.value, "enabled");
+    assertEqual(projected.deviceSettings.fields.autoAnswer.value.multipoint, "disabled");
+    assertEqual(projected.deviceSettings.fields.ssh.value.sshServiceEnabled, null);
+    assert(!JSON.stringify(projected.deviceSettings).includes("SYNTHETIC-PASSWORD"), "secret neighbor leaked");
+    assert(!api.pollingPayloadProjection({ ...payload, adapterKey: "vcs/polycom/group500" }).deviceSettings?.fields?.telnet, "wrong adapter accepted");
+    assert(!api.pollingPayloadProjection({ ...payload, webBlocks: { "Device Info": { Model: "RealPresence Group 500" } } }).deviceSettings?.fields?.telnet, "wrong model accepted");
+    assert(!api.pollingPayloadProjection({ ...payload, deviceSettings: { ...payload.deviceSettings, fields: { ...fields, http: { ...fields.http, source: "unapproved" } } } }).deviceSettings?.fields?.http, "unapproved source accepted");
+    const forgedAction = api.pollingPayloadProjection({ ...payload, deviceSettings: { model, validationStatus, fields: {} }, managementActions: [{ id: "disable_insecure_management_services", status: "applied", after: { telnetPort23: "enabled", httpPort80: "disabled" } }] });
+    assert(!forgedAction.deviceSettings?.fields?.telnet && !forgedAction.deviceSettings?.fields?.http, "Polycom must not inherit Huawei management action evidence");
+    const group500Payload = { ...payload, adapterKey: "vcs/polycom/group500", vendorPolling: { contract: "polycom-group500-web-v1", model: "RealPresence Group 500", evidenceStatus: "confirmed_user_validation" }, webBlocks: { "Device Info": { Model: "RealPresence Group 500" } }, deviceSettings: { model: "RealPresence Group 500", validationStatus: "confirmed_user_validation", fields } };
+    const confirmed500 = api.pollingPayloadProjection(group500Payload);
+    assertEqual(confirmed500.deviceSettings.fields.telnet.validationStatus, "confirmed_user_validation");
+    for (const number of [300, 700]) {
+      const exactModel = `RealPresence Group ${number}`;
+      const exact = api.pollingPayloadProjection({ ...payload, adapterKey: `vcs/polycom/group${number}`,
+        vendorPolling: { contract: `polycom-group${number}-web-v1`, model: exactModel, evidenceStatus: "confirmed_user_validation" },
+        webBlocks: { "Device Info": { Model: exactModel } }, deviceSettings: { model: exactModel, validationStatus: "confirmed_user_validation", fields } });
+      assertEqual(exact.deviceSettings.fields.telnet.validationStatus, "confirmed_user_validation");
+    }
+    const historicalFields = Object.fromEntries(Object.entries(fields).map(([key, item]) => [key, { ...item, validationStatus: "provisional_user_validation" }]));
+    const historical = api.pollingPayloadProjection({ ...group500Payload, deviceSettings: { model: "RealPresence Group 500", validationStatus: "provisional_user_validation", fields: historicalFields } });
+    assertEqual(historical.deviceSettings.fields.telnet.validationStatus, "provisional_user_validation");
+    const old300Payload = { ...payload, adapterKey: "vcs/polycom/group300",
+      vendorPolling: { contract: "polycom-group300-web-v1", model: "RealPresence Group 300", evidenceStatus: "provisional_user_validation" },
+      webBlocks: { "Device Info": { Model: "RealPresence Group 300" } },
+      deviceSettings: { model: "RealPresence Group 300", validationStatus: "provisional_user_validation", fields: historicalFields } };
+    const old300 = api.pollingPayloadProjection(old300Payload);
+    assertEqual(old300.deviceSettings.fields.telnet.validationStatus, "provisional_user_validation");
+    assert(!api.pollingPayloadProjection({ ...old300Payload, deviceSettings: { model: "RealPresence Group 300", validationStatus: "confirmed_user_validation", fields } }).deviceSettings?.fields?.telnet,
+      "historical provisional Group 300 transport must not promote settings");
+
+    const headers = [...srHeaders(), "Telnet/HTTP", "SNMP v2", "Автообновление", "Автодозвон", "NTP", "Wi-Fi"];
+    const row = srRow({ IP: "192.0.2.31", Производитель: "Polycom", Модель: model, "Telnet/HTTP": "Отключено", "SNMP v2": "Отключено", Автообновление: "Отключено", Автодозвон: "Включено", NTP: "Включено", "Wi-Fi": "Отсутствует" });
+    const parsed = api.parseManagementTargetRows({ headers, rows: [row] });
+    assert(parsed.ok, parsed.errors?.join("; "));
+    const state = api.createDemoState();
+    state.pollingResults = [{ id: "polycom-settings-1", filename: "192.0.2.31.json", filenameIp: "192.0.2.31", internalIp: "192.0.2.31", matchStatus: "unmatched", capturedAt: "2026-11-15T10:00:00Z", parseStatus: "parsed", operationalStatus: "success", normalizedData: projected }];
+    const report = api.buildDeviceSettingsAuditRows({ ...parsed, headers, rows: [row] }, state);
+    assert(report.ok, report.errors?.join("; "));
+    assertEqual(report.rows[0][report.headers.indexOf("Telnet, факт")], "Отключено");
+    assertEqual(report.rows[0][report.headers.indexOf("HTTP, факт")], "Включено");
+    assertEqual(report.rows[0][report.headers.indexOf("SNMP v2, факт")], "Отключено");
+    assert(report.rows[0][report.headers.indexOf("Автодозвон, факт")].includes("Одноточечные: включено"), "point-to-point answer missing");
+    assert(report.rows[0][report.headers.indexOf("Автодозвон, факт")].includes("многоточечные: отключено"), "multipoint answer missing");
+    assert(report.rows[0][report.headers.indexOf("NTP, факт")].includes("ntp1.example.test"), "NTP server missing");
+    const exported = api.buildDeviceSettingsAuditXlsx({ ...parsed, headers, rows: [row] }, state);
+    assert(exported.ok);
+    const sheet = global.XLSX.read(exported.bytes, { type: "array" }).Sheets["Фактические настройки"];
+    assertEqual(global.XLSX.utils.sheet_to_json(sheet, { header: 1 })[1][report.headers.indexOf("SNMP v2, факт")], "Отключено");
+    const ntpCell = sheet[global.XLSX.utils.encode_cell({ r: 1, c: report.headers.indexOf("NTP, факт") })];
+    assertEqual(ntpCell.t, "s");
+    assert(!ntpCell.f, "NTP server text must not become an Excel formula");
+    const row500 = srRow({ IP: "192.0.2.31", Производитель: "Polycom", Модель: "RealPresence Group 500", "Telnet/HTTP": "Отключено" });
+    const list500 = api.parseManagementTargetRows({ headers, rows: [row500] });
+    assert(list500.ok, list500.errors?.join("; "));
+    const state500 = api.createDemoState();
+    state500.pollingResults = [{ ...state.pollingResults[0], normalizedData: confirmed500 }];
+    const report500 = api.buildDeviceSettingsAuditRows({ ...list500, headers, rows: [row500] }, state500);
+    assertEqual(report500.rows[0][report500.headers.indexOf("Telnet, факт")], "Отключено");
+    state500.pollingResults[0].normalizedData = historical;
+    assertEqual(api.buildDeviceSettingsAuditRows({ ...list500, headers, rows: [row500] }, state500).rows[0][report500.headers.indexOf("Telnet, факт")], "Требует проверки");
+  });
+
   test("HTTP, Telnet, SSH, автоответ, NTP и Wi-Fi Bar 300 сохраняются только при точной модели и источнике", () => {
     const payload = { ok: true, adapterKey: "vcs/huawei/bar300", webBlocks: { "Device Info": { Model: "Bar 300" } }, deviceSettings: { fields: { http: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enable_http" }, telnet: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:enabletelnet" }, ssh: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:enable_ssh" }, autoAnswer: { status: "read", value: "enabled", source: "WEB_GetCfgParamAPI:autoreply" }, ntp: { status: "read", value: { enabled: true, modeCode: 1, server: "ntp.example.test" }, source: "WEB_GetCfgParamAPI:synSerTime,ntpGetMode,timeServer" }, wifi: { status: "read", value: { modeCode: 0, clientEnabled: false, accessPointEnabled: false }, source: "WEB_GetWifiStatModeAPI:ucWifiMode" }, snmpV2: { status: "not_exposed", value: null, reason: "version_not_supported" }, autoUpdate: { status: "read", value: "disabled", source: "WEB_GetCfgParamAPI:cloudType", serverTypeCode: 7, basis: "server_type_audit_rule", ruleVersion: "bar300-cloud-type-audit-v1", meaning: "firmware_update_capability" }, powerManagement: { status: "read", value: { sleepTimeCode: 10, sleepMode: "interval", networkWakeEnabled: false }, source: "WEB_GetCfgParamAPI:sleepTime,enable_wol", unconfirmedFields: ["faceWake", "clearMemoryInSleep", "automaticRestart"] } } } };
     assertEqual(api.pollingPayloadProjection(payload).deviceSettings.fields.http.value, "disabled");
