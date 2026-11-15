@@ -6,7 +6,7 @@ import http.client
 import json
 import re
 import secrets
-from typing import Any
+from typing import Any, Callable
 
 from mvp_runtime.redaction import sanitize_result
 from mvp_runtime.adapters.device_settings import unknown_device_settings
@@ -38,7 +38,7 @@ LOGIN_MARKERS = ("WEB_GetLoginInfo", "Web_RequestSessionID", "Web_RequestCertifi
 RESOURCE_MARKERS = tuple(RESOURCE_ACTIONS.values())
 SITE_NAME_ACTION = "WEB_GetCfgParamAPI"
 SITE_NAME_MARKER = "getSiteNameConfigs"
-ALLOWED_ACTIONS = frozenset((*LOGIN_MARKERS, *RESOURCE_MARKERS, SITE_NAME_ACTION, "WEB_GetWifiStatModeAPI", "WEB_Logout"))
+ALLOWED_ACTIONS = frozenset((*LOGIN_MARKERS, *RESOURCE_MARKERS, SITE_NAME_ACTION, "WEB_SaveCfgParamAPI", "WEB_GetWifiStatModeAPI", "WEB_Logout"))
 MAIN_BUNDLE_PATH = "/static/js/main.chunk.js"
 LOG_EXPORT_BUNDLE_MARKERS = (
     'ExportLogBtn.onClick=i.handleExportLogData',
@@ -53,6 +53,15 @@ BAR300_SSH_GROUP = re.compile(r'CfgIDString:\[[^\]]{0,300}"enable_ssh"[^\]]{0,30
 BAR300_SSH_FORM = re.compile(r'RGenable_ssh:\{id:"enable_ssh"[^{}]{0,300}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:2\}\]')
 BAR300_ANSWER_GROUP = re.compile(r'CfgIDString:\[[^\]]{0,1200}"autoreply"[^\]]{0,1200}\]')
 BAR300_ANSWER_FORM = re.compile(r'SelectAutoreply:\{id:"autoreply"[\s\S]{0,400}options:\[\{value:0,[^{}]{0,100}\},\{value:1,[^{}]{0,100}\}\]')
+HUAWEI_300_ANSWER_ACTIONS = {
+    "set_huawei_300_auto_answer_automatic": 0,
+    "set_huawei_300_auto_answer_manual": 1,
+}
+BAR300_ANSWER_SAVE_MARKERS = (
+    'reqSaveCfgUrl="action.cgi?ActionID=WEB_SaveCfgParamAPI"',
+    'CfgItemID:"autoreply"',
+    'this.post(this.reqSaveCfgUrl,e,{})',
+)
 BAR300_NTP_GROUP = re.compile(r'CfgIDString:\[(?=[^\]]{0,1200}"synSerTime")(?=[^\]]{0,1200}"ntpGetMode")(?=[^\]]{0,1200}"timeServer")[^\]]{1,1200}\]')
 BAR300_NTP_ENABLE_FORM = re.compile(r'RadioGroupEnableNTP:\{id:"synSerTime"[\s\S]{0,350}data:\[\{[^{}]{0,100}value:1\},\{[^{}]{0,100}value:0\}\]')
 BAR300_NTP_MODE_FORM = re.compile(r'RGntpGetMode:\{id:"ntpGetMode"[\s\S]{0,350}data:\[\{[^{}]{0,100}value:0\},\{[^{}]{0,100}value:1\}\]')
@@ -220,6 +229,56 @@ def _read_bar300_auto_answer(bundle: str, action: Any, csrf: str) -> dict[str, A
     if outer.get("success") != 1 or type(code) is not int or code not in (0, 1):
         return {"status": "unavailable", "value": None}
     return {"status": "read", "value": "enabled" if code == 0 else "disabled", "source": "WEB_GetCfgParamAPI:autoreply"}
+
+
+def _set_huawei_300_answer_mode(
+    action_id: str, model_key: str, bundle: str, csrf: str,
+    action: Callable[[str, dict[str, Any] | None], tuple[dict[str, Any], Any]],
+) -> dict[str, Any]:
+    if action_id not in HUAWEI_300_ANSWER_ACTIONS or model_key not in MODEL_CONTRACTS:
+        raise ValueError("unsupported_answer_action")
+    target = HUAWEI_300_ANSWER_ACTIONS[action_id]
+    validation = "confirmed_local_validation" if model_key == "bar300" else "provisional_user_validation"
+    base = {"id": action_id, "transport": "https/443", "changed": False,
+            "writeAttempted": False, "validationStatus": validation}
+    if (not BAR300_ANSWER_GROUP.search(bundle) or not BAR300_ANSWER_FORM.search(bundle)
+            or not all(marker in bundle for marker in BAR300_ANSWER_SAVE_MARKERS)):
+        return {**base, "status": "failed", "safeError": "management_contract_unconfirmed"}
+
+    def read_value() -> int:
+        outer, data = action("WEB_GetCfgParamAPI", {"CfgIDString": ["autoreply"], "acCSRFToken": csrf})
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_read_failed")
+        value = data.get("autoreply") if isinstance(data, dict) else None
+        if type(value) is not int or value not in (0, 1):
+            raise HuaweiContractError("configuration_schema_unconfirmed")
+        return value
+
+    before = None
+    attempted = False
+    label = lambda value: "automatic" if value == 0 else "manual"
+    try:
+        before = read_value()
+        if before == target:
+            return {**base, "status": "already_compliant", "before": label(before), "after": label(target)}
+        attempted = True
+        outer, _ = action("WEB_SaveCfgParamAPI", {
+            "CfgItemInt": [{"CfgItemID": "autoreply", "CfgItemInfo": target}],
+            "CfgItemString": [], "acCSRFToken": csrf,
+        })
+        if outer.get("success") != 1:
+            raise HuaweiContractError("configuration_write_failed")
+        after = read_value()
+        if after != target:
+            raise HuaweiContractError("configuration_verification_failed")
+        return {**base, "status": "applied", "changed": True, "writeAttempted": True,
+                "before": label(before), "after": label(after)}
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        code = error.code if isinstance(error, HuaweiContractError) else _transport_code(error)
+        return {**base, "status": "failed", "writeAttempted": attempted, "safeError": code,
+                **({} if before is None else {"before": label(before)})}
 
 
 def _read_bar300_ntp(bundle: str, action: Any, csrf: str) -> dict[str, Any]:
@@ -449,6 +508,25 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             for field in device_settings["fields"].values():
                 if field.get("status") == "read":
                     field["validationStatus"] = "confirmed_user_validation"
+        management_actions: list[dict[str, Any]] = []
+        requested_management_tasks = [str(item) for item in (settings.get("management_tasks") or [])]
+        answer_tasks = [item for item in requested_management_tasks if item in HUAWEI_300_ANSWER_ACTIONS]
+        if answer_tasks:
+            if len(answer_tasks) != 1 or len(requested_management_tasks) != 1:
+                management_actions.append({"id": answer_tasks[0], "transport": "https/443",
+                                           "status": "failed", "changed": False, "writeAttempted": False,
+                                           "validationStatus": "confirmed_local_validation" if model_key == "bar300" else "provisional_user_validation",
+                                           "safeError": "management_tasks_conflict"})
+            else:
+                management_actions.append(_set_huawei_300_answer_mode(answer_tasks[0], model_key, bundle, csrf, action))
+            verified_answer = next((item for item in management_actions
+                                    if item.get("status") in {"applied", "already_compliant"}), None)
+            if verified_answer:
+                device_settings["fields"]["autoAnswer"] = {
+                    "status": "read", "value": "enabled" if verified_answer["after"] == "automatic" else "disabled",
+                    "source": "WEB_GetCfgParamAPI:autoreply",
+                    **({"validationStatus": "confirmed_user_validation"} if model_key in ("box300", "box600") else {}),
+                }
         log_collection = None
         if settings.get("collect_logs") is True:
             if not callable(settings.get("on_log")):
@@ -500,6 +578,13 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
         }
         if log_collection is not None:
             result["logCollection"] = log_collection
+        if management_actions:
+            result["managementActions"] = management_actions
+            failed_action = next((item for item in management_actions if item.get("status") == "failed"), None)
+            if failed_action:
+                result["ok"] = False
+                result["failedStage"] = "management_action"
+                result["safeError"] = failed_action.get("safeError") or "management_action_failed"
         return result
     finally:
         if authenticated:

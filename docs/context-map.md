@@ -1,5 +1,10 @@
 # Карта контекста
 
+## Feature 053 — Answer mode Huawei CloudLink 300
+
+- Цель — добавить «Не менять / Автоматически / Вручную» рядом с существующими Answer mode в плане, для одного IP или совместимой группы exact Bar 300/Box 300/Box 600. `specs/053-cloudlink-300-answer-mode/`; существующие плановые gates — `app.js`, `mvp_runtime/polling.py`.
+- На Bar 300 по отдельным согласиям выполнен и web-меню подтверждён цикл Answer mode `autoreply=0→1→0`; узкий `WEB_SaveCfgParamAPI` затрагивал только `autoreply`, исходное «Авто» восстановлено. Новый production action — `mvp_runtime/adapters/huawei_300.py`, модельный allowlist — `runtime/device-catalog.json`, план/контроль группы — `app.js` и `mvp_runtime/polling.py`. Box 300/600 write остаётся предварительным до отдельных тестов. ADR-0056.
+
 ## Feature 052 — сбор логов Huawei CloudLink 300
 
 - Сценарий остаётся в существующей опции `collectLogs` раздела опросов: режимы только логов/JSON+логи, выбранная папка с timestamp-папкой, потоковая запись и ручной импорт уже реализованы. `specs/052-cloudlink-300-log-collection/`, `mvp_runtime/polling.py`, `mvp_runtime/polling_job.py`.

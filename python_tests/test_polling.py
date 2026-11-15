@@ -83,6 +83,37 @@ class PollingTests(unittest.TestCase):
                                 {**plan, "devices": [{**plan["devices"][0], "model": "Box 610-S"}]}):
                     with self.assertRaises(PollingError):
                         validate_te20_single_target_tasks(invalid, invalid["managementTasks"])
+
+    def test_huawei_300_answer_mode_accepts_only_exact_sr_group_and_one_action(self) -> None:
+        from mvp_runtime.polling import validate_te20_single_target_tasks
+        models = ("Bar 300", "Box 300", "Box 600")
+        for task in ("set_huawei_300_auto_answer_automatic", "set_huawei_300_auto_answer_manual"):
+            single = {"devices": [{"category": "vcs", "manufacturer": "Huawei", "model": "Bar 300", "ip": "192.0.2.31"}],
+                      "managementTasks": [task], "targetSource": "sr", "targetSourceSha256": "a" * 64,
+                      "selection": {"mode": "single_ip"}}
+            validate_te20_single_target_tasks(single, [task])
+            group = {**single, "selection": {"mode": "filters"},
+                     "devices": [{"category": "vcs", "manufacturer": "Huawei", "model": model,
+                                  "ip": f"192.0.2.{index}"} for index, model in enumerate(models, 31)]}
+            validate_te20_single_target_tasks(group, [task])
+            seen = []
+            adapters = {transport: (lambda device, _credentials, options:
+                seen.append((device["model"], options["management_tasks"])) or {"ok": True})
+                for transport in ("huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1")}
+            results = run_plan({**group, "intervalMinSeconds": 0, "intervalMaxSeconds": 0},
+                {"ping": lambda *_args: {"ok": True, "durationMs": 1},
+                 "get_credentials": lambda *_args: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
+                 "adapters": adapters})
+            self.assertEqual(seen, [(model, [task]) for model in models])
+            self.assertTrue(all(result["ok"] for result in results))
+            for invalid in ({**group, "devices": [*group["devices"][:2], {**group["devices"][2], "model": "TE40"}]},
+                            {**group, "devices": [*group["devices"][:2], {**group["devices"][2], "ip": "192.0.2.31"}]},
+                            {**group, "targetSourceSha256": "invalid"},
+                            {**group, "managementTasks": [task, "set_huawei_310_auto_answer_manual"]},
+                            {**group, "targetSource": "management_list"}):
+                with self.subTest(task=task, invalid=invalid):
+                    with self.assertRaises(PollingError):
+                        run_plan(invalid, {"ping": lambda *_args: self.fail("network must not start")})
     def test_log_only_plan_is_allowed_but_both_outputs_off_rejected(self) -> None:
         base = {"devices": [{**HUAWEI_TE20, "ip": "192.0.2.20"}], "collectJson": False, "collectLogs": True}
         seen = []

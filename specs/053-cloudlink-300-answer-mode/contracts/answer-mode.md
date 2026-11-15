@@ -1,0 +1,7 @@
+# Contract: CloudLink 300 Answer mode write
+
+Только exact Bar 300, Box 300 и Box 600, одиночный IP либо совместимая группа по актуальной SR. Каждая модель сохраняет собственный numeric pre-auth код, post-auth exact модель + SN/MAC и текущие bundle-маркеры. Одна standalone action ID на план, отдельное согласие UI; «Не менять» не создаёт действие. Смешанные/неподдерживаемые цели блокируются до сети.
+
+Текущий Bar 300 bundle должен содержать read-группу `autoreply`, форму `SelectAutoreply` с `0=Авто/1=Вручную`, save endpoint `WEB_SaveCfgParamAPI` и `CfgItemID:"autoreply"`. Только после model/identity узкий `WEB_GetCfgParamAPI` читает `CfgIDString=["autoreply"]` с текущим CSRF; строгий код `{0,1}`. Если он уже равен цели, `already_compliant`, без записи. Иначе максимум один `WEB_SaveCfgParamAPI` с `CfgItemInt=[{"CfgItemID":"autoreply","CfgItemInfo":target}]`, пустым `CfgItemString` и текущим CSRF; затем точный post-read только `autoreply`. Лишь совпадение даёт `applied`. Неизвестный код/дрейф формы/ошибка записи дают `failed` без автоматического повтора. Никакие соседние параметры конференции не запрашиваются и не записываются.
+
+Минимальный save payload подтверждён на подключённом Bar 300 контролируемым циклом `0→1→0`, по одной записи и точному post-read в каждом направлении; исходное «Авто» восстановлено и подтверждено администратором в web-меню. Bar write получает `confirmed_local_validation`. Это подтверждение не переносится на Box 300/600: их write остаётся `provisional_user_validation` до самостоятельной проверки.

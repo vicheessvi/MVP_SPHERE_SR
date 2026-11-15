@@ -255,15 +255,18 @@
     })),
     ...["bar 300", "cloudlink bar 300", "cloudlinc bar 300", "huawei bar 300", "huawei cloudlink bar 300"].map((modelNormalized) => Object.freeze({
       key: "vcs/huawei/bar300", category: "vcs", manufacturerNormalized: "huawei", modelNormalized,
-      support: "implemented", transport: "huawei_bar300_web_cgi_v1", normalizerKey: "huawei-bar300-json-v1", credentialMode: "memory_xlsx_pool"
+      support: "implemented", transport: "huawei_bar300_web_cgi_v1", normalizerKey: "huawei-bar300-json-v1", credentialMode: "memory_xlsx_pool",
+      managementTasks: Object.freeze(["set_huawei_300_auto_answer_automatic", "set_huawei_300_auto_answer_manual"])
     })),
     ...["box 300", "cloudlink box 300", "cloudlinc box 300", "huawei box 300", "huawei cloudlink box 300"].map((modelNormalized) => Object.freeze({
       key: "vcs/huawei/box300", category: "vcs", manufacturerNormalized: "huawei", modelNormalized,
-      support: "implemented", transport: "huawei_box300_web_cgi_v1", normalizerKey: "huawei-box300-json-v1", credentialMode: "memory_xlsx_pool"
+      support: "implemented", transport: "huawei_box300_web_cgi_v1", normalizerKey: "huawei-box300-json-v1", credentialMode: "memory_xlsx_pool",
+      managementTasks: Object.freeze(["set_huawei_300_auto_answer_automatic", "set_huawei_300_auto_answer_manual"])
     })),
     ...["box 600", "cloudlink box 600", "cloudlinc box 600", "huawei box 600", "huawei cloudlink box 600"].map((modelNormalized) => Object.freeze({
       key: "vcs/huawei/box600", category: "vcs", manufacturerNormalized: "huawei", modelNormalized,
-      support: "implemented", transport: "huawei_box600_web_cgi_v1", normalizerKey: "huawei-box600-json-v1", credentialMode: "memory_xlsx_pool"
+      support: "implemented", transport: "huawei_box600_web_cgi_v1", normalizerKey: "huawei-box600-json-v1", credentialMode: "memory_xlsx_pool",
+      managementTasks: Object.freeze(["set_huawei_300_auto_answer_automatic", "set_huawei_300_auto_answer_manual"])
     })),
     ...["bar 310", "cloudlink bar 310", "cloudlinc bar 310"].map((modelNormalized) => Object.freeze({
       key: "vcs/huawei/bar310",
@@ -2288,6 +2291,7 @@
   const MANAGEMENT_TASK_TE20_MANUAL_ANSWER = "set_te20_auto_answer_manual";
   const TE_FAMILY_ANSWER_TASK_BY_MODE = Object.freeze({ automatic: "set_te_family_auto_answer_automatic", manual: "set_te_family_auto_answer_manual" });
   const HUAWEI_310_ANSWER_TASK_BY_MODE = Object.freeze({ automatic: "set_huawei_310_auto_answer_automatic", manual: "set_huawei_310_auto_answer_manual" });
+  const HUAWEI_300_ANSWER_TASK_BY_MODE = Object.freeze({ automatic: "set_huawei_300_auto_answer_automatic", manual: "set_huawei_300_auto_answer_manual" });
   const MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE = "disable_te20_auto_update";
   const TE20_SSH_TASK_BY_MODE = Object.freeze({ enable: "set_te20_ssh_enabled", disable: "set_te20_ssh_disabled" });
   const MANAGEMENT_TASK_TE20_NTP = "set_te20_ntp_settings";
@@ -2482,6 +2486,8 @@
     if (TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]) managementTasks.push(TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]);
     if (input.huawei310AnswerMode && !HUAWEI_310_ANSWER_TASK_BY_MODE[input.huawei310AnswerMode]) errors.push("Недопустимое значение Answer mode Huawei 310");
     if (HUAWEI_310_ANSWER_TASK_BY_MODE[input.huawei310AnswerMode]) managementTasks.push(HUAWEI_310_ANSWER_TASK_BY_MODE[input.huawei310AnswerMode]);
+    if (input.huawei300AnswerMode && !HUAWEI_300_ANSWER_TASK_BY_MODE[input.huawei300AnswerMode]) errors.push("Недопустимое значение Answer mode Huawei 300");
+    if (HUAWEI_300_ANSWER_TASK_BY_MODE[input.huawei300AnswerMode]) managementTasks.push(HUAWEI_300_ANSWER_TASK_BY_MODE[input.huawei300AnswerMode]);
     if (input.te20AutoUpdateMode && input.te20AutoUpdateMode !== "disable") errors.push("Недопустимое значение настройки автообновления");
     if (input.te20AutoUpdateMode === "disable") managementTasks.push(MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE);
     if (input.te20SshMode && !TE20_SSH_TASK_BY_MODE[input.te20SshMode]) errors.push("Недопустимое значение настройки SSH");
@@ -2516,7 +2522,7 @@
       if (value && !["open", "close"].includes(value)) errors.push(`Недопустимое значение настройки ${port.toUpperCase()}`);
       if (TE20_PORT_TASK_BY_MODE[port][value]) managementTasks.push(TE20_PORT_TASK_BY_MODE[port][value]);
     }
-    const answerTask = managementTasks.find((task) => [MANAGEMENT_TASK_TE20_AUTO_ANSWER, MANAGEMENT_TASK_TE20_MANUAL_ANSWER, ...Object.values(TE_FAMILY_ANSWER_TASK_BY_MODE), ...Object.values(HUAWEI_310_ANSWER_TASK_BY_MODE)].includes(task));
+    const answerTask = managementTasks.find((task) => [MANAGEMENT_TASK_TE20_AUTO_ANSWER, MANAGEMENT_TASK_TE20_MANUAL_ANSWER, ...Object.values(TE_FAMILY_ANSWER_TASK_BY_MODE), ...Object.values(HUAWEI_310_ANSWER_TASK_BY_MODE), ...Object.values(HUAWEI_300_ANSWER_TASK_BY_MODE)].includes(task));
     const portTasks = managementTasks.filter((task) => Object.values(TE20_PORT_TASK_BY_MODE).some((group) => Object.values(group).includes(task)));
     if (answerTask && managementTasks.length > 1) errors.push("Запускайте изменение Answer mode отдельно от других задач управления");
     if (managementTasks.includes(MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) && managementTasks.length > 1) errors.push("Отключение автообновления запускайте отдельно от других задач управления");
@@ -5817,7 +5823,7 @@
     pollingCancelRequested: false,
     pollingPlanResult: null,
     zeroIntervalAcknowledged: false,
-    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false, collectLogs: false, collectJson: true, te20AnswerMode: "", teFamilyAnswerMode: "", huawei310AnswerMode: "", te20HttpMode: "", te20TelnetMode: "", te20AutoUpdateMode: "", te20SshMode: "", te20NtpEnabled: "", te20NtpMode: "", te20NtpServerMode: "", te20NtpServerValue: "", te20ShutdownRestart: "", te20SleepMinutes: "", te20ScheduledRestart: "", te20RestartTime: "" },
+    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false, collectLogs: false, collectJson: true, te20AnswerMode: "", teFamilyAnswerMode: "", huawei310AnswerMode: "", huawei300AnswerMode: "", te20HttpMode: "", te20TelnetMode: "", te20AutoUpdateMode: "", te20SshMode: "", te20NtpEnabled: "", te20NtpMode: "", te20NtpServerMode: "", te20NtpServerValue: "", te20ShutdownRestart: "", te20SleepMinutes: "", te20ScheduledRestart: "", te20RestartTime: "" },
     credentialSummary: null,
     adminAccess: launchMode.kind === "local" ? null : { adminConfigured: false, adminUnlocked: false },
     managementTargetListSummary: null,
@@ -7010,6 +7016,7 @@
       <section class="card section-gap"${adminLocked ? " hidden" : ""}><h2>4. План автоматического опроса</h2>${launchMode.kind === "local" ? `<button class="button secondary" type="button" data-admin-lock>Закрыть доступ к плану</button>` : ""}
         <form class="automatic-plan-form" data-polling-plan-form>
           <div class="filter-grid section-gap"><div class="field"><label>Answer mode Huawei Bar 310/Box 310/Box 610 (один IP)<select name="huawei310AnswerMode"><option value=""${!ui.pollingPlanSelection.huawei310AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.huawei310AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.huawei310AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Answer mode Huawei Bar 300/Box 300/Box 600 (один IP или совместимая группа)<select name="huawei300AnswerMode"><option value=""${!ui.pollingPlanSelection.huawei300AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.huawei300AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.huawei300AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div></div>
           <div class="field"><label for="management-target-list-file">Список устройств для закрытия портов 80 и 23 (http, telnet)</label><input id="management-target-list-file" name="managementTargetListFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>
           ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div><div class="button-row section-gap"><button class="button secondary" type="button" data-download-device-settings-audit>Скачать таблицу фактических настроек</button></div>` : `<p class="muted">Файл должен иметь структуру выгрузки SR. Он используется только для задачи закрытия портов и не добавляется в основную SR или аналитику.</p>`}
           <label class="polling-tls-option"><input name="collectJson" type="checkbox"${ui.pollingPlanSelection.collectJson !== false ? " checked" : ""}> Формировать JSON-опросы</label><label class="polling-tls-option"><input name="collectLogs" type="checkbox"${ui.pollingPlanSelection.collectLogs ? " checked" : ""}> Собирать логи устройств</label>
@@ -7930,6 +7937,7 @@
       ui.pollingPlanSelection.te20AnswerMode = ["automatic", "manual"].includes(formData.get("te20AnswerMode")) ? String(formData.get("te20AnswerMode")) : "";
       ui.pollingPlanSelection.teFamilyAnswerMode = ["automatic", "manual"].includes(formData.get("teFamilyAnswerMode")) ? String(formData.get("teFamilyAnswerMode")) : "";
       ui.pollingPlanSelection.huawei310AnswerMode = ["automatic", "manual"].includes(formData.get("huawei310AnswerMode")) ? String(formData.get("huawei310AnswerMode")) : "";
+      ui.pollingPlanSelection.huawei300AnswerMode = ["automatic", "manual"].includes(formData.get("huawei300AnswerMode")) ? String(formData.get("huawei300AnswerMode")) : "";
       ui.pollingPlanSelection.te20HttpMode = ["open", "close"].includes(formData.get("te20HttpMode")) ? String(formData.get("te20HttpMode")) : "";
       ui.pollingPlanSelection.te20TelnetMode = ["open", "close"].includes(formData.get("te20TelnetMode")) ? String(formData.get("te20TelnetMode")) : "";
       ui.pollingPlanSelection.te20AutoUpdateMode = formData.get("te20AutoUpdateMode") === "disable" ? "disable" : "";
@@ -7953,6 +7961,7 @@
       if (ui.pollingPlanSelection.te20AnswerMode && !global.confirm(`Answer mode Huawei TE20: ${result.plan.selectionSummary.total} устройств, целевой режим «${ui.pollingPlanSelection.te20AnswerMode === "automatic" ? "Автоматически" : "Вручную"}». ${result.plan.selectionSummary.total > 1 ? "Это массовое изменение. " : ""}Изменится обработка входящих вызовов. Каждое устройство будет проверено отдельно до и после записи. Продолжить?`)) return;
       if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm(`Answer mode Huawei TE30/40/50/60: ${result.plan.selectionSummary.total} устройств, целевой режим «${ui.pollingPlanSelection.teFamilyAnswerMode === "automatic" ? "Автоматически" : "Вручную"}». ${result.plan.selectionSummary.total > 1 ? "Это массовое изменение. " : ""}Изменится обработка входящих вызовов. Каждое устройство будет проверено отдельно до и после записи. Продолжить?`)) return;
       if (ui.pollingPlanSelection.huawei310AnswerMode && !global.confirm(`Answer mode Huawei Bar 310/Box 310/Box 610: ${result.plan.selectionSummary.total} устройств, целевой режим «${ui.pollingPlanSelection.huawei310AnswerMode === "automatic" ? "Автоматически" : "Вручную"}». ${result.plan.selectionSummary.total > 1 ? "Это массовое изменение. " : ""}Изменится обработка входящих вызовов. Каждое устройство будет проверено отдельно до и после записи. Продолжить?`)) return;
+      if (ui.pollingPlanSelection.huawei300AnswerMode && !global.confirm(`Answer mode Huawei Bar 300/Box 300/Box 600: ${result.plan.selectionSummary.total} устройств, целевой режим «${ui.pollingPlanSelection.huawei300AnswerMode === "automatic" ? "Автоматически" : "Вручную"}». ${result.plan.selectionSummary.total > 1 ? "Это массовое изменение. " : ""}Изменится обработка входящих вызовов. Каждое устройство будет проверено отдельно до и после максимум одной записи. На Box 300/600 запись пока предварительная до реальной проверки каждой модели. Продолжить?`)) return;
       if ((ui.pollingPlanSelection.te20HttpMode || ui.pollingPlanSelection.te20TelnetMode) && !global.confirm(`На одном выбранном Huawei TE20 будут изменены настройки: HTTP — ${ui.pollingPlanSelection.te20HttpMode === "open" ? "открыть" : ui.pollingPlanSelection.te20HttpMode === "close" ? "закрыть" : "не менять"}; Telnet — ${ui.pollingPlanSelection.te20TelnetMode === "open" ? "открыть" : ui.pollingPlanSelection.te20TelnetMode === "close" ? "закрыть" : "не менять"}. Открытие включает соответствующий сетевой сервис. Каждое выбранное поле будет прочитано повторно после записи; состояние TCP listener этим не проверяется. Продолжить?`)) return;
       if (ui.pollingPlanSelection.te20AutoUpdateMode === "disable" && !global.confirm("На одном выбранном Huawei TE20 будет отключено автообновление. Перед записью и после неё инструмент прочитает значение настройки. Продолжить?")) return;
       if (ui.pollingPlanSelection.te20SshMode && !global.confirm(`На одном выбранном Huawei TE20 SSH будет ${ui.pollingPlanSelection.te20SshMode === "enable" ? "включён" : "отключён"}. Перед записью и после неё инструмент прочитает значение настройки. Отключение SSH может прекратить удалённый доступ. Продолжить?`)) return;
@@ -8365,6 +8374,10 @@
     }
     if (pollingPlanForm && event.target.name === "huawei310AnswerMode") {
       ui.pollingPlanSelection.huawei310AnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
+      return;
+    }
+    if (pollingPlanForm && event.target.name === "huawei300AnswerMode") {
+      ui.pollingPlanSelection.huawei300AnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
       return;
     }
     if (pollingPlanForm && ["te20HttpMode", "te20TelnetMode"].includes(event.target.name)) {

@@ -39,6 +39,7 @@ HTTP_BUNDLE = current_bundle() + ' CfgIDString:["enable_http"] RGenable_http:{id
 TELNET_BUNDLE = current_bundle() + ' CfgIDString:["enabletelnet","enable_ssh","szCfgPwd"] RGenabletelnet:{id:"enabletelnet",className:"radio",data:[{text:"Enable",value:1},{text:"Disable",value:2}]}'
 SSH_BUNDLE = current_bundle() + ' CfgIDString:["enabletelnet","enable_ssh","szCfgPwd"] RGenable_ssh:{id:"enable_ssh",className:"radio",data:[{text:"Enable",value:1},{text:"Disable",value:2}]}'
 ANSWER_BUNDLE = current_bundle() + ' CfgIDString:["autoreply","isWifiPriority"] SelectAutoreply:{id:"autoreply",label:"mode",style:{},value:1,options:[{value:0,text:"Auto"},{value:1,text:"Manual"}]}'
+ANSWER_WRITE_BUNDLE = ANSWER_BUNDLE + ' reqSaveCfgUrl="action.cgi?ActionID=WEB_SaveCfgParamAPI" CfgItemID:"autoreply" this.post(this.reqSaveCfgUrl,e,{})'
 NTP_BUNDLE = current_bundle() + ' CfgIDString:["synSerTime","ntpGetMode","timeServer","emailSMTPAddr"] RadioGroupEnableNTP:{id:"synSerTime",className:"radio",data:[{text:"Enable",value:1},{text:"Disable",value:0}]} RGntpGetMode:{id:"ntpGetMode",className:"radio",data:[{text:"Auto",value:0},{text:"Manual",value:1}]} TextFieldNTPSvrAddr:{id:"timeServer"'
 WIFI_BUNDLE = current_bundle() + ' reqGetWifiStatModeUrl="action.cgi?ActionID=WEB_GetWifiStatModeAPI" this.post(this.reqGetWifiStatModeUrl,{},{}).then getCurrentWifiMode=function RGEnableSta RGEnableAp'
 SERVER_TYPE_BUNDLE = current_bundle() + ' cloudsetPanelObjRequest={CfgIDString:["cloudType","cloudCfgType","HwCloudName"]} SelCloudType:{id:"cloudType" Y=2,K=5,J=6,Q=7,Z=8,$=10,ee=11 value:Q,text:a.resName.TXT_CONFIG_SIP_VIDEO_REQUEST_MANUAL'
@@ -119,6 +120,123 @@ def fake_request(calls, model="Bar 300", code=18, *, bundle=None, site_name="Syn
 
 
 class Huawei300Tests(unittest.TestCase):
+    def test_box300_box600_answer_write_is_provisional_and_model_gated(self):
+        action_id = "set_huawei_300_auto_answer_manual"
+        for poll, model, code, _contract in MODEL_CASES[1:]:
+            with self.subTest(model=model):
+                calls = []
+                state = {"code": 0}
+                base_request = fake_request(calls, model=model, code=code, bundle=ANSWER_WRITE_BUNDLE)
+
+                def request(options):
+                    path = options["path"]
+                    if "WEB_SaveCfgParamAPI" in path:
+                        calls.append(options)
+                        state["code"] = json.loads(options["body"])["CfgItemInt"][0]["CfgItemInfo"]
+                        return envelope({})
+                    if "WEB_GetCfgParamAPI" in path and json.loads(options["body"]).get("CfgIDString") == ["autoreply"]:
+                        calls.append(options)
+                        return envelope({"autoreply": state["code"]})
+                    return base_request(options)
+
+                result = poll({"ip": "192.0.2.31", "model": model},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {"request": request, "allow_insecure_tls": True, "management_tasks": [action_id]})
+                self.assertEqual(result["managementActions"][0]["status"], "applied")
+                self.assertEqual(result["managementActions"][0]["validationStatus"], "provisional_user_validation")
+                self.assertEqual(sum("WEB_SaveCfgParamAPI" in item["path"] for item in calls), 1)
+                self.assertNotIn("SYNTHETIC-SECRET", json.dumps(result))
+
+                mismatch_calls = []
+                mismatch = poll({"ip": "192.0.2.31", "model": model},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {"request": fake_request(mismatch_calls, model=model, code=code,
+                        bundle=ANSWER_WRITE_BUNDLE, postauth_model="Bar 300"),
+                     "allow_insecure_tls": True, "management_tasks": [action_id]})
+                self.assertFalse(mismatch["ok"])
+                self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in mismatch_calls))
+
+    def test_bar300_answer_write_is_narrow_verified_and_not_part_of_normal_poll(self):
+        actions = (("set_huawei_300_auto_answer_manual", 0, 1, "automatic", "manual"),
+                   ("set_huawei_300_auto_answer_automatic", 1, 0, "manual", "automatic"))
+        for action_id, initial, target, before_label, after_label in actions:
+            with self.subTest(action_id=action_id):
+                calls = []
+                state = {"code": initial}
+                base_request = fake_request(calls, bundle=ANSWER_WRITE_BUNDLE)
+
+                def request(options):
+                    path = options["path"]
+                    if "WEB_SaveCfgParamAPI" in path:
+                        calls.append(options)
+                        payload = json.loads(options["body"])
+                        self.assertEqual(payload, {"CfgItemInt": [{"CfgItemID": "autoreply", "CfgItemInfo": target}],
+                                                   "CfgItemString": [], "acCSRFToken": "SYNTHETIC-CSRF"})
+                        state["code"] = target
+                        return envelope({})
+                    if "WEB_GetCfgParamAPI" in path and json.loads(options["body"]).get("CfgIDString") == ["autoreply"]:
+                        calls.append(options)
+                        return envelope({"autoreply": state["code"]})
+                    return base_request(options)
+
+                result = poll_huawei_bar300_device(
+                    {"ip": "192.0.2.31", "model": "Bar 300"},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {"request": request, "allow_insecure_tls": True, "management_tasks": [action_id]},
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["managementActions"], [{"id": action_id, "transport": "https/443",
+                    "status": "applied", "changed": True, "writeAttempted": True,
+                    "before": before_label, "after": after_label,
+                    "validationStatus": "confirmed_local_validation"}])
+                self.assertEqual(sum("WEB_SaveCfgParamAPI" in item["path"] for item in calls), 1)
+                self.assertNotIn("SYNTHETIC-SECRET", json.dumps(result))
+
+                calls.clear()
+                normal = poll_huawei_bar300_device(
+                    {"ip": "192.0.2.31", "model": "Bar 300"},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {"request": request, "allow_insecure_tls": True},
+                )
+                self.assertTrue(normal["ok"])
+                self.assertNotIn("managementActions", normal)
+                self.assertFalse(any("WEB_SaveCfgParamAPI" in item["path"] for item in calls))
+
+    def test_bar300_answer_write_fails_closed_and_never_retries_uncertain_save(self):
+        action_id = "set_huawei_300_auto_answer_manual"
+        for failure_kind, expected_error, attempted in (("already", None, False),
+                                                         ("unknown_code", "configuration_schema_unconfirmed", False),
+                                                         ("drift", "management_contract_unconfirmed", False),
+                                                         ("timeout", "request_timeout", True)):
+            with self.subTest(failure_kind=failure_kind):
+                calls = []
+                bundle = ANSWER_WRITE_BUNDLE.replace('CfgItemID:"autoreply"', "") if failure_kind == "drift" else ANSWER_WRITE_BUNDLE
+                base_request = fake_request(calls, bundle=bundle)
+
+                def request(options):
+                    path = options["path"]
+                    if "WEB_SaveCfgParamAPI" in path:
+                        calls.append(options)
+                        raise TimeoutError("SYNTHETIC-PRIVATE-ERROR")
+                    if "WEB_GetCfgParamAPI" in path and json.loads(options["body"]).get("CfgIDString") == ["autoreply"]:
+                        calls.append(options)
+                        code = 1 if failure_kind == "already" else 2 if failure_kind == "unknown_code" else 0
+                        return envelope({"autoreply": code})
+                    return base_request(options)
+
+                result = poll_huawei_bar300_device(
+                    {"ip": "192.0.2.31", "model": "Bar 300"},
+                    [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
+                    {"request": request, "allow_insecure_tls": True, "management_tasks": [action_id]},
+                )
+                action = result["managementActions"][0]
+                self.assertEqual(action["status"], "already_compliant" if failure_kind == "already" else "failed")
+                self.assertEqual(action["writeAttempted"], attempted)
+                if expected_error:
+                    self.assertEqual(action["safeError"], expected_error)
+                self.assertEqual(sum("WEB_SaveCfgParamAPI" in item["path"] for item in calls), 1 if attempted else 0)
+                self.assertNotIn("SYNTHETIC-PRIVATE-ERROR", json.dumps(result))
+
     def test_box300_box600_logs_are_provisional_and_model_gated(self):
         for poll, model, code, _contract in MODEL_CASES[1:]:
             with self.subTest(model=model):

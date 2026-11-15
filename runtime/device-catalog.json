@@ -59,6 +59,20 @@
       "protocolStatus": "supported", "transport": "huawei_310_rest_v1"
     },
     {
+      "id": "set_huawei_300_auto_answer_automatic",
+      "label": "Включить автоматический ответ на Huawei Bar 300/Box 300/Box 600",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["Bar 300", "CloudLink Bar 300", "CloudLinc Bar 300", "Huawei Bar 300", "Huawei CloudLink Bar 300", "Box 300", "CloudLink Box 300", "CloudLinc Box 300", "Huawei Box 300", "Huawei CloudLink Box 300", "Box 600", "CloudLink Box 600", "CloudLinc Box 600", "Huawei Box 600", "Huawei CloudLink Box 600"],
+      "protocolStatus": "supported", "transport": "huawei_bar300_web_cgi_v1"
+    },
+    {
+      "id": "set_huawei_300_auto_answer_manual",
+      "label": "Установить ручной ответ на Huawei Bar 300/Box 300/Box 600",
+      "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],
+      "models": ["Bar 300", "CloudLink Bar 300", "CloudLinc Bar 300", "Huawei Bar 300", "Huawei CloudLink Bar 300", "Box 300", "CloudLink Box 300", "CloudLinc Box 300", "Huawei Box 300", "Huawei CloudLink Box 300", "Box 600", "CloudLink Box 600", "CloudLinc Box 600", "Huawei Box 600", "Huawei CloudLink Box 600"],
+      "protocolStatus": "supported", "transport": "huawei_bar300_web_cgi_v1"
+    },
+    {
       "id": "set_te20_http_open",
       "label": "Включить HTTP на Huawei TE20",
       "category": "vcs", "manufacturer": "huawei", "aliases": ["huawey"],

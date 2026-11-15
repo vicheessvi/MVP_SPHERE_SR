@@ -341,6 +341,22 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertEqual(json.loads(body)["error"], "plan_invalid")
 
+    def test_huawei_300_answer_mode_invalid_plans_rejected_before_job_start(self) -> None:
+        cookie, csrf = self.harness.session()
+        base_device = {"ip": "192.0.2.31", "category": "vcs", "manufacturer": "Huawei", "model": "Bar 300"}
+        for tasks, selection, devices in (
+            (["set_huawei_300_auto_answer_manual"], {"mode": "filters"}, [base_device, {**base_device, "ip": "192.0.2.32", "model": "TE40"}]),
+            (["set_huawei_300_auto_answer_manual", "set_huawei_300_auto_answer_automatic"], {"mode": "single_ip"}, [base_device]),
+            (["set_huawei_300_auto_answer_manual", "set_huawei_310_auto_answer_manual"], {"mode": "single_ip"}, [base_device]),
+            (["set_huawei_300_auto_answer_manual"], {"mode": "single_ip"}, [{**base_device, "model": "Box 300-C"}]),
+        ):
+            digest = self._upload_credentials(cookie, csrf)
+            plan = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": tasks,
+                    "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": selection, "devices": devices}
+            status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": plan}).encode())
+            self.assertEqual(status, 400)
+            self.assertEqual(json.loads(body)["error"], "plan_invalid")
+
     def test_te20_ntp_invalid_plan_rejected_before_job_start(self) -> None:
         cookie, csrf = self.harness.session()
         for changes in ({"enabled": False, "mode": "manual", "server": None}, {"enabled": None, "mode": None, "server": "bad value"}):

@@ -84,6 +84,20 @@ class CatalogTests(unittest.TestCase):
         variant = resolve_manifest({"category": "vcs", "manufacturer": "Huawei", "model": "Box 300-C"})
         self.assertEqual(variant["protocolStatus"], "protocol_required")
 
+    def test_huawei_300_answer_mode_action_uses_each_exact_transport(self) -> None:
+        for model, transport in (("Bar 300", "huawei_bar300_web_cgi_v1"),
+                                 ("Box 300", "huawei_box300_web_cgi_v1"),
+                                 ("Box 600", "huawei_box600_web_cgi_v1")):
+            for action_id in ("set_huawei_300_auto_answer_automatic", "set_huawei_300_auto_answer_manual"):
+                with self.subTest(model=model, action_id=action_id):
+                    action = resolve_management_action(
+                        {"category": "vcs", "manufacturer": "Huawei", "model": f"CloudLink {model}"}, action_id)
+                    self.assertTrue(action["supported"])
+                    self.assertEqual(action["transport"], transport)
+                    for wrong_model in ("TE40", "Bar 310", "Box 300-C"):
+                        self.assertFalse(resolve_management_action(
+                            {"category": "vcs", "manufacturer": "Huawei", "model": wrong_model}, action_id)["supported"])
+
     def test_polycom_group_models_route_exactly_and_hdx_remains_unconfigured(self) -> None:
         for number in (300, 310, 500, 700):
             model = f"RealPresence Group {number}"

@@ -26,6 +26,7 @@ class PollingCancelled(PollingError):
 TE20_ANSWER_TASKS = frozenset({"set_te20_auto_answer_automatic", "set_te20_auto_answer_manual"})
 TE_FAMILY_ANSWER_TASKS = frozenset({"set_te_family_auto_answer_automatic", "set_te_family_auto_answer_manual"})
 HUAWEI_310_ANSWER_TASKS = frozenset({"set_huawei_310_auto_answer_automatic", "set_huawei_310_auto_answer_manual"})
+HUAWEI_300_ANSWER_TASKS = frozenset({"set_huawei_300_auto_answer_automatic", "set_huawei_300_auto_answer_manual"})
 TE20_HTTP_TASKS = frozenset({"set_te20_http_open", "set_te20_http_closed"})
 TE20_TELNET_TASKS = frozenset({"set_te20_telnet_open", "set_te20_telnet_closed"})
 TE20_PORT_TASKS = TE20_HTTP_TASKS | TE20_TELNET_TASKS
@@ -82,7 +83,7 @@ def validate_power_changes(plan: dict[str, Any], requested_tasks: list[str]) -> 
 
 
 def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: list[str]) -> None:
-    answer_tasks = (TE20_ANSWER_TASKS | TE_FAMILY_ANSWER_TASKS | HUAWEI_310_ANSWER_TASKS).intersection(requested_tasks)
+    answer_tasks = (TE20_ANSWER_TASKS | TE_FAMILY_ANSWER_TASKS | HUAWEI_310_ANSWER_TASKS | HUAWEI_300_ANSWER_TASKS).intersection(requested_tasks)
     if answer_tasks:
         selection = plan.get("selection") or {}
         devices = plan.get("devices") or []
