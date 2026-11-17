@@ -84,6 +84,40 @@ class PollingTests(unittest.TestCase):
                     with self.assertRaises(PollingError):
                         validate_te20_single_target_tasks(invalid, invalid["managementTasks"])
 
+    def test_polycom_answer_mode_requires_exact_models_and_two_nullable_targets(self) -> None:
+        from mvp_runtime.polling import validate_te20_single_target_tasks
+        task = "set_polycom_group_auto_answer"
+        devices = [{"category": "vcs", "manufacturer": "Polycom", "model": f"RealPresence Group {model}",
+                    "ip": f"192.0.2.{index}"} for index, model in enumerate((300, 310, 500, 700), 31)]
+        plan = {"devices": devices, "managementTasks": [task], "targetSource": "sr",
+                "targetSourceSha256": "a" * 64, "selection": {"mode": "filters"},
+                "polycomAnswerChanges": {"pointToPoint": "manual", "multipoint": "automatic"}}
+        validate_te20_single_target_tasks(plan, [task])
+        observed = []
+        adapters = {f"polycom_group{number}_web_v1": (lambda device, _credentials, options:
+            observed.append((device["model"], options["management_tasks"], options["polycom_answer_changes"]))
+            or {"ok": True}) for number in (300, 310, 500, 700)}
+        results = run_plan({**plan, "intervalMinSeconds": 0, "intervalMaxSeconds": 1},
+            {"ping": lambda *_args: {"ok": True, "durationMs": 1},
+             "get_credentials": lambda *_args: [{"username": "synthetic", "password": "SYNTHETIC-SECRET"}],
+             "adapters": adapters, "wait": lambda *_args: None})
+        self.assertEqual(len(results), 4)
+        self.assertEqual([item[0] for item in observed], [device["model"] for device in devices])
+        self.assertTrue(all(item[1] == [task] and item[2] == plan["polycomAnswerChanges"] for item in observed))
+        for invalid in (
+            {**plan, "polycomAnswerChanges": {"pointToPoint": None, "multipoint": None}},
+            {**plan, "polycomAnswerChanges": {"pointToPoint": "dnd", "multipoint": None}},
+            {**plan, "polycomAnswerChanges": {"pointToPoint": "manual"}},
+            {**plan, "devices": [*devices[:3], {**devices[3], "model": "RealPresence Group 550"}]},
+            {**plan, "devices": [*devices[:3], {**devices[3], "ip": devices[0]["ip"]}]},
+            {**plan, "managementTasks": [task, "set_te20_auto_answer_manual"]},
+            {**plan, "targetSourceSha256": None},
+            {**plan, "managementTasks": [], "polycomAnswerChanges": {"pointToPoint": "manual", "multipoint": None}},
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(PollingError):
+                    validate_te20_single_target_tasks(invalid, invalid["managementTasks"])
+
     def test_huawei_300_answer_mode_accepts_only_exact_sr_group_and_one_action(self) -> None:
         from mvp_runtime.polling import validate_te20_single_target_tasks
         models = ("Bar 300", "Box 300", "Box 600")

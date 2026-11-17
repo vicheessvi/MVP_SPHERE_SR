@@ -372,6 +372,28 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertEqual(json.loads(body)["error"], "plan_invalid")
 
+    def test_polycom_answer_mode_invalid_plans_rejected_before_job_start(self) -> None:
+        cookie, csrf = self.harness.session()
+        device = {"ip": "192.0.2.31", "category": "vcs", "manufacturer": "Polycom", "model": "RealPresence Group 310"}
+        base = {"schemaVersion": 3, "managementTasks": ["set_polycom_group_auto_answer"],
+                "targetSource": "sr", "targetSourceSha256": "a" * 64,
+                "selection": {"mode": "single_ip"}, "devices": [device]}
+        for changed in (
+            {"polycomAnswerChanges": {"pointToPoint": None, "multipoint": None}},
+            {"polycomAnswerChanges": {"pointToPoint": "dnd", "multipoint": None}},
+            {"polycomAnswerChanges": {"pointToPoint": "manual"}},
+            {"polycomAnswerChanges": {"pointToPoint": "manual", "multipoint": None},
+             "devices": [{**device, "model": "RealPresence Group 550"}]},
+            {"polycomAnswerChanges": {"pointToPoint": "manual", "multipoint": None},
+             "managementTasks": ["set_polycom_group_auto_answer", "set_te20_auto_answer_manual"]},
+        ):
+            digest = self._upload_credentials(cookie, csrf)
+            plan = {**base, "authenticationInputSha256": digest, **changed}
+            status, _, body = self.harness.request("POST", "/api/polling/jobs",
+                headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": plan}).encode())
+            self.assertEqual(status, 400)
+            self.assertEqual(json.loads(body)["error"], "plan_invalid")
+
     def test_huawei_300_answer_mode_invalid_plans_rejected_before_job_start(self) -> None:
         cookie, csrf = self.harness.session()
         base_device = {"ip": "192.0.2.31", "category": "vcs", "manufacturer": "Huawei", "model": "Bar 300"}

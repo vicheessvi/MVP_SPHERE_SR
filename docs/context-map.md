@@ -1,5 +1,10 @@
 # Карта контекста
 
+## Feature 057 — Answer mode Polycom RealPresence Group
+
+- `specs/057-polycom-group-answer-mode/`, ADR-0060. Два независимых выбора Point-to-Point и Multipoint доступны одному IP или совместимой группе exact Group 300/310/500/700 из актуальной SR. План содержит один action ID и nullable цели; смешанная группа и другие write-задачи блокируются до сети. UI показывает число целей и требует согласия.
+- `mvp_runtime/adapters/polycom_group.py` после прежних pre/post-auth model/identity gates и текущих read/save bundle markers читает оба значения `Yes/No`, при необходимости отправляет максимум один `POST /rest/config` с одним или двумя `vars`, затем ограниченно повторяет только чтение до двух устойчивых совпадений пары. `Do Not Disturb`, drift и неясный исход блокируют успех, write не повторяется. Exact Group 310 проверен одиночными и парными переходами с восстановлением исходного состояния; Group 300/500/700 write предварителен. Обычный JSON/логи read-only. Тесты: `python_tests/test_polycom_group.py`, `test_polling.py`, `test_server.py`, `tests.js`.
+
 ## Feature 056 — сбор логов Polycom RealPresence Group
 
 - `specs/056-polycom-group-log-collection/`, ADR-0059. Exact Group 310 после текущих model/identity gates и двух download-маркеров использует только `GET /a_getsyslog.cgi` по HTTPS/443 с cookie сеанса; контрольный полный архив `.tgz` проверен в памяти без сохранения. Администратор затем отдельно подтвердил успешный сбор на exact Group 300/310/500/700; новые `logCollection` имеют `confirmed_user_validation`, исторические предварительные файлы не переписываются. Обычный JSON-опрос не меняется.

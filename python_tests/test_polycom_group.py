@@ -11,6 +11,7 @@ from mvp_runtime.adapters.polycom_group import (
     PolycomContractError,
     _validate_polycom_log_response,
     _read_exact_config_value,
+    _set_polycom_answer_mode,
     poll_polycom_group300_device,
     poll_polycom_group310_device,
     poll_polycom_group500_device,
@@ -54,6 +55,12 @@ AUTO_ANSWER_BUNDLE_MARKERS = ' '.join((
     'COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL:"comm.callsetting.callfeatures.autoanswer.answermultipointcall"',
     'name:"autoAnswerSingleCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERSINGLECALL',
     'name:"autoAnswerMultiPointCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL',
+))
+AUTO_ANSWER_WRITE_MARKERS = ' '.join((
+    'processJsonWriteValue:function',
+    'generateWriteJsonData:function',
+    'setConfiguration:function(g,d,e,a){var c={vars:[{name:a.name,value:a.value}]};',
+    'g.result!=="NOERROR"',
 ))
 NTP_BUNDLE_MARKERS = ' '.join((
     'TIME_TIMESERVER_MODE:"time.timeserver.mode"',
@@ -268,7 +275,17 @@ class PolycomGroupTests(unittest.TestCase):
             if method == "GET" and path == "/rest/system/uptime":
                 return response(8000.5)
             if method == "POST" and path == "/rest/config":
-                names = json.loads(options["body"])["names"]
+                payload = json.loads(options["body"])
+                if "vars" in payload:
+                    rows = payload["vars"]
+                    self.assertTrue(isinstance(rows, list) and 1 <= len(rows) <= 2)
+                    self.assertTrue(all(row["name"] in (AUTO_ANSWER_SINGLE_NAME, AUTO_ANSWER_MULTI_NAME)
+                                        and row["value"] in ("Yes", "No") for row in rows))
+                    self.assertIsNotNone(config_values)
+                    for row in rows:
+                        config_values[row["name"]] = row["value"]
+                    return response({"vars": [{"name": row["name"], "result": "NOERROR"} for row in rows]})
+                names = payload["names"]
                 self.assertEqual(len(names), 1)
                 if names == [MAC_NAME]:
                     return response({"vars": [{"name": MAC_NAME, "value": mac, "result": "SUCCESS", "isSecure": False, "password": SYNTHETIC_PASSWORD}]})
@@ -415,6 +432,134 @@ class PolycomGroupTests(unittest.TestCase):
             'name:"autoAnswerMultiPointCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL', ''))
         self.assertEqual(drift["deviceSettings"]["fields"]["autoAnswer"]["status"], "protocol_required")
         self.assertFalse(any(json.loads(call["body"])["names"] == [AUTO_ANSWER_SINGLE_NAME] for call in calls if call["path"] == "/rest/config"))
+
+    def test_group310_auto_answer_writes_one_or_both_fields_once(self):
+        action = "set_polycom_group_auto_answer"
+        bundle = FULL_SETTINGS_BUNDLE + " " + AUTO_ANSWER_WRITE_MARKERS
+        for changes, expected_rows in (
+            ({"pointToPoint": "manual", "multipoint": None}, [{"name": AUTO_ANSWER_SINGLE_NAME, "value": "No"}]),
+            ({"pointToPoint": "manual", "multipoint": "automatic"}, [
+                {"name": AUTO_ANSWER_SINGLE_NAME, "value": "No"},
+                {"name": AUTO_ANSWER_MULTI_NAME, "value": "Yes"}]),
+        ):
+            with self.subTest(changes=changes):
+                calls = []
+                values = {**FULL_SETTING_VALUES}
+                result = poll_polycom_group310_device(
+                    {"ip": "192.0.2.31", "model": "RealPresence Group 310"},
+                    [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+                    {"request": self.fake_request(calls, bundle=bundle, config_values=values),
+                     "management_tasks": [action], "polycom_answer_changes": changes,
+                     "answer_wait": lambda _seconds: None},
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["managementActions"][0]["status"], "applied")
+                self.assertEqual(result["managementActions"][0]["writeAttempted"], True)
+                self.assertEqual([json.loads(call["body"])["vars"] for call in calls
+                                  if call["path"] == "/rest/config" and "vars" in json.loads(call["body"])],
+                                 [expected_rows])
+                self.assertEqual(values[AUTO_ANSWER_SINGLE_NAME], "No")
+                self.assertEqual(values[AUTO_ANSWER_MULTI_NAME], "Yes" if changes["multipoint"] else "No")
+                self.assertNotIn(SYNTHETIC_PASSWORD, json.dumps(result))
+
+        calls = []
+        unchanged = poll_polycom_group310_device(
+            {"ip": "192.0.2.31", "model": "RealPresence Group 310"},
+            [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+            {"request": self.fake_request(calls, bundle=bundle, config_values={**FULL_SETTING_VALUES}),
+             "management_tasks": [action],
+             "polycom_answer_changes": {"pointToPoint": "automatic", "multipoint": None}},
+        )
+        self.assertTrue(unchanged["ok"])
+        self.assertEqual(unchanged["managementActions"][0]["status"], "already_compliant")
+        self.assertFalse(any(call["path"] == "/rest/config" and "vars" in json.loads(call["body"])
+                             for call in calls if call["method"] == "POST" and call["path"] == "/rest/config"))
+
+    def test_group310_answer_write_fails_closed_on_drift_dnd_and_unclear_write(self):
+        action = "set_polycom_group_auto_answer"
+        changes = {"pointToPoint": "manual", "multipoint": "automatic"}
+        for bundle, initial in (
+            (FULL_SETTINGS_BUNDLE, {**FULL_SETTING_VALUES}),
+            (FULL_SETTINGS_BUNDLE + " " + AUTO_ANSWER_WRITE_MARKERS,
+             {**FULL_SETTING_VALUES, AUTO_ANSWER_SINGLE_NAME: "Do_Not_Disturb"}),
+        ):
+            calls = []
+            result = poll_polycom_group310_device(
+                {"ip": "192.0.2.31", "model": "RealPresence Group 310"},
+                [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+                {"request": self.fake_request(calls, bundle=bundle, config_values=initial),
+                 "management_tasks": [action], "polycom_answer_changes": changes},
+            )
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["managementActions"][0]["status"], "failed")
+            self.assertFalse(any(call["path"] == "/rest/config" and "vars" in json.loads(call["body"])
+                                 for call in calls if call["method"] == "POST" and call["path"] == "/rest/config"))
+
+        calls = []
+        base_request = self.fake_request(calls, bundle=FULL_SETTINGS_BUNDLE + " " + AUTO_ANSWER_WRITE_MARKERS,
+                                         config_values={**FULL_SETTING_VALUES})
+        def unclear_write(options):
+            if options["path"] == "/rest/config" and "vars" in json.loads(options["body"]):
+                calls.append(options)
+                raise TimeoutError("sensitive-transport-detail")
+            return base_request(options)
+        result = poll_polycom_group310_device(
+            {"ip": "192.0.2.31", "model": "RealPresence Group 310"},
+            [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+            {"request": unclear_write, "management_tasks": [action],
+             "polycom_answer_changes": changes},
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["managementActions"][0]["writeAttempted"], True)
+        self.assertEqual(len([call for call in calls if call["path"] == "/rest/config"
+                              and "vars" in json.loads(call["body"])]), 1)
+        self.assertNotIn("sensitive-transport-detail", json.dumps(result))
+
+    def test_polycom_answer_waits_for_two_stable_reads_without_write_retry(self):
+        names = (AUTO_ANSWER_SINGLE_NAME, AUTO_ANSWER_MULTI_NAME)
+        calls = []
+        readings = iter(("Yes", "No", "No", "No", "Yes", "Yes", "Yes", "Yes"))
+        def perform(method, path, body=None, maximum=None):
+            calls.append((method, path, body))
+            if "names" in body:
+                return response({"vars": [{"name": body["names"][0], "value": next(readings), "isSecure": False}]})
+            return response({"vars": [{"name": names[1], "result": "NOERROR"}]})
+        result = _set_polycom_answer_mode(
+            perform, FULL_SETTINGS_BUNDLE + " " + AUTO_ANSWER_WRITE_MARKERS,
+            {"pointToPoint": None, "multipoint": "automatic"}, 310, wait=lambda _seconds: None,
+        )
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(len([body for _method, _path, body in calls if "vars" in body]), 1)
+        self.assertEqual([body["vars"] for _method, _path, body in calls if "vars" in body],
+                         [[{"name": AUTO_ANSWER_MULTI_NAME, "value": "Yes"}]])
+
+    def test_other_exact_groups_use_same_guarded_answer_contract_provisionally(self):
+        bundle = FULL_SETTINGS_BUNDLE + " " + AUTO_ANSWER_WRITE_MARKERS
+        for model in ("RealPresence Group 300", "RealPresence Group 500", "RealPresence Group 700"):
+            with self.subTest(model=model):
+                calls = []
+                values = {**FULL_SETTING_VALUES}
+                result = WRAPPERS[model](
+                    {"ip": "192.0.2.31", "model": model},
+                    [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+                    {"request": self.fake_request(calls, model=model, bundle=bundle, config_values=values),
+                     "management_tasks": ["set_polycom_group_auto_answer"],
+                     "polycom_answer_changes": {"pointToPoint": "manual", "multipoint": "automatic"},
+                     "answer_wait": lambda _seconds: None},
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["managementActions"][0]["status"], "applied")
+                self.assertEqual(result["managementActions"][0]["validationStatus"], "provisional_user_validation")
+                self.assertEqual(len([call for call in calls if call["path"] == "/rest/config"
+                                      and "vars" in json.loads(call["body"])]), 1)
+                wrong = WRAPPERS[model](
+                    {"ip": "192.0.2.31", "model": model},
+                    [{"username": "synthetic-user", "password": SYNTHETIC_PASSWORD}],
+                    {"request": self.fake_request([], model="RealPresence Group 310", bundle=bundle, config_values={**FULL_SETTING_VALUES}),
+                     "management_tasks": ["set_polycom_group_auto_answer"],
+                     "polycom_answer_changes": {"pointToPoint": "manual", "multipoint": None}},
+                )
+                self.assertFalse(wrong["ok"])
 
     def test_group310_ntp_manual_reads_two_exact_instances_without_leaking_servers(self):
         bundle = MAIN_BUNDLE + " " + NTP_BUNDLE_MARKERS

@@ -46,6 +46,11 @@
     assert(plan.includes('formData.get("huawei300AnswerMode")'));
     assert(plan.includes('if (ui.pollingPlanSelection.huawei300AnswerMode && !global.confirm'));
     assert(change.includes('event.target.name === "huawei300AnswerMode"'));
+    assert(source.includes('name="polycomPointToPointAnswerMode"'));
+    assert(source.includes('name="polycomMultipointAnswerMode"'));
+    assert(plan.includes('formData.get("polycomPointToPointAnswerMode")'));
+    assert(plan.includes('formData.get("polycomMultipointAnswerMode")'));
+    assert(change.includes('"polycomPointToPointAnswerMode", "polycomMultipointAnswerMode"'));
   });
 
   test("План показывает первичную настройку и вход, а пароль не сохраняется в state", () => {
@@ -428,17 +433,18 @@
     });
   });
 
-  test("Polycom Group 300, 310, 500 и 700 имеют отдельные guarded read-only маршруты", () => {
+  test("Polycom Group 300, 310, 500 и 700 имеют отдельные маршруты и один guarded Answer mode action", () => {
     [300, 310, 500, 700].forEach((number) => {
       [`RealPresence Group ${number}`, `Polycom RealPresence Group ${number}`].forEach((modelRaw) => {
         const capability = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Polycom", modelRaw });
         assertEqual(capability.support, "implemented");
         assertEqual(capability.transport, `polycom_group${number}_web_v1`);
-        assertEqual((capability.managementTasks || []).length, 0);
+        assertEqual((capability.managementTasks || []).join(","), "set_polycom_group_auto_answer");
         if (runtimeModelCatalog) {
           const manifest = runtimeModelCatalog.resolveManifest({ category: "vcs", manufacturer: "Polycom", model: modelRaw });
           assertEqual(manifest.transport, `polycom_group${number}_web_v1`);
           assert(!runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Polycom", model: modelRaw }, "disable_insecure_management_services").supported);
+          assert(runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Polycom", model: modelRaw }, "set_polycom_group_auto_answer").supported);
         }
       });
     });
@@ -449,6 +455,7 @@
     if (hdx) assertEqual(hdx.protocolStatus, "protocol_required");
     const polyAlias = api.resolvePollingCapability({ category: "vcs", manufacturerRaw: "Poly", modelRaw: "RealPresence Group 310" });
     assertEqual(polyAlias.transport, "polycom_group310_web_v1");
+    if (runtimeModelCatalog) assert(runtimeModelCatalog.resolveManagementAction({ category: "vcs", manufacturer: "Poly", model: "RealPresence Group 310" }, "set_polycom_group_auto_answer").supported);
   });
 
   test("Runtime catalog выбирает TE20, TE-family, Bar 310 и Box-контракты раньше fallback", () => {
@@ -2643,6 +2650,40 @@
     state.inventoryDevices.pop();
     state.srImports = [];
     assert(!api.createPollingPlan(state, base).ok);
+  });
+
+  test("Answer mode Polycom Group имеет два независимых выбора и один write-action", () => {
+    const models = [300, 310, 500, 700];
+    const state = api.createDemoState();
+    state.inventoryDevices = models.map((number, index) => ({ id: `poly-${number}`, category: "vcs",
+      manufacturerRaw: "Polycom", manufacturerNormalized: "polycom",
+      modelRaw: `RealPresence Group ${number}`, modelNormalized: `realpresence group ${number}`,
+      ipNormalized: `192.0.2.${31 + index}`, inCurrentSr: true }));
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    const base = { mode: "single_ip", ipAddress: "192.0.2.32", scheduledAt: "2026-11-16T12:00:00Z",
+      intervalMinSeconds: 0, intervalMaxSeconds: 0, credentialsReady: true,
+      credentialSourceSha256: "b".repeat(64) };
+    const ordinary = api.createPollingPlan(state, base);
+    assert(ordinary.ok, ordinary.errors?.join("; "));
+    assertEqual(ordinary.plan.managementTasks.length, 0);
+    for (const [point, multi] of [["manual", ""], ["", "automatic"], ["manual", "automatic"]]) {
+      const selected = api.createPollingPlan(state, { ...base, polycomPointToPointAnswerMode: point, polycomMultipointAnswerMode: multi });
+      assert(selected.ok, selected.errors?.join("; "));
+      assertEqual(selected.plan.managementTasks.join(","), "set_polycom_group_auto_answer");
+      assertEqual(selected.plan.polycomAnswerChanges.pointToPoint, point || null);
+      assertEqual(selected.plan.polycomAnswerChanges.multipoint, multi || null);
+      assertEqual(api.buildPollingPlanExport(selected.state, selected.plan.id).payload.polycomAnswerChanges.pointToPoint, point || null);
+    }
+    assert(!api.createPollingPlan(state, { ...base, polycomPointToPointAnswerMode: "dnd" }).ok);
+    assert(!api.createPollingPlan(state, { ...base, polycomPointToPointAnswerMode: "manual", huawei300AnswerMode: "manual" }).ok);
+    const group = { ...base, mode: "filters", ipAddress: "", categories: ["vcs"], manufacturers: ["polycom"],
+      models: [api.POLLING_ALL], intervalMaxSeconds: 1, polycomPointToPointAnswerMode: "manual", polycomMultipointAnswerMode: "automatic" };
+    const bulk = api.createPollingPlan(state, group);
+    assert(bulk.ok, bulk.errors?.join("; "));
+    assertEqual(bulk.plan.deviceIds.length, 4);
+    state.inventoryDevices.push({ ...state.inventoryDevices[0], id: "poly-550", modelRaw: "RealPresence Group 550",
+      modelNormalized: "realpresence group 550", ipNormalized: "192.0.2.35" });
+    assert(!api.createPollingPlan(state, group).ok);
   });
 
   test("HTTP и Telnet TE20 имеют независимые открыть, закрыть и не менять", () => {

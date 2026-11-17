@@ -27,6 +27,7 @@ TE20_ANSWER_TASKS = frozenset({"set_te20_auto_answer_automatic", "set_te20_auto_
 TE_FAMILY_ANSWER_TASKS = frozenset({"set_te_family_auto_answer_automatic", "set_te_family_auto_answer_manual"})
 HUAWEI_310_ANSWER_TASKS = frozenset({"set_huawei_310_auto_answer_automatic", "set_huawei_310_auto_answer_manual"})
 HUAWEI_300_ANSWER_TASKS = frozenset({"set_huawei_300_auto_answer_automatic", "set_huawei_300_auto_answer_manual"})
+POLYCOM_ANSWER_TASK = "set_polycom_group_auto_answer"
 TE20_HTTP_TASKS = frozenset({"set_te20_http_open", "set_te20_http_closed"})
 TE20_TELNET_TASKS = frozenset({"set_te20_telnet_open", "set_te20_telnet_closed"})
 TE20_PORT_TASKS = TE20_HTTP_TASKS | TE20_TELNET_TASKS
@@ -85,7 +86,15 @@ def validate_power_changes(plan: dict[str, Any], requested_tasks: list[str]) -> 
 
 
 def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: list[str]) -> None:
-    answer_tasks = (TE20_ANSWER_TASKS | TE_FAMILY_ANSWER_TASKS | HUAWEI_310_ANSWER_TASKS | HUAWEI_300_ANSWER_TASKS).intersection(requested_tasks)
+    polycom_changes = plan.get("polycomAnswerChanges")
+    if POLYCOM_ANSWER_TASK in requested_tasks:
+        if (not isinstance(polycom_changes, dict) or set(polycom_changes) != {"pointToPoint", "multipoint"}
+                or any(value is not None and value not in ("automatic", "manual") for value in polycom_changes.values())
+                or all(value is None for value in polycom_changes.values())):
+            raise PollingError("Polycom Answer Mode targets are invalid")
+    elif polycom_changes is not None:
+        raise PollingError("Polycom Answer Mode targets require the exact action")
+    answer_tasks = (TE20_ANSWER_TASKS | TE_FAMILY_ANSWER_TASKS | HUAWEI_310_ANSWER_TASKS | HUAWEI_300_ANSWER_TASKS | {POLYCOM_ANSWER_TASK}).intersection(requested_tasks)
     if answer_tasks:
         selection = plan.get("selection") or {}
         devices = plan.get("devices") or []
@@ -315,7 +324,7 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
         result = adapter(
             {**device, "ipNormalized": ip, "allowInsecureTls": device.get("allowInsecureTls") is True or settings.get("allow_insecure_tls") is True},
             credential,
-            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes"), "collect_logs": collect_logs and transport in LOG_TRANSPORTS, "on_log": settings.get("on_log"), "log_opener": settings.get("log_opener")},
+            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes"), "polycom_answer_changes": settings.get("polycom_answer_changes"), "collect_logs": collect_logs and transport in LOG_TRANSPORTS, "on_log": settings.get("on_log"), "log_opener": settings.get("log_opener")},
         )
         merged = {**result, "ip": ip, "capturedAt": result.get("capturedAt") or captured_at, "adapterKey": manifest["key"], "networkAttempted": True, "ping": {"ok": True, "durationMs": ping.get("durationMs")}}
         if collect_logs and transport not in LOG_TRANSPORTS:
@@ -429,7 +438,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
                 progress({"stage": "polling", "index": index, "total": len(devices), "device": {"ip": ip, "category": device.get("category"), "manufacturer": device.get("manufacturer"), "model": device.get("model")}})
             on_log = settings.get("on_log")
             log_callback = (lambda stream, metadata: on_log(stream, {**metadata, "index": index, "total": len(devices)})) if callable(on_log) else None
-            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges"), "collect_logs": plan.get("collectLogs") is True, "on_log": log_callback})
+            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges"), "polycom_answer_changes": plan.get("polycomAnswerChanges"), "collect_logs": plan.get("collectLogs") is True, "on_log": log_callback})
         if plan.get("collectLogs") is True and "logCollection" not in result:
             log_status = "not_started" if result.get("adapterKey") in LOG_ADAPTER_KEYS else "protocol_required"
             result = {**result, "logCollection": {"status": log_status}}

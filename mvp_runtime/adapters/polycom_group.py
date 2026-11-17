@@ -1,4 +1,4 @@
-"""Guarded read-only HTTPS polling for exact Polycom RealPresence Group models."""
+"""Guarded HTTPS polling and narrowly confirmed Polycom Answer Mode action."""
 
 from __future__ import annotations
 
@@ -60,6 +60,13 @@ AUTO_ANSWER_BUNDLE_MARKERS = (
     'name:"autoAnswerSingleCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERSINGLECALL',
     'name:"autoAnswerMultiPointCall",type:"string",varsName:configfqnames.COMM_CALLSETTING_CALLFEATURES_AUTOANSWER_ANSWERMULTIPOINTCALL',
 )
+AUTO_ANSWER_WRITE_MARKERS = (
+    "processJsonWriteValue:function",
+    "generateWriteJsonData:function",
+    'setConfiguration:function(g,d,e,a){var c={vars:[{name:a.name,value:a.value}]};',
+    'g.result!=="NOERROR"',
+)
+AUTO_ANSWER_ACTION = "set_polycom_group_auto_answer"
 NTP_BUNDLE_MARKERS = (
     'TIME_TIMESERVER_MODE:"time.timeserver.mode"',
     'TIME_TIMESERVER_ADDRESS:"time.timeserver.address"',
@@ -415,6 +422,81 @@ def _polycom_string_bool(value: str) -> bool | None:
 def _polycom_yes_no(value: str) -> str | None:
     normalized = value.strip().casefold()
     return "enabled" if normalized == "yes" else "disabled" if normalized == "no" else None
+
+
+def _set_polycom_answer_mode(perform: Callable[..., dict[str, Any]], main_bundle: str,
+                             changes: Any, model_number: int,
+                             wait: Callable[[float], Any] | None = None) -> dict[str, Any]:
+    """One bounded POST for selected fields, with stable read-only verification."""
+    validation = "confirmed_local_validation" if model_number == 310 else "provisional_user_validation"
+    base = {"id": AUTO_ANSWER_ACTION, "transport": "https/443", "status": "failed",
+            "changed": False, "writeAttempted": False, "validationStatus": validation}
+    if (not isinstance(changes, dict) or set(changes) != {"pointToPoint", "multipoint"}
+            or any(value is not None and value not in ("automatic", "manual") for value in changes.values())
+            or all(value is None for value in changes.values())):
+        return {**base, "safeError": "management_options_invalid"}
+    if not all(marker in main_bundle for marker in (*AUTO_ANSWER_BUNDLE_MARKERS, *AUTO_ANSWER_WRITE_MARKERS)):
+        return {**base, "safeError": "management_contract_unconfirmed"}
+    names = SETTING_CONFIG_NAMES["autoAnswer"]
+    mode_label = {"Yes": "automatic", "No": "manual"}
+
+    def read_pair() -> tuple[str, str]:
+        pair = tuple(_read_exact_config_value(perform, name) for name in names)
+        if len(pair) != 2 or any(value not in mode_label for value in pair):
+            raise PolycomContractError("configuration_value_unconfirmed")
+        return pair
+
+    before: tuple[str, str] | None = None
+    attempted = False
+    after: tuple[str, str] | None = None
+    try:
+        before = read_pair()
+        targets = tuple(({"automatic": "Yes", "manual": "No"}[changes[label]]
+                         if changes[label] is not None else before[index])
+                        for index, label in enumerate(("pointToPoint", "multipoint")))
+        before_labels = {"pointToPoint": mode_label[before[0]], "multipoint": mode_label[before[1]]}
+        target_labels = {label: value for label, value in changes.items() if value is not None}
+        if before == targets:
+            return {**base, "status": "already_compliant", "before": before_labels,
+                    "target": target_labels, "after": before_labels}
+        rows = [{"name": name, "value": target} for name, current, target in zip(names, before, targets)
+                if current != target]
+        attempted = True
+        payload = _json_response(perform("POST", CONFIG_PATH, {"vars": rows}, maximum=65536))
+        result_rows = payload.get("vars") if isinstance(payload, dict) else None
+        expected_names = {row["name"] for row in rows}
+        if (not isinstance(result_rows, list) or len(result_rows) != len(rows)
+                or any(not isinstance(row, dict) or row.get("name") not in expected_names
+                       or row.get("result") != "NOERROR" for row in result_rows)
+                or {row["name"] for row in result_rows} != expected_names):
+            raise PolycomContractError("configuration_write_unconfirmed")
+        stable = 0
+        delay = wait or time.sleep
+        deadline = time.monotonic() + 30
+        for attempt in range(30):
+            try:
+                after = read_pair()
+                stable = stable + 1 if after == targets else 0
+                if stable >= 2:
+                    after_labels = {"pointToPoint": mode_label[after[0]], "multipoint": mode_label[after[1]]}
+                    return {**base, "status": "applied", "changed": True, "writeAttempted": True,
+                            "before": before_labels, "target": target_labels, "after": after_labels}
+            except (PolycomContractError, OSError, TimeoutError):
+                stable = 0
+            if attempt < 29 and time.monotonic() < deadline:
+                delay(1.0)
+            else:
+                break
+        raise PolycomContractError("configuration_verification_unconfirmed")
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        safe_error = _error_code(error)
+        return {**base, "writeAttempted": attempted, "safeError": safe_error,
+                **({} if before is None else {"before": {"pointToPoint": mode_label[before[0]],
+                                                       "multipoint": mode_label[before[1]]}}),
+                **({} if after is None else {"lastRead": {"pointToPoint": mode_label[after[0]],
+                                                        "multipoint": mode_label[after[1]]}})}
 
 
 def _planned_model(device: dict[str, Any]) -> str:
@@ -826,6 +908,30 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
             "readMode": "targeted",
             "diagnostics": {"attemptedResourceKeys": ["system", "mac", "status", "systemTime", "uptime"], "resourceErrors": resource_errors},
         }
+        requested_management_tasks = [str(item) for item in (settings.get("management_tasks") or [])]
+        if AUTO_ANSWER_ACTION in requested_management_tasks:
+            if len(requested_management_tasks) != 1:
+                action_result = {"id": AUTO_ANSWER_ACTION, "status": "failed", "changed": False,
+                                 "writeAttempted": False, "safeError": "management_tasks_conflict"}
+            else:
+                action_result = _set_polycom_answer_mode(
+                    perform, main_text, settings.get("polycom_answer_changes"), model_number,
+                    settings.get("answer_wait"),
+                )
+            result["managementActions"] = [action_result]
+            if action_result.get("status") in {"applied", "already_compliant"}:
+                pair = action_result["after"]
+                device_settings["fields"]["autoAnswer"] = {
+                    "status": "read",
+                    "value": {key: "enabled" if pair[key] == "automatic" else "disabled"
+                              for key in ("pointToPoint", "multipoint")},
+                    "source": f"POST /rest/config:{','.join(SETTING_CONFIG_NAMES['autoAnswer'])}",
+                    "validationStatus": "confirmed_user_validation",
+                }
+            else:
+                result["ok"] = False
+                result["failedStage"] = "management_action"
+                result["safeError"] = action_result.get("safeError") or "management_action_failed"
         if settings.get("collect_logs") is True:
             validation = "confirmed_user_validation"
             on_log = settings.get("on_log")

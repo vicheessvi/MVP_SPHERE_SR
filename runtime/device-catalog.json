@@ -3,6 +3,13 @@
   "adapters": ["extron_web_dynamic_resources_v1", "huawei_te20_web_cgi_v1", "huawei_te_web_cgi_v1", "huawei_bar300_web_cgi_v1", "huawei_box300_web_cgi_v1", "huawei_box600_web_cgi_v1", "huawei_310_rest_v1", "polycom_group310_web_v1", "polycom_group300_web_v1", "polycom_group500_web_v1", "polycom_group700_web_v1"],
   "managementActions": [
     {
+      "id": "set_polycom_group_auto_answer",
+      "label": "Изменить автоответ Polycom RealPresence Group 300/310/500/700",
+      "category": "vcs", "manufacturer": "polycom", "aliases": ["poly"],
+      "models": ["RealPresence Group 300", "RealPresence Group 310", "RealPresence Group 500", "RealPresence Group 700", "Polycom RealPresence Group 300", "Polycom RealPresence Group 310", "Polycom RealPresence Group 500", "Polycom RealPresence Group 700"],
+      "protocolStatus": "supported", "transport": "polycom_group310_web_v1"
+    },
+    {
       "id": "disable_insecure_management_services",
       "label": "Отключить HTTP и Telnet по возможностям модели",
       "category": "vcs",
