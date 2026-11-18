@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
 
 from mvp_runtime.workspace import WorkspaceError, WorkspaceStore
@@ -111,6 +112,73 @@ class WorkspaceTests(unittest.TestCase):
             self.store.load()
         self.assertEqual(failure.exception.code, "workspace_corrupt")
         self.assertEqual(path.read_bytes(), b"SYNTHETIC-CORRUPT-DATABASE")
+
+    def test_segment_publish_is_atomic_and_reuses_prior_parts(self) -> None:
+        self.store.select(self.selected)
+        self.store.commit(0, sample_payload())
+        original = self.store.status()
+        workspace = original["workspaceId"]
+        header = sample_payload()
+        for value in list(header["state"].values()) + [header["log"]["rows"], header["log"]["registry"],
+                                                        header["log"]["indexes"]["te"]["events"]]:
+            if isinstance(value, list):
+                value.clear()
+        parts = [{"meta": header}, {"key": "state/pollingResults", "offset": 0, "rows": [{"id": "synthetic"}]}]
+        start = self.store.begin_parts(workspace, 1)["upload"]
+        with self.assertRaises(WorkspaceError):
+            self.store.finish_parts(workspace, start, 2)
+        self.assertEqual(self.store.load()["payload"], sample_payload())
+        for index, part in enumerate(parts):
+            body = json.dumps(part)
+            self.store.write_part(workspace, start, index, sha256(body.encode()).hexdigest(), body)
+        self.store.finish_parts(workspace, start, 2)
+        status = self.store.status()
+        self.assertEqual(status["partCount"], 2)
+        self.assertEqual(json.loads(self.store.read_part(workspace, 2, 1)["body"]), parts[1])
+        again = self.store.begin_parts(workspace, 2)["upload"]
+        for index, part in enumerate(parts):
+            digest = sha256(json.dumps(part).encode()).hexdigest()
+            self.assertTrue(self.store.write_part(workspace, again, index, digest, None)["stored"])
+        self.store.finish_parts(workspace, again, 2)
+        self.assertEqual(self.store.status()["revision"], 3)
+
+    def test_checkpoints_survive_restart_without_publishing(self) -> None:
+        selected = self.store.select(self.selected)
+        workspace = selected["workspaceId"]
+        scope = "b" * 64
+        key = "c" * 64
+        result = {"kind": "te", "scan": {"ok": True, "markers": [], "bootGaps": []}}
+        self.store.write_log_checkpoint(workspace, scope, key, result)
+        restarted = WorkspaceStore(self.locator, self.project)
+        self.assertEqual(restarted.status()["revision"], 0)
+        self.assertEqual(restarted.status()["pendingLogFiles"], 1)
+        self.assertEqual(restarted.list_log_checkpoints(workspace, scope, "-"), [key])
+        self.assertEqual(restarted.read_log_checkpoint(workspace, scope, key), result)
+        with self.assertRaises(WorkspaceError):
+            restarted.write_log_checkpoint(workspace, scope, "d" * 64, {**result, "rawText": "synthetic"})
+        restarted.commit(0, sample_payload())
+        restarted.clear_log_checkpoints(workspace, scope, 1, [key])
+        self.assertEqual(restarted.status()["pendingLogFiles"], 0)
+
+    def test_restore_more_than_128_mib_as_independent_parts(self) -> None:
+        workspace = self.store.select(self.selected)["workspaceId"]
+        transfer = self.store.begin_parts(workspace, 0)["upload"]
+        header = sample_payload()
+        header["state"]["pollingResults"] = []
+        first = json.dumps({"meta": header})
+        self.store.write_part(workspace, transfer, 0, sha256(first.encode()).hexdigest(), first)
+        rows = [{"synthetic": "x" * (512 * 1024)}] * 8
+        for position in range(1, 34):
+            part = json.dumps({"key": "state/pollingResults", "offset": (position - 1) * len(rows), "rows": rows})
+            self.store.write_part(workspace, transfer, position, sha256(part.encode()).hexdigest(), part)
+        self.store.finish_parts(workspace, transfer, 34)
+        restarted = WorkspaceStore(self.locator, self.project)
+        status = restarted.status()
+        self.assertEqual(status["partCount"], 34)
+        total = 0
+        for position in range(status["partCount"]):
+            total += len(restarted.read_part(workspace, 1, position)["body"])
+        self.assertGreater(total, 128 * 1024 * 1024)
 
 
 if __name__ == "__main__":

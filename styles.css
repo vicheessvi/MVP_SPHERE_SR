@@ -415,6 +415,7 @@ meter {
 .workspace-status .button-row { flex-wrap: wrap; }
 .log-import-progress { display: grid; gap: 10px; margin-top: 15px; padding: 14px 16px; border: 1px solid #bddbc9; border-radius: 12px; background: #f4faf7; }
 .log-import-progress p { margin: 0; font-weight: 600; }
+.log-import-progress [data-log-import-speed] { color: #285b4c; font-weight: 500; font-variant-numeric: tabular-nums; }
 .log-import-progress progress { width: 100%; height: 14px; accent-color: #16826f; }
 .log-import-progress .button { justify-self: start; }
 @keyframes header-orbit { to { transform: translate(-24px, 16px) scale(1.07); } }

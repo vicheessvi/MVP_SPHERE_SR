@@ -4,7 +4,7 @@
   const RULE_VERSION = "huawei-te-log-v1";
   const TE20_RULE_VERSION = "huawei-te20-log-v1";
   const MAX_LINE = 8192;
-  const CHUNK_BYTES = 65536;
+  const CHUNK_BYTES = 1024 * 1024;
   const BOOT_WINDOW_MS = 10 * 60 * 1000;
   const MAX_SUSPECT_GAP_MS = 10 * 365 * 24 * 60 * 60 * 1000;
   const ACTIVITY_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+LOG_MOD_[A-Z0-9_]{2,32}\b/;
@@ -54,12 +54,16 @@
     let pending = "";
     let dropping = false;
     let lastActivityMs = null;
+    let lastActivityStamp = null;
     function process(line) {
       coverage.lines += 1;
       if (dropping || line.length > MAX_LINE) { coverage.oversizedLines += 1; dropping = false; return; }
       const activity = ACTIVITY_LINE.exec(line);
-      const activityMs = activity ? localTimeValue(activity[1]) : null;
-      if (activityMs !== null && activityMs !== lastActivityMs) { activityTimes.push(activityMs); lastActivityMs = activityMs; }
+      if (activity && activity[1] !== lastActivityStamp) {
+        lastActivityStamp = activity[1];
+        const activityMs = localTimeValue(lastActivityStamp);
+        if (activityMs !== null && activityMs !== lastActivityMs) { activityTimes.push(activityMs); lastActivityMs = activityMs; }
+      }
       if (!EVENT_CANDIDATE.test(line)) return;
       const marker = parseEventLine(line, coverage.lines, model);
       if (marker) markers.push(marker);

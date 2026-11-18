@@ -6,6 +6,7 @@ import json
 import hashlib
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
@@ -23,7 +24,7 @@ from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_p
 from .polling import PollingError, normalize_ipv4, validate_plan_interval, validate_te20_single_target_tasks
 from .polling_job import JobInputError, PollingJob, TERMINAL_STATUSES, create_polling_job
 from .redaction import PlanSecretError, assert_no_plan_secrets
-from .workspace import MAX_PAYLOAD_BYTES, WorkspaceError, WorkspaceStore, choose_workspace_directory, default_workspace_locator_path
+from .workspace import LEGACY_PAYLOAD_BYTES, MAX_PART_BYTES, WorkspaceError, WorkspaceStore, choose_workspace_directory, default_workspace_locator_path
 
 
 HOST = "127.0.0.1"
@@ -583,10 +584,45 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
                 raise WorkspaceError("workspace_payload_invalid")
             self._json(HTTPStatus.OK, store.select(choose_workspace_directory()))
         elif path == "/api/workspace/commit" and self.command == "POST":
-            value = self._read_json(MAX_PAYLOAD_BYTES + 4096)
+            # Compatibility for the old client. Current clients only transfer bounded parts.
+            value = self._read_json(LEGACY_PAYLOAD_BYTES + 4096)
             if set(value) != {"baseRevision", "payload"}:
                 raise WorkspaceError("workspace_payload_invalid")
             self._json(HTTPStatus.OK, store.commit(value["baseRevision"], value["payload"]))
+        elif self.command == "POST" and path.startswith("/api/workspace/transfer/"):
+            action = path.rsplit("/", 1)[-1]
+            fields = {"begin": {"workspace", "revision"}, "part": {"workspace", "upload", "position", "digest", "body"},
+                      "finish": {"workspace", "upload", "parts"}}.get(action)
+            if fields is None:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                return True
+            value = self._read_json(MAX_PART_BYTES * 2 + 4096 if action == "part" else 4096)
+            if set(value) != fields:
+                raise WorkspaceError("workspace_part_invalid")
+            if action == "begin":
+                result = store.begin_parts(value["workspace"], value["revision"])
+            elif action == "part":
+                result = store.write_part(value["workspace"], value["upload"], value["position"], value["digest"], value["body"])
+            else:
+                result = store.finish_parts(value["workspace"], value["upload"], value["parts"])
+            self._json(HTTPStatus.OK, result)
+        elif self.command == "GET" and (part := re.fullmatch(r"/api/workspace/part/([a-f0-9]{32})/([0-9]{1,16})/([0-9]{1,16})", path)):
+            self._json(HTTPStatus.OK, store.read_part(part[1], int(part[2]), int(part[3])))
+        elif self.command == "GET" and (checkpoint := re.fullmatch(r"/api/workspace/log-(file|list)/([a-f0-9]{32})/([a-f0-9]{64})/([a-f0-9]{64}|-)", path)):
+            method = store.read_log_checkpoint if checkpoint[1] == "file" else store.list_log_checkpoints
+            self._json(HTTPStatus.OK, {"value": method(checkpoint[2], checkpoint[3], checkpoint[4])})
+        elif self.command == "POST" and path == "/api/workspace/log-file":
+            value = self._read_json(MAX_PART_BYTES + 4096)
+            if set(value) != {"workspace", "scope", "key", "result"}:
+                raise WorkspaceError("workspace_checkpoint_invalid")
+            store.write_log_checkpoint(value["workspace"], value["scope"], value["key"], value["result"])
+            self._json(HTTPStatus.OK, {"stored": True})
+        elif self.command == "POST" and path == "/api/workspace/log-finish":
+            value = self._read_json(40 * 1024)
+            if set(value) != {"workspace", "scope", "revision", "keys"}:
+                raise WorkspaceError("workspace_checkpoint_invalid")
+            pending = store.clear_log_checkpoints(value["workspace"], value["scope"], value["revision"], value["keys"])
+            self._json(HTTPStatus.OK, {"ok": True, "pendingLogFiles": pending})
         else:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
         return True
@@ -633,6 +669,8 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         except WorkspaceError as error:
             status = HTTPStatus.CONFLICT if error.code in {"workspace_revision_conflict", "workspace_missing", "workspace_corrupt"} else HTTPStatus.BAD_REQUEST
             self._json(status, {"error": error.code})
+        except sqlite3.Error:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "workspace_write_failed"})
         except Exception:
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "local_runtime_error", "safeMessage": "Локальная операция не выполнена"})
 

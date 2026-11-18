@@ -444,21 +444,80 @@
     return JSON.stringify(state);
   }
 
-  function buildWorkspaceProjection(candidateState, logData) {
+  function safeWorkspaceField(key, value) {
     const secretKey = /rawtext|password|passwd|secret|credential|cookie|token|api.?key|private.?key|authenticationinputsha256|sessionid|username|successfulcredential/i;
     const inlineSecret = /\bBasic\s+[A-Za-z0-9+/=]+|NortxeSession=/i;
+    if (secretKey.test(key)) return undefined;
+    return typeof value === "string" && inlineSecret.test(value) ? "[REDACTED]" : value;
+  }
+
+  function workspaceProjection(candidateState, logData) {
     const safeState = { ...(candidateState || {}), currentUserId: null };
     const source = logData || {};
-    const projection = { schemaVersion: 1, state: safeState, log: {
+    return { schemaVersion: 1, state: safeState, log: {
       rows: Array.isArray(source.rows) ? source.rows : [],
       summary: source.summary || { files: 0, bytes: 0, matched: 0, issues: 0, formats: {} },
       indexes: source.indexes || {},
       registry: Array.isArray(source.registry) ? source.registry : []
     } };
-    return JSON.parse(JSON.stringify(projection, (key, value) => {
-      if (secretKey.test(key)) return undefined;
-      return typeof value === "string" && inlineSecret.test(value) ? "[REDACTED]" : value;
-    }));
+  }
+
+  function buildWorkspaceProjection(candidateState, logData) {
+    return JSON.parse(JSON.stringify(workspaceProjection(candidateState, logData), safeWorkspaceField));
+  }
+
+  function* workspaceParts(candidateState, logData, targetBytes = 1024 * 1024) {
+    const meta = workspaceProjection(candidateState, logData);
+    const groups = [];
+    function detach(parent, key, path) {
+      if (!Array.isArray(parent[key])) return;
+      groups.push([path, parent[key]]);
+      parent[key] = [];
+    }
+    for (const key of Object.keys(meta.state)) detach(meta.state, key, `state/${key}`);
+    detach(meta.log, "rows", "log/rows");
+    detach(meta.log, "registry", "log/registry");
+    meta.log.indexes = { ...meta.log.indexes };
+    for (const key of Object.keys(meta.log.indexes)) {
+      const index = meta.log.indexes[key];
+      if (!Array.isArray(index?.events)) continue;
+      meta.log.indexes[key] = { ...index };
+      detach(meta.log.indexes[key], "events", `log/indexes/${key}/events`);
+    }
+    yield JSON.stringify({ meta }, safeWorkspaceField);
+    for (const [key, group] of groups) {
+      let batch = [], bytes = 0, offset = 0;
+      const body = () => `{"key":${JSON.stringify(key)},"offset":${offset},"rows":[${batch.join(",")}]}`;
+      for (const row of group) {
+        const encoded = JSON.stringify(row, safeWorkspaceField) ?? "null";
+        const size = measureTextBytes(encoded) + 1;
+        if (batch.length && (bytes + size > targetBytes || batch.length >= 1024)) {
+          yield body();
+          offset += batch.length;
+          batch = []; bytes = 0;
+        }
+        batch.push(encoded);
+        bytes += size;
+      }
+      if (batch.length) yield body();
+    }
+  }
+
+  function restoreWorkspacePart(current, part) {
+    if (current === null) {
+      if (part?.meta?.schemaVersion !== 1 || !isPlainObject(part.meta.state) || !isPlainObject(part.meta.log)) throw new Error("workspace_snapshot_invalid");
+      return part.meta;
+    }
+    if (!Array.isArray(part?.rows) || !part.rows.length || typeof part.key !== "string") throw new Error("workspace_snapshot_invalid");
+    const names = part.key.split("/");
+    let parent = current;
+    for (const name of names) {
+      if (!isPlainObject(parent) || !Object.prototype.hasOwnProperty.call(parent, name)) throw new Error("workspace_snapshot_invalid");
+      parent = parent[name];
+    }
+    if (!Array.isArray(parent) || part.offset !== parent.length) throw new Error("workspace_snapshot_invalid");
+    for (const row of part.rows) parent.push(row);
+    return current;
   }
 
   function measureTextBytes(text) {
@@ -2332,8 +2391,16 @@
     const shouldCancel = () => settings.shouldCancel?.() === true;
     const checkCancel = () => { if (shouldCancel()) throw new Error("log_import_cancelled"); };
     let skippedFiles = 0;
+    let recoveredFiles = 0;
+    let savedFiles = 0;
+    let physicalBytes = 0;
+    let scanStart = 0;
     const totalBytes = sourceFiles.reduce((sum, file) => sum + (Number.isSafeInteger(file.size) ? file.size : 0), 0);
-    const report = (phase, processed, bytesRead) => settings.onProgress?.({ phase, processed, total: sourceFiles.length, bytesRead, totalBytes, skippedFiles });
+    const report = (phase, processed, bytesRead) => {
+      const elapsed = scanStart ? (monotonicNow() - scanStart) / 1000 : 0;
+      settings.onProgress?.({ phase, processed, total: sourceFiles.length, bytesRead, totalBytes, skippedFiles, recoveredFiles,
+        savedFiles, physicalBytes, bytesPerSecond: elapsed >= 0.5 ? physicalBytes / elapsed : null });
+    };
     const entries = [];
     report("classifying", 0, 0);
     for (let start = 0; start < sourceFiles.length; start += 64) {
@@ -2385,23 +2452,90 @@
       huawei300Bar: createHuawei300LogEventIndex(currentState, "bar"),
       huawei300Box: createHuawei300LogEventIndex(currentState, "box")
     };
+    const checkpoint = settings.checkpoint && currentSrDigest ? settings.checkpoint : null;
+    let checkpointScope = null;
+    const checkpointKeys = [];
+    let known = new Set();
+    if (checkpoint) {
+      checkpointScope = await sha256Text(JSON.stringify(["log-import-v1", currentSrDigest, fullRecheck]));
+      known = new Set(await checkpoint.list(checkpointScope));
+    }
     let processed = 0;
     let completedBytes = 0;
-    let activeFileBytes = 0;
-    const client = settings.scanClient || LOG_SCAN_CLIENT.createLogScanClient({ onProgress: (done) => {
-      activeFileBytes = done;
-      report("analyzing", processed, completedBytes + done);
-    } });
+    const concurrency = settings.scanClient || typeof global.Worker !== "function" || global.location?.protocol === "file:"
+      || (global.navigator?.hardwareConcurrency || 2) < 4 ? 1 : 2;
+    const readByLane = Array(concurrency).fill(0);
+    const readingProgress = () => report("analyzing", processed, completedBytes + readByLane.reduce((sum, value) => sum + value, 0));
+    const clients = Array.from({ length: concurrency }, (_, lane) => settings.scanClient || LOG_SCAN_CLIENT.createLogScanClient({ onProgress: (done) => {
+      physicalBytes += Math.max(0, done - readByLane[lane]);
+      readByLane[lane] = done;
+      readingProgress();
+    } }));
+    const client = { cancel() { for (const worker of clients) worker.cancel?.(); } };
     settings.onClient?.(client);
+    const findOld = (row) => {
+      const old = reuseExisting ? oldByPath.get(row.path) : null;
+      return old && old.analysisStatus !== "Ошибка разбора" && old.format !== "Ошибка чтения"
+        && old.size === row.size && old.lastModified === row.sourceLastModified
+        && old.prefixSha256 === row.prefixSha256 && old.format === row.format && old.deviceId === row.deviceId ? old : null;
+    };
+    async function scanEntry(index, lane) {
+      checkCancel();
+      const row = imported.rows[index];
+      const old = findOld(row);
+      if (old) return { old };
+      const device = currentDevices.get(row.deviceId);
+      const model = auditModelToken(device?.modelRaw);
+      const huawei = row.matchStatus === "Сопоставлено" && device?.category === "vcs"
+        && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei";
+      const kind = huawei && row.format === "Huawei TE XML" && ["te20", "te30", "te40", "te50", "te60"].includes(model) ? "te"
+        : huawei && row.format === "Huawei 310 XML" && ["bar310", "box310", "box610"].includes(model) ? "huawei310"
+          : huawei && row.format === "Huawei 300 XML" && ["bar300", "box300", "box600"].includes(model) ? "huawei300" : null;
+      const key = checkpoint && kind && row.prefixSha256 ? await sha256Text(JSON.stringify(
+        [row.path, row.size, row.sourceLastModified, row.prefixSha256, row.format, row.deviceId, model])) : null;
+      if (key && known.has(key)) {
+        const stored = await checkpoint.read(checkpointScope, key);
+        if (stored?.kind === kind && (kind ? stored.scan?.ok === true : stored.scan === null)) {
+          checkpointKeys.push(key);
+          return { kind, scan: stored.scan, recovered: true };
+        }
+      }
+      let scan = null;
+      if (kind) {
+        try { scan = await clients[lane].scan(sourceFiles[index], kind, model); }
+        catch (error) {
+          if (shouldCancel() || error?.message === "log_scan_cancelled") throw new Error("log_import_cancelled");
+          if (error?.message === "log_worker_failed") throw error;
+          scan = { ok: false, reason: "read_failed", markers: [] };
+        }
+      }
+      if (fullRecheck && oldByPath.has(row.path)
+        && (row.format === "Ошибка чтения" || row.matchStatus !== "Сопоставлено" || (kind && !scan?.ok)))
+        throw new Error("log_recheck_incomplete");
+      // First persist a completed analysis; only then acknowledge the file in progress.
+      if (key && scan?.ok) {
+        await checkpoint.write(checkpointScope, key, { kind, scan });
+        checkpointKeys.push(key);
+        savedFiles += 1;
+      }
+      checkCancel();
+      return { kind, scan };
+    }
     try {
+      scanStart = monotonicNow();
       report("analyzing", 0, 0);
+      let wave = [];
       for (let index = 0; index < sourceFiles.length; index += 1) {
         checkCancel();
         const row = imported.rows[index];
-        const old = reuseExisting ? oldByPath.get(row.path) : null;
-        if (old && old.analysisStatus !== "Ошибка разбора" && old.format !== "Ошибка чтения"
-          && old.size === row.size && old.lastModified === row.sourceLastModified
-          && old.prefixSha256 === row.prefixSha256 && old.format === row.format && old.deviceId === row.deviceId) {
+        const lane = index % concurrency;
+        if (lane === 0) {
+          wave = await Promise.all(Array.from({ length: Math.min(concurrency, sourceFiles.length - index) },
+            (_, slot) => scanEntry(index + slot, slot)));
+        }
+        const { old, kind, scan, recovered } = wave[lane];
+        readByLane[lane] = 0;
+        if (old) {
           const previousRow = oldRowsByPath.get(row.path);
           row.analysisStatus = previousRow?.analysisStatus || old.analysisStatus || "Ранее обработан";
           rowsByPath.set(row.path, previousRow || row);
@@ -2409,30 +2543,11 @@
           skippedFiles += 1;
           processed += 1;
           completedBytes += Number(sourceFiles[index].size || 0);
-          report("analyzing", index + 1, completedBytes);
+          readingProgress();
           if ((index + 1) % 8 === 0) await new Promise((resolve) => global.setTimeout(resolve, 0));
           continue;
         }
-        const device = currentDevices.get(row.deviceId);
-        const model = auditModelToken(device?.modelRaw);
-        const huawei = row.matchStatus === "Сопоставлено" && device?.category === "vcs"
-          && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei";
-        const kind = huawei && row.format === "Huawei TE XML" && ["te20", "te30", "te40", "te50", "te60"].includes(model) ? "te"
-          : huawei && row.format === "Huawei 310 XML" && ["bar310", "box310", "box610"].includes(model) ? "huawei310"
-            : huawei && row.format === "Huawei 300 XML" && ["bar300", "box300", "box600"].includes(model) ? "huawei300" : null;
-        let scan = null;
-        activeFileBytes = 0;
-        if (kind) {
-          try { scan = await client.scan(sourceFiles[index], kind, model); }
-          catch (error) {
-            if (shouldCancel() || error?.message === "log_scan_cancelled") throw new Error("log_import_cancelled");
-            if (error?.message === "log_worker_failed") throw error;
-            scan = { ok: false, reason: "read_failed", markers: [] };
-          }
-        }
-        if (fullRecheck && oldByPath.has(row.path)
-          && (row.format === "Ошибка чтения" || row.matchStatus !== "Сопоставлено" || (kind && !scan?.ok)))
-          throw new Error("log_recheck_incomplete");
+        if (recovered) { skippedFiles += 1; recoveredFiles += 1; }
         row.analysisStatus = row.format === "Polycom Group TGZ" && row.matchStatus === "Сопоставлено" ? "Архив Polycom: только метаданные"
           : !kind ? "Вне анализа Huawei TE/310/300" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
         const entry = { row, scan };
@@ -2445,10 +2560,12 @@
             ? await sha256Text(JSON.stringify({ markers: scan.markers, bootGaps: scan.bootGaps || [] })) : null });
         processed += 1;
         completedBytes += Number(sourceFiles[index].size || 0);
-        activeFileBytes = 0;
-        report("analyzing", index + 1, completedBytes);
+        readingProgress();
         if ((index + 1) % 8 === 0) await new Promise((resolve) => global.setTimeout(resolve, 0));
       }
+      checkCancel();
+      report("summarizing", processed, completedBytes);
+      await cooperativeBrowserYield();
       checkCancel();
       const incoming = Object.fromEntries(Object.entries(accumulators).map(([kind, accumulator]) => [kind, accumulator.finish()]));
       const indexes = reuseExisting ? Object.fromEntries(Object.entries(incoming).map(([kind, value]) =>
@@ -2468,9 +2585,10 @@
         indexes[kind].coverage.files = group.length;
         indexes[kind].coverage.invalidFiles = group.filter((row) => row.analysisStatus === "Ошибка разбора").length;
       }
-      return { rows, summary: summarizeDeviceLogRows(rows), indexes, registry: [...registryByPath.values()], skippedFiles };
+      return { rows, summary: summarizeDeviceLogRows(rows), indexes, registry: [...registryByPath.values()], skippedFiles, recoveredFiles,
+        checkpoint: checkpointKeys.length ? { scope: checkpointScope, keys: checkpointKeys } : null };
     } finally {
-      client.close?.();
+      for (const worker of clients) worker.close?.();
     }
   }
 
@@ -6208,6 +6326,8 @@
     createBackup,
     createDemoState,
     buildWorkspaceProjection,
+    workspaceParts,
+    restoreWorkspacePart,
     buildPollingPlanExport,
     selectNewPollingFiles,
     buildDeviceLogImportRows,
@@ -6363,6 +6483,7 @@
   let activeLogScanClient = null;
   let workspaceSaveInFlight = null;
   let workspaceSaveRequested = false;
+  let workspacePartDigests = new Set();
   let recovery = loaded.recovery;
   let startupMessage = null;
   const sessionStorageRef = resolveSessionStorage();
@@ -6424,11 +6545,14 @@
     huawei300BarLogIndex: { events: [], coverage: null, sourceSrSha256: null },
     huawei300BoxLogIndex: { events: [], coverage: null, sourceSrSha256: null, validationStatus: "confirmed_user_validation" },
     logImportProgress: null,
+    logCompletedCheckpoint: null,
     logImportBusy: false,
     logImportCancelRequested: false,
     logFileRegistry: [],
     workspaceStatus: null,
     workspaceSaveStatus: null,
+    workspaceSaveError: null,
+    workspaceSaveParts: 0,
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
@@ -6463,6 +6587,12 @@
   document.addEventListener("click", handleClick);
   document.addEventListener("submit", handleSubmit);
   document.addEventListener("change", handleChange);
+  global.addEventListener?.("beforeunload", (event) => {
+    if (ui.logImportBusy || ui.inventoryBusy || workspaceSaveInFlight || ui.workspaceSaveStatus === "error") {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
   document.addEventListener("input", handleInput);
   render();
   if (launchMode.kind === "local") runtimeRequest("/api/session").then((session) => {
@@ -6491,16 +6621,75 @@
     return payload;
   }
 
+  function postWorkspace(action, data) {
+    return runtimeRequest(`/api/workspace/${action}`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+  }
+
+  function currentLogCheckpointStore() {
+    const workspace = ui.workspaceStatus?.workspaceId;
+    if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true
+      || ui.workspaceStatus?.status !== "ready" || !workspace) return null;
+    return {
+      async list(scope) {
+        const result = [];
+        let after = "-";
+        for (;;) {
+          const { value } = await runtimeRequest(`/api/workspace/log-list/${workspace}/${scope}/${after}`);
+          result.push(...value);
+          if (value.length < 512) return result;
+          after = value.at(-1);
+        }
+      },
+      async read(scope, key) {
+        return (await runtimeRequest(`/api/workspace/log-file/${workspace}/${scope}/${key}`)).value;
+      },
+      async write(scope, key, result) {
+        const response = await postWorkspace("log-file", { workspace, scope, key, result });
+        if (!response?.stored) throw new Error("workspace_checkpoint_write_failed");
+        if (ui.workspaceStatus?.workspaceId === workspace) ui.workspaceStatus.pendingLogFiles = Math.max(1, ui.workspaceStatus.pendingLogFiles || 0);
+      }
+    };
+  }
+
+  function workspaceErrorLabel(code) {
+    const labels = {
+      workspace_revision_conflict: "База изменена в другой вкладке. Не закрывайте текущую вкладку до сверки данных.",
+      workspace_selection_changed: "Выбрана другая рабочая база. Текущие результаты не перезаписали её.",
+      workspace_part_too_large: "Одна запись превышает размер безопасной порции; данные вкладки не удалены.",
+      request_too_large: "Порция запроса превышает допустимый размер. Обновление всей истории не опубликовано.",
+      workspace_write_failed: "Ошибка записи в папку базы: проверьте доступ и свободное место.",
+      workspace_corrupt: "Проверка целостности базы не пройдена; прежняя версия не заменена.",
+      workspace_secret_rejected: "Защита отклонила поле, не разрешённое для постоянного хранения.",
+      admin_login_required: "Для сохранения требуется локальный вход администратора."
+    };
+    return labels[code] || "Сохранение не подтверждено. Прежняя версия базы и данные текущей вкладки не удалены.";
+  }
+
   async function restoreWorkspaceAfterLogin() {
     if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true) return;
     try {
       const status = await runtimeRequest("/api/workspace/status");
       ui.workspaceStatus = status;
+      workspacePartDigests = new Set();
       ui.workspaceSaveStatus = null;
       if (status.status !== "ready" || !status.hasSnapshot) { render(); return; }
-      const restored = await runtimeRequest("/api/workspace/snapshot");
-      const payload = restored?.payload;
-      if (restored?.revision !== status.revision || !payload || !validateState(payload.state).ok || !isPlainObject(payload.log)) {
+      ui.workspaceSaveStatus = "restoring";
+      render();
+      let payload = null;
+      if (status.partCount > 0) {
+        for (let position = 0; position < status.partCount; position += 1) {
+          const part = await runtimeRequest(`/api/workspace/part/${status.workspaceId}/${status.revision}/${position}`);
+          if (await sha256Text(part.body) !== part.digest) throw new Error("workspace_snapshot_invalid");
+          payload = restoreWorkspacePart(payload, JSON.parse(part.body));
+          workspacePartDigests.add(part.digest);
+        }
+      } else {
+        const restored = await runtimeRequest("/api/workspace/snapshot");
+        if (restored?.revision !== status.revision) throw new Error("workspace_snapshot_invalid");
+        payload = restored?.payload;
+      }
+      if (!payload || !validateState(payload.state).ok || !isPlainObject(payload.log)) {
         throw new Error("workspace_snapshot_invalid");
       }
       state = payload.state;
@@ -6511,6 +6700,7 @@
       ui.logImportRows = Array.isArray(payload.log.rows) ? payload.log.rows : [];
       ui.logImportSummary = payload.log.summary?.files ? payload.log.summary : null;
       ui.logFileRegistry = Array.isArray(payload.log.registry) ? payload.log.registry : [];
+      ui.logCompletedCheckpoint = null;
       rebootAnalyticsCache.clear();
       ui.workspaceSaveStatus = "restored";
       render();
@@ -6530,18 +6720,49 @@
       while (workspaceSaveRequested) {
         workspaceSaveRequested = false;
         ui.workspaceSaveStatus = "saving";
-        const projection = buildWorkspaceProjection(state, { rows: ui.logImportRows, summary: ui.logImportSummary,
+        ui.workspaceSaveError = null;
+        ui.workspaceSaveParts = 0;
+        const pages = workspaceParts(state, { rows: ui.logImportRows, summary: ui.logImportSummary,
           indexes: { te: ui.teLogIndex, huawei310: ui.huawei310LogIndex,
             huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex }, registry: ui.logFileRegistry });
-        const result = await runtimeRequest("/api/workspace/commit", { method: "POST",
-          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseRevision: ui.workspaceStatus.revision, payload: projection }) });
-        ui.workspaceStatus = { ...ui.workspaceStatus, revision: result.revision, hasSnapshot: true, updatedAt: result.updatedAt };
+        const workspace = ui.workspaceStatus.workspaceId;
+        const completedScope = ui.logCompletedCheckpoint;
+        const { upload } = await postWorkspace("transfer/begin", { workspace, revision: ui.workspaceStatus.revision });
+        let position = 0;
+        const newDigests = new Set();
+        for (const body of pages) {
+          const digest = await sha256Text(body);
+          const page = { workspace, upload, position, digest, body };
+          let stored = false;
+          if (workspacePartDigests.has(digest)) stored = (await postWorkspace("transfer/part", { ...page, body: null })).stored === true;
+          if (!stored) stored = (await postWorkspace("transfer/part", page)).stored === true;
+          if (!stored) throw new Error("workspace_part_write_failed");
+          newDigests.add(digest);
+          position += 1;
+          ui.workspaceSaveParts = position;
+          const progress = app.querySelector("[data-workspace-save-progress]");
+          if (progress) progress.textContent = `Сохранение рабочей базы… порций: ${position}`;
+        }
+        const result = await postWorkspace("transfer/finish", { workspace, upload, parts: position });
+        workspacePartDigests = newDigests;
+        ui.workspaceStatus = { ...ui.workspaceStatus, revision: result.revision, partCount: result.partCount, hasSnapshot: true, updatedAt: result.updatedAt };
         ui.workspaceSaveStatus = "saved";
+        if (completedScope && ui.logCompletedCheckpoint === completedScope) {
+          try {
+            for (let start = 0; start < completedScope.keys.length; start += 512) {
+              const cleared = await postWorkspace("log-finish", { workspace, scope: completedScope.scope,
+                revision: result.revision, keys: completedScope.keys.slice(start, start + 512) });
+              if (Number.isSafeInteger(cleared.pendingLogFiles)) ui.workspaceStatus.pendingLogFiles = cleared.pendingLogFiles;
+            }
+            ui.logCompletedCheckpoint = null;
+          } catch { /* The published revision is safe; recovery data can be reused if the cleanup failed. */ }
+        }
       }
       return true;
     })().catch((error) => {
       workspaceSaveRequested = false;
       ui.workspaceSaveStatus = "error";
+      ui.workspaceSaveError = workspaceErrorLabel(error?.safeCode);
       setMessage(error?.safeCode === "workspace_revision_conflict"
         ? "Рабочая база изменена в другой вкладке. Текущие данные не записаны; не закрывайте вкладку до сверки изменений."
         : "Не удалось сохранить рабочую базу. Данные пока есть только в текущей вкладке.", "error");
@@ -6894,8 +7115,17 @@
   }
 
   function logImportProgressText(progress) {
-    const phase = progress.phase === "classifying" ? "Проверка файлов" : "Анализ логов";
-    return `${phase}: ${progress.processed} из ${progress.total}; прочитано ${formatBytes(progress.bytesRead || 0)} из ${formatBytes(progress.totalBytes || 0)}.`;
+    const phase = { classifying: "Проверка файлов", analyzing: "Чтение и анализ логов",
+      summarizing: "Объединение событий", saving: "Запись аналитики в рабочую базу" }[progress.phase] || "Импорт";
+    if (progress.phase === "classifying") return `${phase}: ${progress.processed} из ${progress.total}.`;
+    return `${phase}: ${progress.processed} из ${progress.total} файлов · обработано ${formatBytes(progress.bytesRead || 0)} из ${formatBytes(progress.totalBytes || 0)} · перечитывать не пришлось: ${progress.skippedFiles || 0}.`;
+  }
+
+  function logImportSpeedText(progress) {
+    if (progress.phase === "classifying") return "Скорость появится после начала чтения.";
+    const read = progress.physicalBytes || 0;
+    const speed = read && Number.isFinite(progress.bytesPerSecond) ? `${formatBytes(progress.bytesPerSecond)}/с` : "—";
+    return `Средняя скорость чтения и анализа: ${speed} · фактически прочитано: ${formatBytes(read)} · сохранено по ходу: ${progress.savedFiles || 0} · восстановлено: ${progress.recoveredFiles || 0}.`;
   }
 
   function updateLogImportProgress(progress, force = false) {
@@ -6905,6 +7135,8 @@
     logImportLastProgressAt = now;
     const label = app.querySelector("[data-log-import-progress]");
     if (label) label.textContent = logImportProgressText(progress);
+    const speed = app.querySelector("[data-log-import-speed]");
+    if (speed) speed.textContent = logImportSpeedText(progress);
     const meter = app.querySelector("[data-log-import-meter]");
     if (meter) meter.value = progress.totalBytes ? Math.min(100, progress.bytesRead / progress.totalBytes * 100) : 0;
   }
@@ -7265,6 +7497,15 @@
     return { kind: selectedKind, cells, maxCount: Math.max(0, ...cells.map((cell) => cell.devices.size)) };
   }
 
+  const accountedHeatmapCache = new WeakMap();
+
+  function cachedAccountedHeatmap(analytics, kind) {
+    let maps = accountedHeatmapCache.get(analytics);
+    if (!maps) { maps = new Map(); accountedHeatmapCache.set(analytics, maps); }
+    if (!maps.has(kind)) maps.set(kind, getAccountedVcsHeatmap(analytics, kind));
+    return maps.get(kind);
+  }
+
   function renderAccountedVcsPanel(analytics, mode) {
     const total = analytics.totalDevices;
     const percent = (count) => total ? Math.round(count / total * 1000) / 10 : 0;
@@ -7279,7 +7520,7 @@
       `conic-gradient(#198d8c 0 ${confirmedPercent}%, #a06ea8 ${confirmedPercent}% ${confirmedPercent + suspectedPercent}%, #dce7e7 ${confirmedPercent + suspectedPercent}% 100%)`,
       "power_confirmed", `${analytics.powerConfirmedEvents} штатных · ${analytics.powerSuspectedEvents} предположений`);
     const top = (title, rows, kind, field) => `<section class="card accounted-top"><h3>${escapeHtml(title)}</h3>${rows.length ? rows.map((row) => `<button type="button" data-accounted-device="${escapeHtml(row.deviceId)}" data-accounted-kind="${kind}"><span>${escapeHtml(row.deviceName)}</span><strong>${row[field]}</strong></button>`).join("") : `<p class="muted">Событий нет или журналы не разобраны.</p>`}</section>`;
-    const heatmap = getAccountedVcsHeatmap(analytics, ui.accountedHeatmapKind);
+    const heatmap = cachedAccountedHeatmap(analytics, ui.accountedHeatmapKind);
     const active = ui.accountedHeatmapCell ? heatmap.cells.find((cell) => `${cell.day}:${cell.hour}` === ui.accountedHeatmapCell) : null;
     const hours = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0"));
     const days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
@@ -7830,7 +8071,8 @@
       ${launchMode.kind === "local" ? `<section class="card section-gap workspace-status"><div class="section-heading"><h2>Рабочая база</h2><span class="badge ${ui.workspaceStatus?.status === "ready" ? "success" : "warning"}">${ui.workspaceStatus?.status === "ready" ? "Подключена" : "Не подключена"}</span></div>
         <p class="muted">Завершённые SR, JSON-опросы и аналитика логов сохраняются в выбранной локальной папке и восстанавливаются после входа. Исходные логи и пароли в базу не копируются. База не шифруется: ограничьте доступ к папке средствами Windows.</p>
         ${ui.workspaceStatus?.status === "ready" ? `<p>Папка: <span class="mono break-word">${escapeHtml(ui.workspaceStatus.path)}</span> · ревизия ${ui.workspaceStatus.revision}</p>` : ui.workspaceStatus?.status === "error" ? `<p class="warning-panel">Рабочая база недоступна или повреждена. Прежние файлы не удалены.</p>` : ""}
-        ${ui.workspaceSaveStatus === "saving" ? `<p role="status">Сохранение рабочей базы…</p>` : ui.workspaceSaveStatus === "saved" ? `<p role="status">Изменения сохранены.</p>` : ui.workspaceSaveStatus === "restored" ? `<p role="status">Данные восстановлены после входа.</p>` : ""}
+        ${ui.workspaceSaveStatus === "saving" ? `<p data-workspace-save-progress role="status">Сохранение рабочей базы… порций: ${ui.workspaceSaveParts || 0}</p>` : ui.workspaceSaveStatus === "restoring" ? `<p role="status">Восстановление рабочей базы порциями…</p>` : ui.workspaceSaveStatus === "saved" ? `<p role="status">Изменения сохранены.</p>` : ui.workspaceSaveStatus === "restored" ? `<p role="status">Данные восстановлены после входа.</p>` : ""}
+        ${ui.workspaceSaveError ? `<p class="warning-panel" role="alert">${escapeHtml(ui.workspaceSaveError)}</p>` : ""}
         ${adminLocked ? `<p>Войдите в локальный доступ, чтобы подключить рабочую папку.</p>` : `<form class="form-grid" data-workspace-select-form><div class="field"><label>Путь к рабочей папке<input name="workspacePath" type="text" value="${escapeHtml(ui.workspaceStatus?.path || "")}" placeholder="C:\\AI\\MVP_SPHERE_SR_Data" required></label></div><div class="button-row"><button class="button secondary" type="button" data-workspace-choose>Обзор…</button><button class="button secondary" type="submit">Подключить папку</button></div></form>`}${ui.workspaceStatus?.status === "ready" ? `<button class="button secondary section-gap" type="button" data-workspace-save-now>Сохранить сейчас</button>` : ""}</section>` : ""}
       <div class="upload-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR</h2>
@@ -7890,7 +8132,10 @@
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
         ${automatic ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(automaticPollingStatusLabel(automatic.status))}</span><strong>${automatic.processed || 0} из ${automatic.total || 0} устройств</strong></div><strong>${automaticPercent}%</strong></div><progress max="100" value="${automaticPercent}">${automaticPercent}%</progress><dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${automatic.successful || 0}</dd></div><div><dt>Ошибки опроса</dt><dd>${automatic.failed || 0}</dd></div><div><dt>Ошибки сохранения</dt><dd>${automatic.saveFailed || 0}</dd></div><div><dt>Не поддерживается</dt><dd>${automatic.unsupported || 0}</dd></div><div><dt>Папка запуска</dt><dd class="mono">${escapeHtml(automatic.runFolderName || "будет создана при старте")}</dd></div></dl>${automatic.allowInsecureTls ? `<p class="muted">Для этого запуска разрешён самоподписанный HTTPS-сертификат. Обычный HTTP не используется.</p>` : ""}${!["completed", "cancelled", "failed"].includes(automatic.status) ? `<button class="button danger" type="button" data-cancel-automatic-polling>Отменить опрос</button>` : ""}</section>` : ""}
       </section>
-      <section class="card section-gap"><h2>Импорт логов устройств</h2><form class="form-grid" data-log-import-form><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required${ui.logImportBusy ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forceRescan" type="checkbox"${ui.logImportBusy ? " disabled" : ""}> Перепроверить ранее загруженные файлы целиком</label><button class="button primary" type="submit"${ui.logImportBusy ? " disabled" : ""}>Импортировать папку логов</button></form>${ui.logImportProgress ? `<div class="log-import-progress"><p data-log-import-progress role="status">${escapeHtml(logImportProgressText(ui.logImportProgress))}</p><progress data-log-import-meter max="100" value="${ui.logImportProgress.totalBytes ? Math.min(100, ui.logImportProgress.bytesRead / ui.logImportProgress.totalBytes * 100) : 0}"></progress><button class="button danger" type="button" data-cancel-log-import${ui.logImportCancelRequested ? " disabled" : ""}>${ui.logImportCancelRequested ? "Остановка…" : "Остановить импорт"}</button></div>` : ""}
+      <section class="card section-gap"><h2>Импорт логов устройств</h2>
+        ${ui.workspaceStatus?.pendingLogFiles > 0 && !ui.logImportBusy ? `<p class="info-panel">Есть сохранённые результаты незавершённого импорта. Выберите ту же папку с логами и тот же режим перепроверки, чтобы продолжить.</p>` : ""}
+        <form class="form-grid" data-log-import-form><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required${ui.logImportBusy ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forceRescan" type="checkbox"${ui.logImportBusy ? " disabled" : ""}> Перепроверить ранее загруженные файлы целиком</label><button class="button primary" type="submit"${ui.logImportBusy ? " disabled" : ""}>${ui.workspaceStatus?.pendingLogFiles > 0 ? "Продолжить импорт логов" : "Импортировать папку логов"}</button></form>
+        ${ui.logImportProgress ? `<div class="log-import-progress"><p data-log-import-progress role="status">${escapeHtml(logImportProgressText(ui.logImportProgress))}</p><progress aria-label="Объём обработанных логов" data-log-import-meter max="100" value="${ui.logImportProgress.totalBytes ? Math.min(100, ui.logImportProgress.bytesRead / ui.logImportProgress.totalBytes * 100) : 0}"></progress><p data-log-import-speed>${escapeHtml(logImportSpeedText(ui.logImportProgress))}</p>${ui.logImportProgress.phase === "saving" ? "" : `<button class="button danger" type="button" data-cancel-log-import${ui.logImportCancelRequested ? " disabled" : ""}>${ui.logImportCancelRequested ? "Остановка…" : "Остановить импорт"}</button>`}</div>` : ""}
         ${ui.logImportSummary ? `<div class="upload-outcome section-gap" role="status"><strong>Логи импортированы</strong><span>Файлов: ${ui.logImportSummary.files} · размер: ${escapeHtml(formatBytes(ui.logImportSummary.bytes))} · сопоставлено: ${ui.logImportSummary.matched} · проблемы: ${ui.logImportSummary.issues} · без повторного чтения: ${ui.logImportSummary.skippedFiles || 0}</span><span>${Object.entries(ui.logImportSummary.formats).map(([kind, count]) => `${escapeHtml(kind)}: ${count}`).join(" · ")}</span><span>Huawei TE: перезагрузок ${ui.teLogIndex.coverage?.confirmedReboots || 0} · отключений ${ui.teLogIndex.coverage?.powerOffs || 0} · запусков без причины ${ui.teLogIndex.coverage?.unknownStarts || 0}</span></div><div class="table-wrap section-gap"><table><thead><tr><th>Файл</th><th>Папка запуска</th><th>Тип</th><th>Размер</th><th>IP</th><th>Устройство SR</th><th>Сопоставление</th><th>Анализ</th></tr></thead><tbody>${ui.logImportRows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.path)}</td><td>${escapeHtml(row.runFolder || "—")}</td><td>${escapeHtml(row.format)}</td><td>${escapeHtml(formatBytes(row.size))}</td><td>${escapeHtml(row.ip || "—")}</td><td>${escapeHtml(row.deviceName || "—")}</td><td>${escapeHtml(row.matchStatus)}</td><td>${escapeHtml(row.analysisStatus || "—")}</td></tr>`).join("")}</tbody></table></div>${ui.logImportRows.length > 100 ? `<p class="muted">Показаны первые 100 файлов из ${ui.logImportRows.length}; итоги рассчитаны по всей папке.</p>` : ""}` : ""}
       </section>
       `;
@@ -8185,6 +8430,7 @@
     }
     if (event.target.closest("[data-workspace-choose]")) {
       if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true) return;
+      if (ui.logImportBusy || ui.workspaceSaveStatus === "restoring") return;
       if ((state.srImports.length || state.pollingResults.length || ui.logImportRows.length)
         && !global.confirm("Открытие другой рабочей базы может заменить данные текущей вкладки. Прежняя папка останется на диске. Продолжить?")) return;
       try {
@@ -8725,6 +8971,7 @@
     if (workspaceForm) {
       event.preventDefault();
       if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true) return;
+      if (ui.logImportBusy || ui.workspaceSaveStatus === "restoring") return;
       const path = String(new FormData(workspaceForm).get("workspacePath") || "").trim();
       if (!path) { setMessage("Укажите локальную папку рабочей базы.", "error"); render(); return; }
       if (ui.workspaceStatus?.status === "ready" && path === ui.workspaceStatus.path) return;
@@ -8788,6 +9035,7 @@
     const srImportForm = event.target.closest("[data-sr-import-form]");
     if (srImportForm) {
       event.preventDefault();
+      if (ui.logImportBusy || ui.workspaceSaveStatus === "restoring") return;
       await handleSrImport(srImportForm);
       return;
     }
@@ -8814,7 +9062,8 @@
           existing: ui.logFileRegistry.length ? { rows: ui.logImportRows, summary: ui.logImportSummary,
             indexes: { te: ui.teLogIndex, huawei310: ui.huawei310LogIndex,
               huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex }, registry: ui.logFileRegistry } : null,
-          forceRescan: new FormData(logImportForm).get("forceRescan") === "on"
+          forceRescan: new FormData(logImportForm).get("forceRescan") === "on",
+          checkpoint: currentLogCheckpointStore()
         });
         if (ui.logImportCancelRequested) throw new Error("log_import_cancelled");
         ui.teLogIndex = imported.indexes.te;
@@ -8824,15 +9073,22 @@
         ui.logImportRows = imported.rows;
         ui.logImportSummary = { ...imported.summary, skippedFiles: imported.skippedFiles };
         ui.logFileRegistry = imported.registry;
+        ui.logCompletedCheckpoint = imported.checkpoint;
+        if (ui.workspaceStatus?.status === "ready") {
+          ui.logImportProgress = { ...ui.logImportProgress, phase: "saving" };
+          render();
+          await cooperativeBrowserYield();
+        }
         const workspaceSaved = ui.workspaceStatus?.status !== "ready" || await queueWorkspaceSave();
-        setMessage(workspaceSaved ? "Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ". Исходные файлы не изменены."
+        setMessage(workspaceSaved ? "Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ", восстановлено после остановки: " + imported.recoveredFiles + ". Исходные файлы не изменены."
           : "Логи импортированы, но рабочую базу сохранить не удалось. До закрытия вкладки повторите сохранение.", workspaceSaved ? "success" : "warning");
       } catch (error) {
+        if (error?.safeCode) ui.workspaceSaveError = workspaceErrorLabel(error.safeCode);
         setMessage(error?.message === "log_full_reimport_required" ? "Один из прежних файлов или выгрузка SR изменились. Для точной перепроверки выберите полную папку всех ранее импортированных логов; прежняя аналитика сохранена."
           : error?.message === "log_recheck_incomplete" ? "Полная перепроверка одного из прежних логов не завершилась. Старая аналитика сохранена без потери доказательств."
           : ui.logImportCancelRequested || error?.message === "log_import_cancelled"
-          ? "Импорт логов остановлен. Прежние данные и аналитика сохранены."
-          : "Импорт логов не завершён. Прежние данные и аналитика сохранены.", ui.logImportCancelRequested ? "warning" : "error");
+          ? "Импорт логов остановлен. Прежняя аналитика сохранена; подтверждённые промежуточные результаты можно использовать при продолжении."
+          : "Импорт логов не завершён. Прежняя аналитика и записанные контрольные точки не удалены.", ui.logImportCancelRequested ? "warning" : "error");
       } finally {
         activeLogScanClient = null;
         ui.logImportBusy = false;
@@ -8846,6 +9102,7 @@
     const pollingImportForm = event.target.closest("[data-polling-import-form]");
     if (pollingImportForm) {
       event.preventDefault();
+      if (ui.logImportBusy || ui.workspaceSaveStatus === "restoring") return;
       await handlePollingImport(pollingImportForm);
       return;
     }

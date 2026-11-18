@@ -122,6 +122,45 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)["status"], "ready")
 
+    def test_workspace_parts_and_checkpoint_routes_are_protected_and_persistent(self) -> None:
+        selected = Path(self.harness.admin_dir.name) / "parts-workspace"
+        selected.mkdir()
+        self.harness.server.state.workspace_store = WorkspaceStore(
+            Path(self.harness.admin_dir.name) / "parts-location.json", self.harness.server.state.project_root)
+        cookie, csrf = self.harness.session()
+        headers = self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"})
+        def post(path, data):
+            return self.harness.request("POST", "/api/workspace/" + path, headers=headers, body=json.dumps(data))
+        status, _, body = post("select", {"path": str(selected)})
+        self.assertEqual(status, 200, body)
+        workspace = json.loads(body)["workspaceId"]
+        status, _, body = post("transfer/begin", {"workspace": workspace, "revision": 0})
+        self.assertEqual(status, 200, body)
+        upload = json.loads(body)["upload"]
+        text = json.dumps({"meta": sample_payload()})
+        import hashlib
+        status, _, body = post("transfer/part", {"workspace": workspace, "upload": upload,
+            "position": 0, "digest": hashlib.sha256(text.encode()).hexdigest(), "body": text})
+        self.assertEqual(status, 200, body)
+        status, _, body = post("transfer/finish", {"workspace": workspace, "upload": upload, "parts": 1})
+        self.assertEqual(status, 200, body)
+        status, _, body = self.harness.request("GET", f"/api/workspace/part/{workspace}/1/0", headers={"Cookie": cookie})
+        self.assertEqual(json.loads(body)["body"], text)
+        scope, key = "a" * 64, "b" * 64
+        record = {"workspace": workspace, "scope": scope, "key": key,
+                  "result": {"kind": "te", "scan": {"ok": True, "markers": [], "bootGaps": []}}}
+        status, _, body = post("log-file", record)
+        self.assertEqual(status, 200, body)
+        status, _, body = self.harness.request("GET", f"/api/workspace/log-list/{workspace}/{scope}/-", headers={"Cookie": cookie})
+        self.assertEqual(json.loads(body)["value"], [key])
+        status, _, body = post("log-finish", {"workspace": workspace, "scope": scope, "revision": 1, "keys": [key]})
+        self.assertEqual(json.loads(body)["pendingLogFiles"], 0)
+        status, _, _ = self.harness.request("POST", "/api/workspace/log-file", headers={"Cookie": cookie}, body=json.dumps(record))
+        self.assertEqual(status, 403)
+        status, _, body = post("transfer/begin", {"workspace": "f" * 32, "revision": 1})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "workspace_selection_changed")
+
     def test_local_worker_assets_are_served_with_same_origin_policy(self) -> None:
         cookie, _csrf = self.harness.session(unlock=False)
         for path in ("/runtime/log-scan-worker.js", "/runtime/log-scan-client.js"):

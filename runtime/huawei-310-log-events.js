@@ -2,7 +2,7 @@
   "use strict";
 
   const RULE_VERSION = "huawei-bar310-log-v2";
-  const CHUNK_BYTES = 65536;
+  const CHUNK_BYTES = 1024 * 1024;
   const MAX_LINE = 8192;
   const REBOOT_WINDOW_MS = 3 * 60 * 1000;
   const STAMP = /\b(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)\b/;
@@ -38,18 +38,19 @@
     const activityTimes = [];
     const coverage = { lines: 0, oversizedLines: 0, malformedCandidates: 0 };
     let lastActivityMs = null;
+    let lastActivityStamp = null;
+    let stampMs = null;
     function process(raw) {
       coverage.lines += 1;
       const line = raw.replace(/\r$/, "");
       if (dropping || line.length > MAX_LINE) { coverage.oversizedLines += 1; dropping = false; return; }
       const activityStamp = STAMP.exec(line);
-      const activityMs = activityStamp ? localTimeValue(`${activityStamp[1]} ${activityStamp[2]}`) : null;
-      if (activityMs !== null && !line.includes("\uFFFD") && activityMs !== lastActivityMs) { activityTimes.push(activityMs); lastActivityMs = activityMs; }
+      const localAt = activityStamp ? `${activityStamp[1]} ${activityStamp[2]}` : null;
+      if (localAt && localAt !== lastActivityStamp) { lastActivityStamp = localAt; stampMs = localTimeValue(localAt); }
+      if (localAt && stampMs !== null && stampMs !== lastActivityMs && !line.includes("\uFFFD")) { activityTimes.push(stampMs); lastActivityMs = stampMs; }
       const candidate = WEB_REBOOT.test(line) || WEB_SHUTDOWN.test(line) || REMOTE_POWER_BUTTON.test(line) || REMOTE_SHUTDOWN.test(line) || SYSTEM_BOOT.test(line);
       if (!candidate) return;
-      const stamp = STAMP.exec(line);
-      const localAt = stamp ? `${stamp[1]} ${stamp[2]}` : null;
-      const timeMs = localTimeValue(localAt);
+      const timeMs = localAt ? stampMs : null;
       if (timeMs === null || line.includes("\uFFFD")) { coverage.malformedCandidates += 1; return; }
       if (WEB_REBOOT.test(line) && !/\b(?:fail|failed|error|denied)\b/i.test(line)) markers.push({ kind: "web_reboot_command", localAt, timeMs, lineNumber: coverage.lines });
       if (WEB_SHUTDOWN.test(line) && !/\b(?:fail|failed|error|denied)\b/i.test(line)) markers.push({ kind: "web_shutdown_command", localAt, timeMs, lineNumber: coverage.lines });

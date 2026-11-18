@@ -3335,7 +3335,7 @@
   });
 
   test("Порционные Huawei scanner сообщают прогресс и допускают безопасную отмену", async () => {
-    const body = "[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_AUDIO 9 Synthetic activity\n".repeat(4000);
+    const body = "[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_AUDIO 9 Synthetic activity\n".repeat(40000);
     const file = new Blob(["<?xml version='1.0'?><LogModule>\n", body, "</LogModule>"]);
     for (const [parser, options] of [[teLogEvents, { model: "te40" }], [huawei310LogEvents, {}], [huawei300LogEvents, {}]]) {
       const progress = [];
@@ -3485,6 +3485,86 @@
           ? Promise.reject(new Error("synthetic read error")) : teLogEvents.scanFile(file, { model: "te40" }), close: () => {} } });
     } catch (error) { preserved = error?.message === "log_recheck_incomplete"; }
     assert(preserved, "Ошибка полного переанализа не должна удалять прежнее доказательство");
+  });
+
+  test("Продолжение импорта логов не читает тело уже записанного файла и сохраняет те же события", async () => {
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64) }];
+    state.inventoryDevices = [{ id: "te40", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei",
+      modelRaw: "TE40", ipNormalized: "192.0.2.40", inCurrentSr: true }];
+    const files = ["10", "11", "12"].map((hour) => {
+      const file = new Blob([ `<?xml version='1.0'?><LogModule>\n[Debug][Main] 2026-01-01 ${hour}:00:00 LOG_MOD_MC 10 Synthetic System start\n</LogModule>` ]);
+      file.name = "192.0.2.40.xml"; file.webkitRelativePath = `data/${hour}/192.0.2.40.xml`; file.lastModified = Number(hour);
+      return file;
+    });
+    const saved = new Map();
+    const reads = [];
+    let cancel = false;
+    const checkpoint = {
+      async list(scope) { return [...(saved.get(scope) || new Map()).keys()]; },
+      async read(scope, number) { return saved.get(scope).get(number); },
+      async write(scope, number, result) {
+        if (!saved.has(scope)) saved.set(scope, new Map());
+        saved.get(scope).set(number, JSON.parse(JSON.stringify(result)));
+        cancel = true;
+      }
+    };
+    const scanClient = { scan(file) { reads.push(file.lastModified); return teLogEvents.scanFile(file, { model: "te40" }); } };
+    try {
+      await api.prepareDeviceLogImport(files, state, { checkpoint, scanClient, shouldCancel: () => cancel });
+      assert(false, "Ожидалась отмена");
+    } catch (error) { assertEqual(error.message, "log_import_cancelled"); }
+    assertEqual(JSON.stringify(reads), "[10]");
+    reads.length = 0;
+    const resume = await api.prepareDeviceLogImport(files, state, { checkpoint, scanClient });
+    assertEqual(JSON.stringify(reads), "[11,12]");
+    assertEqual(resume.recoveredFiles, 1);
+    const clean = await api.prepareDeviceLogImport(files, state, { scanClient });
+    assertEqual(JSON.stringify(resume.indexes), JSON.stringify(clean.indexes));
+    assertEqual(JSON.stringify(resume.registry), JSON.stringify(clean.registry));
+    reads.length = 0;
+    files[0].lastModified = 99;
+    const changed = await api.prepareDeviceLogImport(files, state, { checkpoint, scanClient });
+    assertEqual(changed.recoveredFiles, 2);
+    assert(reads.includes(99));
+  });
+
+  if (typeof require === "function") test("Два Worker сканируют ограниченно параллельно, прогресс считает реальные байты", async () => {
+    const nav = Object.getOwnPropertyDescriptor(global, "navigator");
+    const previousWorker = global.Worker;
+    let active = 0, maximum = 0;
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64) }];
+    state.inventoryDevices = [{ id: "te", category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE40", ipNormalized: "192.0.2.40" }];
+    const files = [0, 1, 2].map((id) => {
+      const file = new Blob(["<?xml version='1.0'?><LogModule>\n[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_MC 10 Synthetic System start\n</LogModule>"]);
+      file.name = "192.0.2.40.xml"; file.webkitRelativePath = `run-${id}/192.0.2.40.xml`; file.lastModified = id;
+      return file;
+    });
+    const progress = [];
+    try {
+      Object.defineProperty(global, "navigator", { value: { hardwareConcurrency: 4 }, configurable: true });
+      global.Worker = class {
+        postMessage(task) {
+          active += 1; maximum = Math.max(maximum, active);
+          setTimeout(async () => {
+            const scan = await teLogEvents.scanFile(task.file, { model: task.model });
+            this.onmessage({ data: { type: "progress", taskId: task.taskId, done: task.file.size, total: task.file.size } });
+            active -= 1;
+            this.onmessage({ data: { type: "result", taskId: task.taskId, scan } });
+          }, 5);
+        }
+        terminate() {}
+      };
+      const result = await api.prepareDeviceLogImport(files, state, { onProgress: (value) => progress.push(value) });
+      assertEqual(maximum, 2);
+      assertEqual(result.rows.length, 3);
+      assertEqual(progress.at(-1).physicalBytes, files.reduce((sum, file) => sum + file.size, 0));
+      assert(progress.every((value) => value.bytesRead <= value.totalBytes));
+    } finally {
+      global.Worker = previousWorker;
+      if (nav) Object.defineProperty(global, "navigator", nav); else delete global.navigator;
+    }
   });
 
   test("Лог с ошибкой разбора повторно читается при следующей дозагрузке", async () => {
@@ -3702,13 +3782,31 @@
     assert(api.validateState(api.buildWorkspaceProjection(clean).state).ok);
   });
 
+  test("Порции рабочей базы восстанавливают историю и не содержат исходный текст", () => {
+    const state = api.createDemoState();
+    state.pollingResults = Array.from({ length: 7 }, (_, id) => ({ id, normalizedData: { model: "Тест" }, rawText: "SYNTHETIC-SECRET" }));
+    const log = { rows: [{ path: "archive/example.xml" }], registry: [], indexes: { te: { events: [{ id: "synthetic" }], coverage: { files: 1 } } } };
+    let restored = null;
+    let count = 0;
+    for (const body of api.workspaceParts(state, log, 64)) {
+      count += 1;
+      assert(!body.includes("SYNTHETIC-SECRET"));
+      restored = api.restoreWorkspacePart(restored, JSON.parse(body));
+    }
+    assert(count > 7, "История должна быть разделена на несколько страниц");
+    assertEqual(JSON.stringify(restored), JSON.stringify(api.buildWorkspaceProjection(state, log)));
+    assertEqual(state.pollingResults[0].rawText, "SYNTHETIC-SECRET");
+  });
+
   if (typeof require === "function") test("Экран рабочей базы предлагает обзор и восстанавливает после входа", () => {
     const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
     assert(source.includes("data-workspace-choose"));
     assert(source.includes("/api/workspace/choose"));
     assert(source.includes("/api/workspace/snapshot"));
     assert(source.includes("await restoreWorkspaceAfterLogin()"));
-    assert(source.includes("buildWorkspaceProjection(state"));
+    assert(source.includes("workspaceParts(state"));
+    assert(source.includes("transfer/finish"));
+    assert(source.includes("data-log-import-speed"));
   });
 
   test("Поток лога пишется в выбранную папку без JSON/base64", async () => {

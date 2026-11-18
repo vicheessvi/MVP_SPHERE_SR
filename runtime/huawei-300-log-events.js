@@ -2,7 +2,7 @@
   "use strict";
 
   const RULE_VERSION = "huawei-bar300-log-v2";
-  const CHUNK_BYTES = 65536;
+  const CHUNK_BYTES = 1024 * 1024;
   const MAX_LINE = 8192;
   const BOOT_WINDOW_MS = 10 * 60 * 1000;
   const MAX_PLAUSIBLE_GAP_MS = 10 * 365 * 24 * 60 * 60 * 1000;
@@ -33,14 +33,19 @@
     const activityTimes = [];
     const coverage = { lines: 0, oversizedLines: 0, malformedCandidates: 0 };
     let lastActivityMs = null;
+    let lastActivityStamp = null;
     function process(raw) {
       coverage.lines += 1;
       const line = raw.replace(/\r$/, "");
       if (dropping || line.length > MAX_LINE) { coverage.oversizedLines += 1; dropping = false; return; }
       const activity = ACTIVITY_LINE.exec(line);
-      if (activity && !line.includes("\uFFFD")) {
-        const at = localTimeValue(`${activity[1]} ${activity[2]}`);
-        if (at !== null && at !== lastActivityMs) { activityTimes.push(at); lastActivityMs = at; }
+      if (activity) {
+        const stamp = `${activity[1]} ${activity[2]}`;
+        if (stamp !== lastActivityStamp && !line.includes("\uFFFD")) {
+          lastActivityStamp = stamp;
+          const at = localTimeValue(stamp);
+          if (at !== null && at !== lastActivityMs) { activityTimes.push(at); lastActivityMs = at; }
+        }
       }
       const bootCandidate = /\bsystem\s+boot\b/i.test(line);
       const shutdownCandidate = activity?.[3] === "LOG_MOD_WEB" && WEB_SHUTDOWN.test(line.slice(activity[0].length));
