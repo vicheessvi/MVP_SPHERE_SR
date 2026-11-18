@@ -1850,11 +1850,17 @@
     const state = scalablePollingState(20);
     const first = await api.processPollingImportBatches(state, { files, batchSize: 5, yieldControl: async () => {} });
     assertEqual(first.metrics.srLookups, 20);
+    const persisted = api.buildWorkspaceProjection(first.state);
+    assert(api.validateState(persisted.state).ok);
+    assert(!JSON.stringify(persisted).includes("rawText"));
     assert(first.metrics.diffPairs <= 40);
     const repeated = await api.processPollingImportBatches(first.state, { files, context: first.context, batchSize: 5, yieldControl: async () => {} });
     assertEqual(repeated.summary.duplicates, 20);
     assertEqual(repeated.metrics.parses, 0);
     assertEqual(repeated.metrics.srLookups, 0);
+    const afterRestore = await api.processPollingImportBatches(persisted.state, { files, batchSize: 5, yieldControl: async () => {} });
+    assertEqual(afterRestore.summary.duplicates, 20);
+    assertEqual(afterRestore.metrics.parses, 0);
     let stop = false;
     const cancelled = await api.processPollingImportBatches(scalablePollingState(20), {
       files,
@@ -3122,6 +3128,26 @@
     assertEqual(api.getPowerDurationAnalytics(te, bar, state, { manufacturer: "Huawei" }).totalDevices, 3);
   });
 
+  test("Диаграмма питания на большом журнале не ищет следующий запуск квадратично", () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = [{ id: "many-events", inCurrentSr: true, category: "vcs", manufacturerRaw: "Huawei", modelRaw: "TE40" }];
+    const count = 5000;
+    const startAt = Date.UTC(2026, 0, 1);
+    const event = (kind, index, offset) => ({ kind, deviceId: "many-events",
+      estimatedAt: new Date(startAt + index * 120000 + offset).toISOString(), deviceName: "Synthetic TE40",
+      model: "TE40", ip: "192.0.2.40" });
+    const analytics = { valid: true, stale: false, groups: {
+      power_off: { events: Array.from({ length: count }, (_, index) => event("power_off", index, 0)) },
+      unknown_start: { events: Array.from({ length: count }, (_, index) => event("unknown_start", index, 60000)) }
+    } };
+    const started = performance.now();
+    const result = api.getPowerDurationAnalytics(analytics, null, state, {});
+    const elapsed = performance.now() - started;
+    assertEqual(result.observedDevices, 1);
+    assertEqual(result.buckets.find((bucket) => bucket.id === "hour").count, 1);
+    assert(elapsed < 650, `Поиск 10 000 событий занял ${Math.round(elapsed)} мс`);
+  });
+
   test("Восемь интервалов питания имеют непересекающиеся границы и стартуют с более года", () => {
     const state = api.createDemoState();
     const seconds = [1800, 4000, 90000, 700000, 3000000, 8000000, 16000000, 32000000];
@@ -3283,7 +3309,406 @@
     const bulk = api.buildHuaweiTeLogEventIndex(Array.from({ length: 1000 }, (_, number) => ({ row: row(`run-${number}/192.0.2.40.xml`), scan: repeated })), state);
     assertEqual(bulk.coverage.confirmedReboots, 1);
     assertEqual(bulk.coverage.powerOffs, 1);
+    assertEqual(bulk.events[0].sourceCount, 1000);
+    assert(bulk.events.every((event) => event.sources.length <= 16), "Повторные источники должны иметь ограниченное число примеров");
     assert(Date.now() - started < 2000, "Повторные выгрузки не должны замедлять дедупликацию");
+  });
+
+  test("Повторные логи CloudLink 310/300 не раздувают доказательства события", () => {
+    const variants = [
+      { model: "Bar 310", format: "Huawei 310 XML", kind: "system_boot", build: (rows, state) => api.buildHuawei310LogEventIndex(rows, state) },
+      { model: "Bar 300", format: "Huawei 300 XML", kind: "system_boot", build: (rows, state) => api.buildHuawei300LogEventIndex(rows, state, "bar") }
+    ];
+    for (const variant of variants) {
+      const state = api.createDemoState();
+      state.inventoryDevices = [{ id: "codec", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei",
+        modelRaw: variant.model, ipNormalized: "192.0.2.31", inCurrentSr: true }];
+      const scan = { ok: true, markers: [{ kind: variant.kind, localAt: "2026-01-01 10:00:00",
+        timeMs: Date.UTC(2026, 0, 1, 10), lineNumber: 11 }], bootGaps: [] };
+      const rows = Array.from({ length: 1000 }, (_, number) => ({ row: { path: `run-${number}/192.0.2.31.xml`,
+        ip: "192.0.2.31", format: variant.format, matchStatus: "Сопоставлено", deviceId: "codec" }, scan }));
+      const result = variant.build(rows, state);
+      assertEqual(result.events.length, 1);
+      assertEqual(result.events[0].sourceCount, 1000);
+      assert(result.events[0].sources.length <= 16);
+    }
+  });
+
+  test("Порционные Huawei scanner сообщают прогресс и допускают безопасную отмену", async () => {
+    const body = "[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_AUDIO 9 Synthetic activity\n".repeat(4000);
+    const file = new Blob(["<?xml version='1.0'?><LogModule>\n", body, "</LogModule>"]);
+    for (const [parser, options] of [[teLogEvents, { model: "te40" }], [huawei310LogEvents, {}], [huawei300LogEvents, {}]]) {
+      const progress = [];
+      const scan = await parser.scanFile(file, { ...options, onProgress: (bytes, total) => progress.push([bytes, total]) });
+      assert(scan.ok);
+      assert(progress.length > 1);
+      assertEqual(progress.at(-1)[0], file.size);
+      assertEqual(progress.at(-1)[1], file.size);
+      let cancelled = false;
+      try {
+        await parser.scanFile(file, { ...options, shouldCancel: () => true });
+      } catch (error) { cancelled = error?.message === "log_scan_cancelled"; }
+      assert(cancelled, "Отмена не должна возвращать частичный результат");
+    }
+  });
+
+  if (typeof require === "function") test("Фоновый scanner возвращает те же события, что прямой разбор", async () => {
+    const worker = require("./runtime/log-scan-worker.js");
+    const log = "<?xml version='1.0'?><LogModule>\n[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_MC 10 Synthetic System start\n</LogModule>";
+    const file = new Blob([log]);
+    const expected = await teLogEvents.scanFile(file, { model: "te40" });
+    const progress = [];
+    const actual = await worker.scanLogFile(file, "te", "te40", (done, total) => progress.push([done, total]));
+    assertEqual(JSON.stringify(actual.markers), JSON.stringify(expected.markers));
+    assertEqual(JSON.stringify(actual.coverage), JSON.stringify(expected.coverage));
+    assertEqual(JSON.stringify(actual.bootGaps), JSON.stringify(expected.bootGaps));
+    if (global.crypto?.subtle) {
+      assert(/^[0-9a-f]{64}$/.test(actual.contentDigest));
+      const changed = await worker.scanLogFile(new Blob([log.replace("Synthetic", "Changed  ")]), "te", "te40");
+      assert(changed.contentDigest !== actual.contentDigest);
+    }
+    assertEqual(progress.at(-1)[0], file.size);
+    assertEqual(progress.at(-1)[1], file.size);
+    let rejected = false;
+    try { await worker.scanLogFile(file, "unknown", "te40"); } catch { rejected = true; }
+    assert(rejected);
+  });
+
+  if (typeof require === "function") test("Клиент логов использует Worker, отменяет его и сохраняет безопасный fallback", async () => {
+    const clientApi = require("./runtime/log-scan-client.js");
+    const workers = [];
+    class FakeWorker {
+      constructor() { this.terminated = false; workers.push(this); }
+      postMessage(message) {
+        queueMicrotask(() => {
+          this.onmessage({ data: { type: "progress", taskId: message.taskId, done: message.file.size, total: message.file.size } });
+          this.onmessage({ data: { type: "result", taskId: message.taskId, scan: { ok: true, markers: [] } } });
+        });
+      }
+      terminate() { this.terminated = true; }
+    }
+    const progress = [];
+    const client = clientApi.createLogScanClient({ WorkerCtor: FakeWorker, recycleAfter: 2,
+      onProgress: (done, total) => progress.push([done, total]) });
+    const file = new Blob(["synthetic"]);
+    assert((await client.scan(file, "te", "te40")).ok);
+    assert((await client.scan(file, "te", "te40")).ok);
+    assertEqual(workers.length, 1);
+    assert(workers[0].terminated);
+    assertEqual(progress.at(-1)[0], file.size);
+    client.close();
+
+    const fallback = clientApi.createLogScanClient({ WorkerCtor: class { constructor() { throw new Error("blocked"); } },
+      parsers: { te: { scanFile: async (_file, options) => { await options.onProgress(9, 9); return { ok: true, markers: [] }; } } },
+      onProgress: (done) => progress.push([done]) });
+    assert((await fallback.scan(file, "te", "te40")).ok);
+    fallback.cancel();
+    let cancelled = false;
+    try { await fallback.scan(file, "te", "te40"); } catch (error) { cancelled = error?.message === "log_scan_cancelled"; }
+    assert(cancelled);
+  });
+
+  test("Импорт логов готовит новый индекс атомарно и отмена не меняет старый", async () => {
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [{ id: "te40", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei",
+      modelRaw: "TE40", ipNormalized: "192.0.2.40", inCurrentSr: true }];
+    const file = new Blob(["<?xml version='1.0'?><LogModule>\n[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_MC 10 Synthetic System start\n</LogModule>"]);
+    file.name = "192.0.2.40.xml";
+    file.webkitRelativePath = "run/192.0.2.40.xml";
+    file.lastModified = Date.UTC(2026, 0, 1);
+    const oldIndex = { events: [{ id: "old-event" }], coverage: { files: 1 } };
+    const progress = [];
+    const ready = await api.prepareDeviceLogImport([file], state, {
+      scanClient: { scan: (_file, kind) => { assertEqual(kind, "te"); return teLogEvents.scanFile(file, { model: "te40" }); }, close: () => {} },
+      onProgress: (value) => progress.push(value)
+    });
+    assertEqual(ready.rows.length, 1);
+    assertEqual(ready.indexes.te.events.length, 1);
+    assert(progress.at(-1).processed === 1);
+    assertEqual(oldIndex.events[0].id, "old-event");
+    if (global.crypto?.subtle) {
+      const hashed = await api.prepareDeviceLogImport([file], state);
+      assert(/^[0-9a-f]{64}$/.test(hashed.registry[0].contentDigest));
+      assertEqual(hashed.registry[0].digestAlgorithm, "sha256-chunk-merkle-v1");
+    }
+    let cancelled = false;
+    try { await api.prepareDeviceLogImport([file], state, { shouldCancel: () => true }); }
+    catch (error) { cancelled = error?.message === "log_import_cancelled"; }
+    assert(cancelled);
+    assertEqual(oldIndex.events[0].id, "old-event");
+  });
+
+  test("Дозагрузка логов пропускает прежние файлы и добавляет только новые события", async () => {
+    const state = api.createDemoState();
+    state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
+    state.inventoryDevices = [{ id: "te40", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei",
+      modelRaw: "TE40", ipNormalized: "192.0.2.40", inCurrentSr: true }];
+    const makeFile = (run, hour) => {
+      const file = new Blob([`<?xml version='1.0'?><LogModule>\n[Debug][Main] 2026-01-01 ${hour}:00:00 LOG_MOD_MC 10 Synthetic System start\n</LogModule>`]);
+      file.name = "192.0.2.40.xml";
+      file.webkitRelativePath = `${run}/192.0.2.40.xml`;
+      file.lastModified = Date.UTC(2026, 0, 1, Number(hour));
+      return file;
+    };
+    const oldFile = makeFile("run-one", "10");
+    const newFile = makeFile("run-two", "11");
+    let scans = 0;
+    const client = { scan: (file) => { scans += 1; return teLogEvents.scanFile(file, { model: "te40" }); }, close: () => {} };
+    const first = await api.prepareDeviceLogImport([oldFile], state, { scanClient: client });
+    assertEqual(first.indexes.te.events.length, 1);
+    assertEqual(first.registry.length, 1);
+    scans = 0;
+    const added = await api.prepareDeviceLogImport([oldFile, newFile], state, { scanClient: client, existing: first });
+    assertEqual(scans, 1);
+    assertEqual(added.rows.length, 2);
+    assertEqual(added.indexes.te.events.length, 2);
+    assertEqual(added.registry.length, 2);
+    scans = 0;
+    const repeated = await api.prepareDeviceLogImport([oldFile, newFile], state, { scanClient: client, existing: added });
+    assertEqual(scans, 0);
+    assertEqual(repeated.indexes.te.events.length, 2);
+    const changed = makeFile("run-one", "12");
+    let incompleteRecheck = false;
+    try { await api.prepareDeviceLogImport([changed], state, { scanClient: client, existing: added }); }
+    catch (error) { incompleteRecheck = error?.message === "log_full_reimport_required"; }
+    assert(incompleteRecheck, "Изменённый старый файл нельзя добавить поверх прежнего события без полной проверки");
+    scans = 0;
+    const rebuilt = await api.prepareDeviceLogImport([changed, newFile], state, { scanClient: client, existing: added });
+    assertEqual(scans, 2);
+    assertEqual(rebuilt.indexes.te.events.length, 2);
+    assert(!rebuilt.indexes.te.events.some((event) => event.deviceLocalTime === "2026-01-01 10:00:00"));
+    let preserved = false;
+    try {
+      await api.prepareDeviceLogImport([changed, newFile], state, { existing: added,
+        scanClient: { scan: (file) => file.webkitRelativePath.startsWith("run-one")
+          ? Promise.reject(new Error("synthetic read error")) : teLogEvents.scanFile(file, { model: "te40" }), close: () => {} } });
+    } catch (error) { preserved = error?.message === "log_recheck_incomplete"; }
+    assert(preserved, "Ошибка полного переанализа не должна удалять прежнее доказательство");
+  });
+
+  test("Лог с ошибкой разбора повторно читается при следующей дозагрузке", async () => {
+    const state = api.createDemoState();
+    state.inventoryDevices = [{ id: "te40", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei",
+      modelRaw: "TE40", ipNormalized: "192.0.2.40", inCurrentSr: true }];
+    const file = new Blob(["<?xml version='1.0'?><LogModule>\n[Debug][Main] 2026-01-01 10:00:00 LOG_MOD_MC 10 Synthetic System start\n</LogModule>"]);
+    file.name = "192.0.2.40.xml";
+    file.webkitRelativePath = "run/192.0.2.40.xml";
+    file.lastModified = Date.UTC(2026, 0, 1);
+    const failed = await api.prepareDeviceLogImport([file], state, { scanClient: {
+      scan: () => Promise.reject(new Error("synthetic read failure")), close: () => {} } });
+    assertEqual(failed.rows[0].analysisStatus, "Ошибка разбора");
+    let reads = 0;
+    const retried = await api.prepareDeviceLogImport([file], state, { existing: failed, scanClient: {
+      scan: () => { reads += 1; return teLogEvents.scanFile(file, { model: "te40" }); }, close: () => {} } });
+    assertEqual(reads, 1);
+    assertEqual(retried.indexes.te.events.length, 1);
+    assertEqual(retried.indexes.te.coverage.files, 1);
+    assertEqual(retried.indexes.te.coverage.invalidFiles, 0);
+  });
+
+  test("Импорт 5000 крупных файлов метаданных не удерживает полные тела", async () => {
+    const state = api.createDemoState();
+    const prefix = new Uint8Array([0x1f, 0x8b, 0x08]);
+    let prefixReads = 0;
+    const files = Array.from({ length: 5000 }, (_, index) => ({
+      name: `${String(index).padStart(5, "0")}.tgz`,
+      webkitRelativePath: `synthetic-run/${String(index).padStart(5, "0")}.tgz`,
+      size: 80 * 1024 * 1024, lastModified: Date.UTC(2026, 0, 1),
+      slice(start, end) {
+        assertEqual(start, 0);
+        assertEqual(end, 2048);
+        prefixReads += 1;
+        return { arrayBuffer: async () => Uint8Array.from(prefix).buffer };
+      }
+    }));
+    const started = performance.now();
+    const imported = await api.prepareDeviceLogImport(files, state, {
+      scanClient: { scan: () => { throw new Error("Полное чтение TGZ не должно выполняться"); }, close: () => {} }
+    });
+    assertEqual(imported.summary.files, 5000);
+    assertEqual(imported.registry.length, 5000);
+    assertEqual(prefixReads, 5000);
+    assertEqual(imported.indexes.te.events.length, 0);
+    assert(performance.now() - started < 15000, "Метаданные 5000 файлов должны обрабатываться без полного чтения");
+  });
+
+  test("Новые JSON-опросы отбираются без чтения тела уже принятого файла", async () => {
+    const prior = [{ sourceRelativePath: "run/192.0.2.31.json", sourceFileSize: 42,
+      sourceFileLastModified: 1000, sourcePrefixSha256: "a".repeat(64) }];
+    const files = [
+      { relativePath: "run/192.0.2.31.json", size: 42, lastModified: 1000 },
+      { relativePath: "run/192.0.2.32.json", size: 44, lastModified: 2000 }
+    ];
+    let prefixes = 0;
+    const selected = await api.selectNewPollingFiles(files, prior, async (file) => {
+      prefixes += 1;
+      return file.relativePath.endsWith("31.json") ? "a".repeat(64) : "b".repeat(64);
+    });
+    assertEqual(selected.skipped.length, 1);
+    assertEqual(selected.pending.length, 1);
+    assertEqual(selected.pending[0].relativePath, "run/192.0.2.32.json");
+    assertEqual(prefixes, 2);
+  });
+
+  test("Потоковые накопители событий эквивалентны пакетному построению индекса", () => {
+    const cases = [
+      { model: "TE40", format: "Huawei TE XML", marker: "system_start", make: api.createHuaweiTeLogEventIndex, build: api.buildHuaweiTeLogEventIndex },
+      { model: "Bar 310", format: "Huawei 310 XML", marker: "system_boot", make: api.createHuawei310LogEventIndex, build: api.buildHuawei310LogEventIndex },
+      { model: "Bar 300", format: "Huawei 300 XML", marker: "system_boot", make: (state) => api.createHuawei300LogEventIndex(state, "bar"), build: (entries, state) => api.buildHuawei300LogEventIndex(entries, state, "bar") }
+    ];
+    for (const item of cases) {
+      const state = api.createDemoState();
+      state.srImports = [{ rawSha256: "a".repeat(64) }];
+      state.inventoryDevices = [{ id: "codec", category: "vcs", manufacturerRaw: "Huawei", manufacturerNormalized: "huawei",
+        modelRaw: item.model, ipNormalized: "192.0.2.31", inCurrentSr: true }];
+      const scan = { ok: true, markers: [{ kind: item.marker, localAt: "2026-01-01 10:00:00",
+        timeMs: Date.UTC(2026, 0, 1, 10), lineNumber: 7 }], bootGaps: [] };
+      const entries = ["one", "two"].map((name) => ({ row: { path: `${name}/192.0.2.31.xml`, ip: "192.0.2.31",
+        format: item.format, matchStatus: "Сопоставлено", deviceId: "codec" }, scan }));
+      const expected = item.build(entries, state);
+      const accumulator = item.make(state);
+      for (const entry of entries) accumulator.add(entry);
+      assertEqual(JSON.stringify(accumulator.finish()), JSON.stringify(expected));
+    }
+  });
+
+  test("Кеш аналитики повторно использует неизменённые данные и сбрасывается по фильтру", () => {
+    const state = api.createDemoState();
+    const empty = { events: [], coverage: { files: 0 }, sourceSrSha256: null };
+    const indexes = { te: empty, huawei310: empty, huawei300Bar: empty, huawei300Box: empty };
+    const cache = api.createRebootAnalyticsCache();
+    const first = cache.get(state, indexes, { period: "all" }, "power", "confirmed");
+    const same = cache.get(state, indexes, { period: "all" }, "power", "confirmed");
+    assert(first === same, "Неизменённая выборка не должна пересчитываться при открытии карточки");
+    const switched = cache.get(state, indexes, { period: "all" }, "reboots", "confirmed");
+    assert(switched.te === first.te && switched.main === first.main);
+    const filtered = cache.get(state, indexes, { period: "all", model: "TE40" }, "power", "confirmed");
+    assert(filtered !== first);
+    const changedIndex = cache.get(state, { ...indexes, te: { ...empty } }, { period: "all" }, "power", "confirmed");
+    assert(changedIndex !== first);
+  });
+
+  test("Терминалы ВКС «Учёт» сравниваются с событиями без смешения достоверности", () => {
+    const state = api.createDemoState();
+    state.locations = [{ id: "loc", name: "Synthetic room", address: "Synthetic address", vip: false }];
+    state.inventoryDevices = [
+      { id: "te", category: "vcs", modelRaw: "TE40", manufacturerRaw: "Huawei", nameRaw: "=Synthetic TE", domain: "A", equipmentOverallStatus: "Учёт", inCurrentSr: true, locationId: "loc", ipNormalized: "192.0.2.40" },
+      { id: "box", category: "vcs", modelRaw: "Box 310", manufacturerRaw: "Huawei", nameRaw: "Synthetic Box", domain: "B", equipmentOverallStatus: "Учёт", inCurrentSr: true, locationId: "loc", ipNormalized: "192.0.2.41" },
+      { id: "norm", category: "vcs", modelRaw: "TE20", manufacturerRaw: "Huawei", domain: "A", equipmentOverallStatus: "Норма", inCurrentSr: true, locationId: "loc" },
+      { id: "poly", category: "vcs", modelRaw: "RealPresence Group 310", manufacturerRaw: "Polycom", domain: "A", equipmentOverallStatus: "Учёт", inCurrentSr: true, locationId: "loc" }
+    ];
+    const event = (deviceId, kind, time) => ({ id: `${deviceId}-${kind}-${time}`, deviceId, kind, deviceLocalTime: time,
+      estimatedAt: time.replace(" ", "T") + ".000Z", sources: [{ path: "synthetic.xml", line: 7 }] });
+    const source = { valid: true, stale: false, groups: {
+      confirmed_reboot: { events: [event("te", "confirmed_reboot", "2026-01-01 10:00:00"), event("te", "confirmed_reboot", "2026-01-02 10:00:00"), event("norm", "confirmed_reboot", "2026-01-01 10:00:00")] },
+      power_off: { events: [event("te", "power_off", "2026-01-03 11:00:00"), event("box", "power_off", "2026-01-04 11:00:00")] },
+      suspected_power_loss: { events: [event("te", "suspected_power_loss", "2026-01-05 12:00:00")] }
+    } };
+    const result = api.getAccountedVcsAnalytics(state, [source], {});
+    assertEqual(result.totalDevices, 3);
+    assertEqual(result.rebootDevices, 1);
+    assertEqual(result.rebootEvents, 2);
+    assertEqual(result.powerConfirmedDevices, 2);
+    assertEqual(result.powerSuspectedDevices, 1);
+    assertEqual(result.rows.find((row) => row.deviceId === "poly").rebootCount, 0);
+    assertEqual(result.topReboots[0].deviceId, "te");
+    assertEqual(result.topPowerConfirmed.length, 2);
+    assert(result.topPowerConfirmed.some((row) => row.deviceId === "box"));
+    assertEqual(result.topPowerSuspected[0].deviceId, "te");
+    assertEqual(result.topPowerSuspected[0].powerSuspectedCount, 1);
+    const byDomain = api.getAccountedVcsAnalytics(state, [source], { domain: "A" });
+    assertEqual(byDomain.totalDevices, 2);
+    assertEqual(byDomain.powerConfirmedDevices, 1);
+    const byModel = api.getAccountedVcsAnalytics(state, [source], { model: "TE40" });
+    assertEqual(byModel.totalDevices, 1);
+    assertEqual(byModel.powerConfirmedEvents, 1);
+  });
+
+  test("Отдельные XLSX по ВКС «Учёт» содержат числа и буквальный текст", () => {
+    const row = { deviceId: "te", deviceName: "=1+1", model: "TE40", manufacturer: "Huawei", ip: "192.0.2.40",
+      mac: "02:00:00:00:00:40", domain: "@example", vip: false, locationName: "Synthetic room", address: "Synthetic address",
+      rebootCount: 2, powerConfirmedCount: 1, powerSuspectedCount: 1,
+      firstReboot: "2026-01-01 10:00:00", lastReboot: "2026-01-02 10:00:00",
+      firstPowerConfirmed: "2026-01-03 11:00:00", lastPowerConfirmed: "2026-01-03 11:00:00",
+      firstPowerSuspected: "2026-01-04 12:00:00", lastPowerSuspected: "2026-01-04 12:00:00" };
+    for (const kind of ["reboot", "power"]) {
+      const output = api.buildAccountedVcsXlsx({ rows: [row, { ...row, deviceId: "none", rebootCount: 0, powerConfirmedCount: 0, powerSuspectedCount: 0 }] }, kind);
+      assert(output.ok, output.errors?.join("; "));
+      const workbook = global.XLSX.read(output.bytes, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      assertEqual(sheet.A2.v, "=1+1");
+      assertEqual(sheet.A2.t, "s");
+      assert(!sheet.A2.f);
+      assertEqual(sheet.E2.t, "s");
+      assert(sheet["!ref"]?.startsWith("A1:"));
+      assert(!sheet.A3, "Устройства без события не должны попадать в выгрузку");
+      const table = global.XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      assert(table[0].includes(kind === "reboot" ? "Основание" : "Достоверность"));
+      assert(String(table[1][kind === "reboot" ? 11 : 14]).includes(kind === "reboot" ? "Подтверждено" : "предположение"));
+      assert(Object.values(sheet).some((cell) => cell?.t === "n" && cell.v === (kind === "reboot" ? 2 : 1)));
+    }
+  });
+
+  test("Срез ВКС «Учёт» обрабатывает 5000 устройств и 100000 событий без квадратичного обхода", () => {
+    const state = api.createDemoState();
+    state.locations = [{ id: "loc", name: "Synthetic", address: "Synthetic address" }];
+    state.inventoryDevices = Array.from({ length: 5000 }, (_, index) => ({ id: `device-${index}`, category: "vcs",
+      equipmentOverallStatus: "Учёт", inCurrentSr: true, locationId: "loc", domain: index % 2 ? "B" : "A",
+      nameRaw: `Device ${index}`, modelRaw: "TE40", manufacturerRaw: "Huawei" }));
+    const events = Array.from({ length: 100000 }, (_, index) => ({ id: `event-${index}`, kind: "confirmed_reboot",
+      deviceId: `device-${index % 5000}`, deviceLocalTime: `2026-01-${String(1 + Math.floor(index / 5000)).padStart(2, "0")} 10:00:00` }));
+    const source = { valid: true, stale: false, groups: { confirmed_reboot: { events } } };
+    const started = Date.now();
+    const result = api.getAccountedVcsAnalytics(state, [source], { domain: "A" });
+    assertEqual(result.totalDevices, 2500);
+    assertEqual(result.rebootEvents, 50000);
+    assertEqual(result.topReboots[0].rebootCount, 20);
+    const map = api.getAccountedVcsHeatmap(result, "confirmed_reboot");
+    assertEqual(map.cells.reduce((count, cell) => count + cell.events.length, 0), 50000);
+    assert(Date.now() - started < 2000, "Срез и карта 100000 событий должны укладываться в 2 секунды");
+  });
+
+  if (typeof require === "function") test("Кольца, тепловая карта и XLSX ВКС «Учёт» имеют обработчики кликов", () => {
+    const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    for (const marker of ["data-accounted-view", "data-accounted-device", "data-accounted-heatmap-cell",
+      "data-accounted-heatmap-kind", "data-download-accounted", "currentAccountedAnalytics()"])
+      assert(source.includes(marker), `Отсутствует обработчик ${marker}`);
+  });
+
+  test("Карта ВКС «Учёт» показывает уникальные устройства и отдельные события", () => {
+    const event = (deviceId, time) => ({ deviceId, deviceLocalTime: time });
+    const analytics = { eventsByKind: { confirmed_reboot: [event("a", "2026-01-05 10:01:00"), event("a", "2026-01-05 10:10:00"), event("b", "2026-01-05 10:20:00")], power_off: [], suspected_power_loss: [] } };
+    const map = api.getAccountedVcsHeatmap(analytics, "confirmed_reboot");
+    assertEqual(map.cells[10].devices.size, 2);
+    assertEqual(map.cells[10].events.length, 3);
+    assertEqual(api.getAccountedVcsHeatmap(analytics, "power_off").cells[10].events.length, 0);
+  });
+
+  test("Рабочая база получает только безопасную проекцию без rawText и секретов", () => {
+    const state = api.createDemoState();
+    state.pollingResults = [{ id: "synthetic-result", rawText: "SYNTHETIC-SECRET", rawSha256: "a".repeat(64),
+      normalizedData: { webBlocks: { "Device Info": { Model: "TE40", Password: "SYNTHETIC-SECRET" } } } }];
+    state.pollingRuns = [{ id: "synthetic-run", authenticationInputSha256: "b".repeat(64) }];
+    state.currentUserId = "local-user";
+    const projection = api.buildWorkspaceProjection(state, { rows: [], summary: { files: 0 }, indexes: {}, registry: [] });
+    const encoded = JSON.stringify(projection);
+    assertEqual(projection.schemaVersion, 1);
+    assertEqual(projection.state.pollingResults[0].normalizedData.webBlocks["Device Info"].Model, "TE40");
+    assertEqual(projection.state.currentUserId, null);
+    for (const forbidden of ["rawText", "SYNTHETIC-SECRET", "Password", "authenticationInputSha256", "local-user"]) assert(!encoded.includes(forbidden));
+    const clean = api.createDemoState();
+    clean.settings.rawText = "SYNTHETIC-SECRET";
+    assert(api.validateState(api.buildWorkspaceProjection(clean).state).ok);
+  });
+
+  if (typeof require === "function") test("Экран рабочей базы предлагает обзор и восстанавливает после входа", () => {
+    const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
+    assert(source.includes("data-workspace-choose"));
+    assert(source.includes("/api/workspace/choose"));
+    assert(source.includes("/api/workspace/snapshot"));
+    assert(source.includes("await restoreWorkspaceAfterLogin()"));
+    assert(source.includes("buildWorkspaceProjection(state"));
   });
 
   test("Поток лога пишется в выбранную папку без JSON/base64", async () => {

@@ -12,6 +12,7 @@
   const TE20_EVENT_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_MC)\s+\d{1,9}\s+\d{1,9}\[[A-Za-z]:\d{1,6}\s+[A-Za-z]:\d{1,6}\]\s+(.{0,4096})$/;
   const TE20_WEB_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_WEB)\s+\d{1,9}\s+(.{0,4096})$/;
   const TE20_REMOTE_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_RC)\s+\d{1,9}\s+(.{0,4096})$/;
+  const EVENT_CANDIDATE = /system\s+start|\bsystem\b.{0,70}\bboot\b|\breboots\b|\bshut\b.{0,80}\bdown\b.{0,80}\bterminal\b|\bnormal\b.{0,80}\breboot\b|terminal.{0,50}powered.{0,30}off/i;
 
   function localTimeValue(raw) {
     const parts = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)$/.exec(raw || "");
@@ -52,15 +53,17 @@
     const coverage = { lines: 0, oversizedLines: 0, malformedCandidates: 0 };
     let pending = "";
     let dropping = false;
+    let lastActivityMs = null;
     function process(line) {
       coverage.lines += 1;
       if (dropping || line.length > MAX_LINE) { coverage.oversizedLines += 1; dropping = false; return; }
       const activity = ACTIVITY_LINE.exec(line);
       const activityMs = activity ? localTimeValue(activity[1]) : null;
-      if (activityMs !== null) activityTimes.push(activityMs);
+      if (activityMs !== null && activityMs !== lastActivityMs) { activityTimes.push(activityMs); lastActivityMs = activityMs; }
+      if (!EVENT_CANDIDATE.test(line)) return;
       const marker = parseEventLine(line, coverage.lines, model);
       if (marker) markers.push(marker);
-      else if (/system\s+start|\bsystem\b.{0,70}\bboot\b|\breboots\b|\bshut\b.{0,80}\bdown\b.{0,80}\bterminal\b|\bnormal\b.{0,80}\breboot\b|terminal.{0,50}powered.{0,30}off/i.test(line)) coverage.malformedCandidates += 1;
+      else coverage.malformedCandidates += 1;
     }
     return {
       feed(text) {
@@ -71,7 +74,13 @@
       },
       finish() {
         if (pending && !dropping) process(pending); else if (dropping) coverage.oversizedLines += 1;
-        const sorted = [...new Set(activityTimes)].sort((a, b) => a - b);
+        activityTimes.sort((a, b) => a - b);
+        let uniqueCount = 0;
+        for (let index = 0; index < activityTimes.length; index += 1) {
+          if (!uniqueCount || activityTimes[index] !== activityTimes[uniqueCount - 1]) activityTimes[uniqueCount++] = activityTimes[index];
+        }
+        activityTimes.length = uniqueCount;
+        const sorted = activityTimes;
         const bootGaps = [];
         for (const boot of markers.filter((item) => item.kind === "system_start")) {
           let low = 0; let high = sorted.length;
@@ -113,9 +122,13 @@
     if (!isHuaweiTeLogPrefix(decoder.decode(prefixBytes))) return { ok: false, reason: "unsupported_log_format", markers: [], coverage: null };
     const parser = collector(options?.model);
     for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
-      const bytes = new Uint8Array(await file.slice(offset, Math.min(file.size, offset + CHUNK_BYTES)).arrayBuffer());
+      if (options?.shouldCancel?.()) throw new Error("log_scan_cancelled");
+      const end = Math.min(file.size, offset + CHUNK_BYTES);
+      const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
       parser.feed(decoder.decode(bytes, { stream: true }));
+      await options?.onProgress?.(end, file.size, bytes);
     }
+    if (options?.shouldCancel?.()) throw new Error("log_scan_cancelled");
     parser.feed(decoder.decode());
     return { ok: true, ...parser.finish() };
   }

@@ -8,12 +8,15 @@ import re
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import tempfile
 from http.cookies import SimpleCookie
 from pathlib import Path
 
 from mvp_runtime.server import create_server
 from mvp_runtime.polling_job import create_polling_job
+from mvp_runtime.workspace import WorkspaceStore
+from python_tests.test_workspace import sample_payload
 from python_tests.helpers import credential_xlsx
 
 
@@ -63,6 +66,71 @@ class ServerHarness:
 
 
 class ServerTests(unittest.TestCase):
+    def test_workspace_routes_require_admin_and_commit_atomically(self) -> None:
+        selected = Path(self.harness.admin_dir.name) / "selected-workspace"
+        selected.mkdir()
+        self.harness.server.state.workspace_store = WorkspaceStore(
+            Path(self.harness.admin_dir.name) / "workspace-location.json",
+            self.harness.server.state.project_root,
+        )
+        cookie, csrf = self.harness.session(unlock=False)
+        status, _, body = self.harness.request("GET", "/api/workspace/status", headers={"Cookie": cookie})
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body)["error"], "admin_login_required")
+        setup = {"username": "synthetic-admin", "password": "SYNTHETIC-ADMIN-PASSWORD-123"}
+        status, _, _ = self.harness.request("POST", "/api/admin/setup",
+            headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}),
+            body=json.dumps(setup))
+        self.assertEqual(status, 200)
+        headers = self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"})
+        status, _, body = self.harness.request("POST", "/api/workspace/select", headers=headers,
+            body=json.dumps({"path": str(selected)}))
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["revision"], 0)
+        payload = sample_payload()
+        status, _, body = self.harness.request("POST", "/api/workspace/commit", headers=headers,
+            body=json.dumps({"baseRevision": 0, "payload": payload}))
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["revision"], 1)
+        status, _, body = self.harness.request("GET", "/api/workspace/snapshot", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["payload"]["log"]["summary"]["files"], 1)
+        status, _, body = self.harness.request("POST", "/api/workspace/commit", headers=headers,
+            body=json.dumps({"baseRevision": 0, "payload": payload}))
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["error"], "workspace_revision_conflict")
+        status, _, _ = self.harness.request("POST", "/api/workspace/commit", headers={"Cookie": cookie},
+            body=json.dumps({"baseRevision": 1, "payload": payload}))
+        self.assertEqual(status, 403)
+
+    def test_workspace_native_folder_choice_is_admin_gated(self) -> None:
+        selected = Path(self.harness.admin_dir.name) / "native-selected"
+        selected.mkdir()
+        self.harness.server.state.workspace_store = WorkspaceStore(
+            Path(self.harness.admin_dir.name) / "native-location.json", self.harness.server.state.project_root)
+        cookie, csrf = self.harness.session(unlock=False)
+        status, _, _ = self.harness.request("POST", "/api/workspace/choose",
+            headers=self._mutation_headers(cookie, csrf), body="{}")
+        self.assertEqual(status, 403)
+        status, _, _ = self.harness.request("POST", "/api/admin/setup",
+            headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}),
+            body=json.dumps({"username": "synthetic-admin", "password": "SYNTHETIC-ADMIN-PASSWORD-123"}))
+        self.assertEqual(status, 200)
+        with patch("mvp_runtime.server.choose_workspace_directory", return_value=str(selected)):
+            status, _, body = self.harness.request("POST", "/api/workspace/choose",
+                headers=self._mutation_headers(cookie, csrf, **{"Content-Type": "application/json"}), body="{}")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["status"], "ready")
+
+    def test_local_worker_assets_are_served_with_same_origin_policy(self) -> None:
+        cookie, _csrf = self.harness.session(unlock=False)
+        for path in ("/runtime/log-scan-worker.js", "/runtime/log-scan-client.js"):
+            with self.subTest(path=path):
+                status, headers, body = self.harness.request("GET", path, headers={"Cookie": cookie})
+                self.assertEqual(status, 200)
+                self.assertIn("worker-src 'self'", headers["content-security-policy"])
+                self.assertIn(b"scan", body)
+
     def test_job_plan_rejects_both_outputs_disabled(self) -> None:
         cookie, csrf = self.harness.session()
         digest = self._upload_credentials(cookie, csrf)

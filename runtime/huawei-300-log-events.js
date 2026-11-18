@@ -32,6 +32,7 @@
     const markers = [];
     const activityTimes = [];
     const coverage = { lines: 0, oversizedLines: 0, malformedCandidates: 0 };
+    let lastActivityMs = null;
     function process(raw) {
       coverage.lines += 1;
       const line = raw.replace(/\r$/, "");
@@ -39,7 +40,7 @@
       const activity = ACTIVITY_LINE.exec(line);
       if (activity && !line.includes("\uFFFD")) {
         const at = localTimeValue(`${activity[1]} ${activity[2]}`);
-        if (at !== null) activityTimes.push(at);
+        if (at !== null && at !== lastActivityMs) { activityTimes.push(at); lastActivityMs = at; }
       }
       const bootCandidate = /\bsystem\s+boot\b/i.test(line);
       const shutdownCandidate = activity?.[3] === "LOG_MOD_WEB" && WEB_SHUTDOWN.test(line.slice(activity[0].length));
@@ -65,7 +66,13 @@
         if (pending && !dropping) process(pending);
         else if (dropping) coverage.oversizedLines += 1;
         if (!/<\/LogModule>\s*$/.test(tail)) return { ok: false, reason: "incomplete_log", markers: [], coverage, bootGaps: [] };
-        const sorted = [...new Set(activityTimes)].sort((a, b) => a - b);
+        activityTimes.sort((a, b) => a - b);
+        let uniqueCount = 0;
+        for (let index = 0; index < activityTimes.length; index += 1) {
+          if (!uniqueCount || activityTimes[index] !== activityTimes[uniqueCount - 1]) activityTimes[uniqueCount++] = activityTimes[index];
+        }
+        activityTimes.length = uniqueCount;
+        const sorted = activityTimes;
         const bootGaps = [];
         for (const boot of markers.filter((item) => item.kind === "system_boot")) {
           let low = 0; let high = sorted.length;
@@ -96,16 +103,20 @@
     return parser.finish();
   }
 
-  async function scanFile(file) {
+  async function scanFile(file, options) {
     if (!file || !Number.isSafeInteger(file.size) || file.size < 0 || typeof file.slice !== "function") return { ok: false, reason: "invalid_file", markers: [], coverage: null, bootGaps: [] };
     const decoder = new TextDecoder("utf-8", { fatal: false });
     const prefix = decoder.decode(new Uint8Array(await file.slice(0, 2048).arrayBuffer()));
     if (!isLogPrefix(prefix)) return { ok: false, reason: "unsupported_log_format", markers: [], coverage: null, bootGaps: [] };
     const parser = collector();
     for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
-      const bytes = new Uint8Array(await file.slice(offset, Math.min(file.size, offset + CHUNK_BYTES)).arrayBuffer());
+      if (options?.shouldCancel?.()) throw new Error("log_scan_cancelled");
+      const end = Math.min(file.size, offset + CHUNK_BYTES);
+      const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
       parser.feed(decoder.decode(bytes, { stream: true }));
+      await options?.onProgress?.(end, file.size, bytes);
     }
+    if (options?.shouldCancel?.()) throw new Error("log_scan_cancelled");
     parser.feed(decoder.decode());
     return parser.finish();
   }

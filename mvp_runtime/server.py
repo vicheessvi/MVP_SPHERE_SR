@@ -23,12 +23,13 @@ from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_p
 from .polling import PollingError, normalize_ipv4, validate_plan_interval, validate_te20_single_target_tasks
 from .polling_job import JobInputError, PollingJob, TERMINAL_STATUSES, create_polling_job
 from .redaction import PlanSecretError, assert_no_plan_secrets
+from .workspace import MAX_PAYLOAD_BYTES, WorkspaceError, WorkspaceStore, choose_workspace_directory, default_workspace_locator_path
 
 
 HOST = "127.0.0.1"
 COOKIE_NAME = "mvp_sphere_session"
 CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' data:; "
     "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 )
 PUBLIC_FILES = {
@@ -41,6 +42,8 @@ PUBLIC_FILES = {
     "/runtime/huawei-te-log-events.js": ("runtime/huawei-te-log-events.js", "text/javascript; charset=utf-8"),
     "/runtime/huawei-310-log-events.js": ("runtime/huawei-310-log-events.js", "text/javascript; charset=utf-8"),
     "/runtime/huawei-300-log-events.js": ("runtime/huawei-300-log-events.js", "text/javascript; charset=utf-8"),
+    "/runtime/log-scan-worker.js": ("runtime/log-scan-worker.js", "text/javascript; charset=utf-8"),
+    "/runtime/log-scan-client.js": ("runtime/log-scan-client.js", "text/javascript; charset=utf-8"),
     "/runtime/sphere.js": ("runtime/sphere.js", "text/javascript; charset=utf-8"),
 }
 JOB_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)$")
@@ -82,6 +85,7 @@ class RuntimeSession:
 class RuntimeState:
     project_root: Path
     admin_verifier_path: Path
+    workspace_store: WorkspaceStore | None = None
     launch_token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     launch_used: bool = False
     sessions: dict[str, RuntimeSession] = field(default_factory=dict)
@@ -558,6 +562,35 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
                    {"ok": accepted, "adminUnlocked": accepted, **({} if accepted else {"error": "admin_login_failed"})})
         return True
 
+    def _workspace_routes(self, path: str) -> bool:
+        if not path.startswith("/api/workspace/"):
+            return False
+        store = self.server.state.workspace_store
+        if store is None:
+            raise WorkspaceError("workspace_not_configured")
+        if path == "/api/workspace/status" and self.command == "GET":
+            self._json(HTTPStatus.OK, store.status())
+        elif path == "/api/workspace/snapshot" and self.command == "GET":
+            self._json(HTTPStatus.OK, store.load())
+        elif path == "/api/workspace/select" and self.command == "POST":
+            value = self._read_json(4096)
+            if set(value) != {"path"} or not isinstance(value["path"], str):
+                raise WorkspaceError("workspace_path_invalid")
+            self._json(HTTPStatus.OK, store.select(value["path"]))
+        elif path == "/api/workspace/choose" and self.command == "POST":
+            value = self._read_json(1024)
+            if value:
+                raise WorkspaceError("workspace_payload_invalid")
+            self._json(HTTPStatus.OK, store.select(choose_workspace_directory()))
+        elif path == "/api/workspace/commit" and self.command == "POST":
+            value = self._read_json(MAX_PAYLOAD_BYTES + 4096)
+            if set(value) != {"baseRevision", "payload"}:
+                raise WorkspaceError("workspace_payload_invalid")
+            self._json(HTTPStatus.OK, store.commit(value["baseRevision"], value["payload"]))
+        else:
+            self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+        return True
+
     def _dispatch(self) -> None:
         parsed = urlsplit(self.path)
         path = unquote(parsed.path)
@@ -579,8 +612,10 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
             return
         with self.server.state.lock:
             admin_unlocked = session.admin_unlocked
-        if path.startswith("/api/polling/") and not admin_unlocked:
+        if (path.startswith("/api/polling/") or path.startswith("/api/workspace/")) and not admin_unlocked:
             self._json(HTTPStatus.FORBIDDEN, {"error": "admin_login_required"})
+            return
+        if self._workspace_routes(path):
             return
         if self._credentials_route(session):
             return
@@ -595,6 +630,9 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
             self._dispatch()
         except RequestError as error:
             self._json(error.status, {"error": error.code})
+        except WorkspaceError as error:
+            status = HTTPStatus.CONFLICT if error.code in {"workspace_revision_conflict", "workspace_missing", "workspace_corrupt"} else HTTPStatus.BAD_REQUEST
+            self._json(status, {"error": error.code})
         except Exception:
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "local_runtime_error", "safeMessage": "Локальная операция не выполнена"})
 
@@ -614,7 +652,9 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         self._safe_dispatch()
 
 
-def create_server(project_root: Path | str, port: int = 0, admin_verifier_path: Path | None = None) -> LocalRuntimeServer:
+def create_server(project_root: Path | str, port: int = 0, admin_verifier_path: Path | None = None,
+                  workspace_locator_path: Path | None = None) -> LocalRuntimeServer:
     root = Path(project_root).resolve()
-    state = RuntimeState(project_root=root, admin_verifier_path=admin_verifier_path or default_verifier_path())
+    state = RuntimeState(project_root=root, admin_verifier_path=admin_verifier_path or default_verifier_path(),
+                         workspace_store=WorkspaceStore(workspace_locator_path or default_workspace_locator_path(), root))
     return LocalRuntimeServer((HOST, int(port)), state)

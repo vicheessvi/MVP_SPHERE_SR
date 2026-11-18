@@ -59,7 +59,9 @@
   if (!TE_LOG_EVENTS) throw new Error("Модуль анализа логов Huawei TE не загружен");
   const HUAWEI_310_LOG_EVENTS = global.MVP_HUAWEI_310_LOG_EVENTS || (typeof module === "object" && module.exports ? require("./runtime/huawei-310-log-events") : null);
   const HUAWEI_300_LOG_EVENTS = global.MVP_HUAWEI_300_LOG_EVENTS || (typeof module === "object" && module.exports ? require("./runtime/huawei-300-log-events") : null);
+  const LOG_SCAN_CLIENT = global.MVP_LOG_SCAN_CLIENT || (typeof module === "object" && module.exports ? require("./runtime/log-scan-client") : null);
   if (!HUAWEI_310_LOG_EVENTS) throw new Error("Модуль анализа логов Huawei 310 не загружен");
+  if (!LOG_SCAN_CLIENT) throw new Error("Модуль фонового разбора логов не загружен");
   const { MODULE_CATALOG, UI_TERMS, EQUIPMENT_CATEGORY_CATALOG, ANALYZED_PARAMETER_RULES, POLLING_HELP_ENTRIES } = PRODUCT_CATALOG;
   const EQUIPMENT_CATEGORY_IDS = Object.freeze(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id));
   const catalogValidation = PRODUCT_CATALOG.validateProductCatalog();
@@ -433,11 +435,30 @@
     const bytes = Number(value) || 0;
     if (bytes < 1024) return `${bytes} Б`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КиБ`;
+    if (bytes >= 1024 ** 4) return `${(bytes / (1024 ** 4)).toFixed(2)} ТиБ`;
+    if (bytes >= 1024 ** 3) return `${(bytes / (1024 ** 3)).toFixed(2)} ГиБ`;
     return `${(bytes / (1024 * 1024)).toFixed(2)} МиБ`;
   }
 
   function serializeState(state) {
     return JSON.stringify(state);
+  }
+
+  function buildWorkspaceProjection(candidateState, logData) {
+    const secretKey = /rawtext|password|passwd|secret|credential|cookie|token|api.?key|private.?key|authenticationinputsha256|sessionid|username|successfulcredential/i;
+    const inlineSecret = /\bBasic\s+[A-Za-z0-9+/=]+|NortxeSession=/i;
+    const safeState = { ...(candidateState || {}), currentUserId: null };
+    const source = logData || {};
+    const projection = { schemaVersion: 1, state: safeState, log: {
+      rows: Array.isArray(source.rows) ? source.rows : [],
+      summary: source.summary || { files: 0, bytes: 0, matched: 0, issues: 0, formats: {} },
+      indexes: source.indexes || {},
+      registry: Array.isArray(source.registry) ? source.registry : []
+    } };
+    return JSON.parse(JSON.stringify(projection, (key, value) => {
+      if (secretKey.test(key)) return undefined;
+      return typeof value === "string" && inlineSecret.test(value) ? "[REDACTED]" : value;
+    }));
   }
 
   function measureTextBytes(text) {
@@ -2254,19 +2275,220 @@
     return { rows, summary: { files: rows.length, bytes: rows.reduce((sum, row) => sum + row.size, 0), matched: rows.filter((row) => row.matchStatus === "Сопоставлено").length, issues: rows.filter((row) => row.matchStatus !== "Сопоставлено" || ["Ошибка чтения", "Неизвестный формат", "XML (неизвестная схема)"].includes(row.format)).length, formats } };
   }
 
-  function buildHuaweiTeLogEventIndex(scannedEntries, currentState) {
+  function summarizeDeviceLogRows(rows) {
+    const formats = {};
+    for (const row of rows) formats[row.format] = (formats[row.format] || 0) + 1;
+    return { files: rows.length, bytes: rows.reduce((sum, row) => sum + row.size, 0),
+      matched: rows.filter((row) => row.matchStatus === "Сопоставлено").length,
+      issues: rows.filter((row) => row.matchStatus !== "Сопоставлено" || row.analysisStatus === "Ошибка разбора"
+        || ["Ошибка чтения", "Неизвестный формат", "XML (неизвестная схема)"].includes(row.format)).length,
+      formats };
+  }
+
+  function mergeLogEventIndexes(previous, incoming) {
+    if (!previous) return incoming;
+    const events = new Map((previous.events || []).map((event) => [event.id, { ...event, sources: [...(event.sources || [])] }]));
+    const priority = { unknown_start: 0, start_after_shutdown: 1, confirmed_reboot: 2, power_off: 2 };
+    for (const event of incoming.events || []) {
+      const old = events.get(event.id);
+      if (!old) { events.set(event.id, event); continue; }
+      if ((priority[event.kind] ?? 0) > (priority[old.kind] ?? 0)) {
+        old.kind = event.kind;
+        old.ruleVersion = event.ruleVersion;
+        old.validationStatus = event.validationStatus || old.validationStatus;
+        old.actionMethod = event.actionMethod || old.actionMethod;
+        old.shutdownMethod = event.shutdownMethod || old.shutdownMethod;
+        if (event.kind !== "unknown_start") old.silenceGap = null;
+      }
+      if (event.silenceGap && old.kind === "unknown_start") {
+        const earlier = old.silenceGap;
+        old.silenceGap = earlier && earlier.seconds <= event.silenceGap.seconds ? earlier : event.silenceGap;
+        if (earlier?.knownAction || event.silenceGap.knownAction) old.silenceGap.knownAction = true;
+        if (earlier?.clockAnomalyOrLongGap || event.silenceGap.clockAnomalyOrLongGap) old.silenceGap.clockAnomalyOrLongGap = true;
+      }
+      old.sourceCount = (old.sourceCount || old.sources.length) + (event.sourceCount || event.sources?.length || 0);
+      for (const source of event.sources || []) {
+        if (old.sources.length >= LOG_EVENT_SOURCE_SAMPLE_LIMIT) break;
+        if (!old.sources.some((item) => item.path === source.path && item.line === source.line)) old.sources.push(source);
+      }
+    }
+    const ordered = [...events.values()].sort((left, right) => timeValue(right.estimatedAt) - timeValue(left.estimatedAt) || left.id.localeCompare(right.id));
+    const coverage = { ...(previous.coverage || {}) };
+    for (const [key, value] of Object.entries(incoming.coverage || {})) {
+      if (typeof value === "number" && !["confirmedReboots", "powerOffs", "unknownStarts", "startsAfterShutdown", "gapCandidates"].includes(key)) coverage[key] = (coverage[key] || 0) + value;
+    }
+    coverage.confirmedReboots = ordered.filter((item) => item.kind === "confirmed_reboot").length;
+    coverage.powerOffs = ordered.filter((item) => item.kind === "power_off").length;
+    coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
+    coverage.startsAfterShutdown = ordered.filter((item) => item.kind === "start_after_shutdown").length;
+    coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
+    return { ...incoming, events: ordered, coverage, validationStatus: incoming.validationStatus || previous.validationStatus };
+  }
+
+  async function prepareDeviceLogImport(files, currentState, options) {
+    const sourceFiles = Array.isArray(files) ? files : [];
+    if (!sourceFiles.length) throw new Error("log_import_empty");
+    const settings = options || {};
+    const shouldCancel = () => settings.shouldCancel?.() === true;
+    const checkCancel = () => { if (shouldCancel()) throw new Error("log_import_cancelled"); };
+    let skippedFiles = 0;
+    const totalBytes = sourceFiles.reduce((sum, file) => sum + (Number.isSafeInteger(file.size) ? file.size : 0), 0);
+    const report = (phase, processed, bytesRead) => settings.onProgress?.({ phase, processed, total: sourceFiles.length, bytesRead, totalBytes, skippedFiles });
+    const entries = [];
+    report("classifying", 0, 0);
+    for (let start = 0; start < sourceFiles.length; start += 64) {
+      checkCancel();
+      const batch = await Promise.all(sourceFiles.slice(start, start + 64).map(async (file) => {
+        try {
+          const prefix = new Uint8Array(await file.slice(0, 2048).arrayBuffer());
+          return { name: file.name, relativePath: file.webkitRelativePath || file.name, size: file.size,
+            lastModified: file.lastModified, prefix, prefixSha256: await sha256Bytes(prefix) };
+        }
+        catch { return { name: file.name, relativePath: file.webkitRelativePath || file.name, size: file.size,
+          lastModified: file.lastModified, readError: true, prefix: new Uint8Array() }; }
+      }));
+      entries.push(...batch);
+      report("classifying", entries.length, 0);
+      await new Promise((resolve) => global.setTimeout(resolve, 0));
+    }
+    checkCancel();
+    const imported = buildDeviceLogImportRows(entries, currentState);
+    imported.rows.forEach((row, index) => {
+      row.sourceLastModified = Number(entries[index].lastModified) || 0;
+      row.prefixSha256 = entries[index].prefixSha256 || null;
+    });
+    entries.forEach((entry) => entry.prefix.fill(0));
+    entries.length = 0;
+    const existing = settings.existing;
+    const oldRegistry = Array.isArray(existing?.registry) ? existing.registry : [];
+    const oldByPath = new Map(oldRegistry.map((item) => [item.path, item]));
+    const oldRowsByPath = new Map((existing?.rows || []).map((item) => [item.path, item]));
+    const selectedPaths = new Set(imported.rows.map((item) => item.path));
+    if (selectedPaths.size !== imported.rows.length) throw new Error("duplicate_log_path");
+    const currentSrDigest = currentState?.srImports?.at(-1)?.rawSha256 || null;
+    const oldSrDigest = existing?.indexes?.te?.sourceSrSha256 || null;
+    const srChanged = Boolean(oldRegistry.length && oldSrDigest !== currentSrDigest);
+    const changedOldFile = imported.rows.some((row) => {
+      const old = oldByPath.get(row.path);
+      return old && (old.size !== row.size || old.lastModified !== row.sourceLastModified
+        || old.prefixSha256 !== row.prefixSha256 || old.format !== row.format || old.deviceId !== row.deviceId);
+    });
+    const fullRecheck = settings.forceRescan === true || srChanged || changedOldFile;
+    if (fullRecheck && oldRegistry.some((item) => !selectedPaths.has(item.path))) throw new Error("log_full_reimport_required");
+    const reuseExisting = oldRegistry.length > 0 && !fullRecheck;
+    const rowsByPath = new Map(reuseExisting ? oldRowsByPath : []);
+    const registryByPath = new Map(reuseExisting ? oldByPath : []);
+    const currentDevices = new Map(currentState.inventoryDevices.filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
+    const accumulators = {
+      te: createHuaweiTeLogEventIndex(currentState),
+      huawei310: createHuawei310LogEventIndex(currentState),
+      huawei300Bar: createHuawei300LogEventIndex(currentState, "bar"),
+      huawei300Box: createHuawei300LogEventIndex(currentState, "box")
+    };
+    let processed = 0;
+    let completedBytes = 0;
+    let activeFileBytes = 0;
+    const client = settings.scanClient || LOG_SCAN_CLIENT.createLogScanClient({ onProgress: (done) => {
+      activeFileBytes = done;
+      report("analyzing", processed, completedBytes + done);
+    } });
+    settings.onClient?.(client);
+    try {
+      report("analyzing", 0, 0);
+      for (let index = 0; index < sourceFiles.length; index += 1) {
+        checkCancel();
+        const row = imported.rows[index];
+        const old = reuseExisting ? oldByPath.get(row.path) : null;
+        if (old && old.analysisStatus !== "Ошибка разбора" && old.format !== "Ошибка чтения"
+          && old.size === row.size && old.lastModified === row.sourceLastModified
+          && old.prefixSha256 === row.prefixSha256 && old.format === row.format && old.deviceId === row.deviceId) {
+          const previousRow = oldRowsByPath.get(row.path);
+          row.analysisStatus = previousRow?.analysisStatus || old.analysisStatus || "Ранее обработан";
+          rowsByPath.set(row.path, previousRow || row);
+          registryByPath.set(row.path, old);
+          skippedFiles += 1;
+          processed += 1;
+          completedBytes += Number(sourceFiles[index].size || 0);
+          report("analyzing", index + 1, completedBytes);
+          if ((index + 1) % 8 === 0) await new Promise((resolve) => global.setTimeout(resolve, 0));
+          continue;
+        }
+        const device = currentDevices.get(row.deviceId);
+        const model = auditModelToken(device?.modelRaw);
+        const huawei = row.matchStatus === "Сопоставлено" && device?.category === "vcs"
+          && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei";
+        const kind = huawei && row.format === "Huawei TE XML" && ["te20", "te30", "te40", "te50", "te60"].includes(model) ? "te"
+          : huawei && row.format === "Huawei 310 XML" && ["bar310", "box310", "box610"].includes(model) ? "huawei310"
+            : huawei && row.format === "Huawei 300 XML" && ["bar300", "box300", "box600"].includes(model) ? "huawei300" : null;
+        let scan = null;
+        activeFileBytes = 0;
+        if (kind) {
+          try { scan = await client.scan(sourceFiles[index], kind, model); }
+          catch (error) {
+            if (shouldCancel() || error?.message === "log_scan_cancelled") throw new Error("log_import_cancelled");
+            if (error?.message === "log_worker_failed") throw error;
+            scan = { ok: false, reason: "read_failed", markers: [] };
+          }
+        }
+        if (fullRecheck && oldByPath.has(row.path)
+          && (row.format === "Ошибка чтения" || row.matchStatus !== "Сопоставлено" || (kind && !scan?.ok)))
+          throw new Error("log_recheck_incomplete");
+        row.analysisStatus = row.format === "Polycom Group TGZ" && row.matchStatus === "Сопоставлено" ? "Архив Polycom: только метаданные"
+          : !kind ? "Вне анализа Huawei TE/310/300" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
+        const entry = { row, scan };
+        for (const accumulator of Object.values(accumulators)) accumulator.add(entry);
+        rowsByPath.set(row.path, row);
+        registryByPath.set(row.path, { path: row.path, size: row.size, lastModified: row.sourceLastModified,
+          prefixSha256: row.prefixSha256, format: row.format, deviceId: row.deviceId,
+          contentDigest: scan?.contentDigest || null, digestAlgorithm: scan?.digestAlgorithm || null,
+          analysisStatus: row.analysisStatus, analysisDigest: scan?.ok
+            ? await sha256Text(JSON.stringify({ markers: scan.markers, bootGaps: scan.bootGaps || [] })) : null });
+        processed += 1;
+        completedBytes += Number(sourceFiles[index].size || 0);
+        activeFileBytes = 0;
+        report("analyzing", index + 1, completedBytes);
+        if ((index + 1) % 8 === 0) await new Promise((resolve) => global.setTimeout(resolve, 0));
+      }
+      checkCancel();
+      const incoming = Object.fromEntries(Object.entries(accumulators).map(([kind, accumulator]) => [kind, accumulator.finish()]));
+      const indexes = reuseExisting ? Object.fromEntries(Object.entries(incoming).map(([kind, value]) =>
+        [kind, mergeLogEventIndexes(existing.indexes?.[kind], value)])) : incoming;
+      const rows = [...rowsByPath.values()];
+      const teRows = rows.filter((row) => row.format === "Huawei TE XML" && row.matchStatus === "Сопоставлено"
+        && ["te20", "te30", "te40", "te50", "te60"].includes(auditModelToken(currentDevices.get(row.deviceId)?.modelRaw)));
+      const h310Rows = rows.filter((row) => row.format === "Huawei 310 XML" && row.matchStatus === "Сопоставлено"
+        && ["bar310", "box310", "box610"].includes(auditModelToken(currentDevices.get(row.deviceId)?.modelRaw)));
+      const h300BarRows = rows.filter((row) => row.format === "Huawei 300 XML" && row.matchStatus === "Сопоставлено"
+        && auditModelToken(currentDevices.get(row.deviceId)?.modelRaw) === "bar300");
+      const h300BoxRows = rows.filter((row) => row.format === "Huawei 300 XML" && row.matchStatus === "Сопоставлено"
+        && ["box300", "box600"].includes(auditModelToken(currentDevices.get(row.deviceId)?.modelRaw)));
+      indexes.te.coverage.files = rows.length;
+      indexes.te.coverage.invalidFiles = teRows.filter((row) => row.analysisStatus === "Ошибка разбора").length;
+      for (const [kind, group] of [["huawei310", h310Rows], ["huawei300Bar", h300BarRows], ["huawei300Box", h300BoxRows]]) {
+        indexes[kind].coverage.files = group.length;
+        indexes[kind].coverage.invalidFiles = group.filter((row) => row.analysisStatus === "Ошибка разбора").length;
+      }
+      return { rows, summary: summarizeDeviceLogRows(rows), indexes, registry: [...registryByPath.values()], skippedFiles };
+    } finally {
+      client.close?.();
+    }
+  }
+
+  const LOG_EVENT_SOURCE_SAMPLE_LIMIT = 16;
+
+  function createHuaweiTeLogEventIndex(currentState) {
     const devices = new Map((currentState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
     const locations = new Map((currentState?.locations || []).map((item) => [item.id, item]));
     const events = new Map();
-    const sourceKeys = new Map();
-    const coverage = { files: (scannedEntries || []).length, scannedFiles: 0, te20Files: 0, excludedFiles: 0, ambiguousFiles: 0, invalidFiles: 0, unknownStarts: 0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
-    for (const entry of scannedEntries || []) {
+    const coverage = { files: 0, scannedFiles: 0, te20Files: 0, excludedFiles: 0, ambiguousFiles: 0, invalidFiles: 0, unknownStarts: 0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
+    function add(entry) {
+      coverage.files += 1;
       const row = entry?.row || {};
-      if (row.matchStatus !== "Сопоставлено") { coverage.excludedFiles += 1; if (row.matchStatus === "Неоднозначный IP") coverage.ambiguousFiles += 1; continue; }
+      if (row.matchStatus !== "Сопоставлено") { coverage.excludedFiles += 1; if (row.matchStatus === "Неоднозначный IP") coverage.ambiguousFiles += 1; return; }
       const device = devices.get(row.deviceId);
       const model = auditModelToken(device?.modelRaw);
-      if (!device || row.ip !== normalizeIpv4(device.ipNormalized || device.ipRaw) || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei" || !["te20", "te30", "te40", "te50", "te60"].includes(model) || row.format !== "Huawei TE XML") { coverage.excludedFiles += 1; continue; }
-      if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; continue; }
+      if (!device || row.ip !== normalizeIpv4(device.ipNormalized || device.ipRaw) || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei" || !["te20", "te30", "te40", "te50", "te60"].includes(model) || row.format !== "Huawei TE XML") { coverage.excludedFiles += 1; return; }
+      if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; return; }
       coverage.scannedFiles += 1;
       if (model === "te20") coverage.te20Files += 1;
       const location = locations.get(device.locationId);
@@ -2281,12 +2503,11 @@
               knownAction: gap.knownAction === true, clockAnomalyOrLongGap: gap.clockAnomalyOrLongGap === true } : null;
         const prior = events.get(key);
         if (prior) {
-          const reference = JSON.stringify([source.path, source.line]);
-          if (!sourceKeys.get(key).has(reference)) { prior.sources.push(source); sourceKeys.get(key).add(reference); }
-          else if (source.markerLines.length) {
-            const existingSource = prior.sources.find((item) => item.path === source.path && item.line === source.line);
-            if (existingSource && source.markerLines.length > existingSource.markerLines.length) existingSource.markerLines = source.markerLines;
-          }
+          const existingSource = prior.sources.find((item) => item.path === source.path && item.line === source.line);
+          if (!existingSource) {
+            prior.sourceCount += 1;
+            if (prior.sources.length < LOG_EVENT_SOURCE_SAMPLE_LIMIT) prior.sources.push(source);
+          } else if (source.markerLines.length > existingSource.markerLines.length) existingSource.markerLines = source.markerLines;
           if (prior.kind === "unknown_start" && parsed.kind === "confirmed_reboot") {
             prior.kind = "confirmed_reboot";
             prior.ruleVersion = model === "te20" ? TE_LOG_EVENTS.TE20_RULE_VERSION : TE_LOG_EVENTS.RULE_VERSION;
@@ -2306,32 +2527,41 @@
           locationId: location?.id || device.locationId || null, locationName: location?.name || "Не указано", address: location?.address || "Не указано",
           estimatedAt: new Date(parsed.timeMs).toISOString(), deviceLocalTime: parsed.localAt, timeBasis: "device_local_unknown_timezone",
           ruleVersion: model === "te20" ? TE_LOG_EVENTS.TE20_RULE_VERSION : TE_LOG_EVENTS.RULE_VERSION,
-          shutdownMethod: parsed.method || null, silenceGap, sources: [source] });
-        sourceKeys.set(key, new Set([JSON.stringify([source.path, source.line])]));
+          shutdownMethod: parsed.method || null, silenceGap, sources: [source], sourceCount: 1 });
       }
     }
+    function finish() {
     const ordered = [...events.values()].sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
     coverage.confirmedReboots = ordered.filter((item) => item.kind === "confirmed_reboot").length;
     coverage.powerOffs = ordered.filter((item) => item.kind === "power_off").length;
     coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
     coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
     return { events: ordered, coverage, sourceSrSha256: currentState?.srImports?.at(-1)?.rawSha256 || null };
+    }
+    return { add, finish };
   }
 
-  function buildHuawei310LogEventIndex(scannedEntries, currentState) {
+  function buildHuaweiTeLogEventIndex(scannedEntries, currentState) {
+    const accumulator = createHuaweiTeLogEventIndex(currentState);
+    for (const entry of scannedEntries || []) accumulator.add(entry);
+    return accumulator.finish();
+  }
+
+  function createHuawei310LogEventIndex(currentState) {
     const devices = new Map((currentState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
     const locations = new Map((currentState?.locations || []).map((item) => [item.id, item]));
     const events = new Map();
-    const coverage = { files: (scannedEntries || []).filter((entry) => entry?.row?.format === "Huawei 310 XML").length, scannedFiles: 0, excludedFiles: 0, invalidFiles: 0, boxFiles: 0, confirmedReboots: 0, unknownStarts: 0, startsAfterShutdown: 0, powerOffs: 0, gapCandidates: 0 };
-    for (const entry of scannedEntries || []) {
+    const coverage = { files: 0, scannedFiles: 0, excludedFiles: 0, invalidFiles: 0, boxFiles: 0, confirmedReboots: 0, unknownStarts: 0, startsAfterShutdown: 0, powerOffs: 0, gapCandidates: 0 };
+    function add(entry) {
       const row = entry?.row || {};
-      if (row.format !== "Huawei 310 XML") continue;
+      if (row.format !== "Huawei 310 XML") return;
+      coverage.files += 1;
       const device = devices.get(row.deviceId);
       const model = auditModelToken(device?.modelRaw);
-      if (row.matchStatus !== "Сопоставлено" || !device || row.ip !== normalizeIpv4(device.ipNormalized || device.ipRaw) || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei") { coverage.excludedFiles += 1; continue; }
+      if (row.matchStatus !== "Сопоставлено" || !device || row.ip !== normalizeIpv4(device.ipNormalized || device.ipRaw) || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei") { coverage.excludedFiles += 1; return; }
       const isBox = ["box310", "box610"].includes(model);
-      if (model !== "bar310" && !isBox) { coverage.excludedFiles += 1; continue; }
-      if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; continue; }
+      if (model !== "bar310" && !isBox) { coverage.excludedFiles += 1; return; }
+      if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; return; }
       coverage.scannedFiles += 1;
       if (isBox) coverage.boxFiles += 1;
       const ruleVersion = isBox ? `huawei-${model}-log-v1` : HUAWEI_310_LOG_EVENTS.RULE_VERSION;
@@ -2346,7 +2576,10 @@
               knownAction: gap.knownAction === true, clockAnomalyOrLongGap: gap.clockAnomalyOrLongGap === true } : null;
         const prior = events.get(key);
         if (prior) {
-          if (!prior.sources.some((item) => item.path === source.path && item.line === source.line)) prior.sources.push(source);
+          if (!prior.sources.some((item) => item.path === source.path && item.line === source.line)) {
+            prior.sourceCount += 1;
+            if (prior.sources.length < LOG_EVENT_SOURCE_SAMPLE_LIMIT) prior.sources.push(source);
+          }
           const eventPriority = { unknown_start: 0, start_after_shutdown: 1, confirmed_reboot: 2, power_off: 2 };
           if ((eventPriority[parsed.kind] ?? 0) > (eventPriority[prior.kind] ?? 0)) { prior.kind = parsed.kind; prior.ruleVersion = ruleVersion; }
           if (!prior.actionMethod && parsed.method) prior.actionMethod = parsed.method;
@@ -2363,9 +2596,10 @@
           mac: device.macNormalized || device.macRaw || "Не указано", vip: Boolean(device.deviceVip || location?.vip),
           locationId: location?.id || device.locationId || null, locationName: location?.name || "Не указано", address: location?.address || "Не указано",
           estimatedAt: new Date(parsed.timeMs).toISOString(), deviceLocalTime: parsed.localAt, timeBasis: "device_local_unknown_timezone",
-          ruleVersion, ...(isBox ? { validationStatus: "confirmed_user_validation" } : {}), actionMethod: parsed.method || null, shutdownMethod: parsed.kind === "power_off" ? parsed.method || null : null, silenceGap, sources: [source] });
+          ruleVersion, ...(isBox ? { validationStatus: "confirmed_user_validation" } : {}), actionMethod: parsed.method || null, shutdownMethod: parsed.kind === "power_off" ? parsed.method || null : null, silenceGap, sources: [source], sourceCount: 1 });
       }
     }
+    function finish() {
     const ordered = [...events.values()].sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
     coverage.confirmedReboots = ordered.filter((item) => item.kind === "confirmed_reboot").length;
     coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
@@ -2373,24 +2607,32 @@
     coverage.powerOffs = ordered.filter((item) => item.kind === "power_off").length;
     coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
     return { events: ordered, coverage, sourceSrSha256: currentState?.srImports?.at(-1)?.rawSha256 || null };
+    }
+    return { add, finish };
   }
 
-  function buildHuawei300LogEventIndex(scannedEntries, currentState, modelGroup = "bar") {
+  function buildHuawei310LogEventIndex(scannedEntries, currentState) {
+    const accumulator = createHuawei310LogEventIndex(currentState);
+    for (const entry of scannedEntries || []) accumulator.add(entry);
+    return accumulator.finish();
+  }
+
+  function createHuawei300LogEventIndex(currentState, modelGroup = "bar") {
     const allowedModels = modelGroup === "box" ? ["box300", "box600"] : ["bar300"];
     const devices = new Map((currentState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
     const locations = new Map((currentState?.locations || []).map((item) => [item.id, item]));
     const events = new Map();
     const coverage = { files: 0, scannedFiles: 0, excludedFiles: 0, invalidFiles: 0, unknownStarts: 0, startsAfterShutdown: 0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
-    for (const entry of scannedEntries || []) {
+    function add(entry) {
       const row = entry?.row || {};
-      if (row.format !== "Huawei 300 XML") continue;
+      if (row.format !== "Huawei 300 XML") return;
       const device = devices.get(row.deviceId);
       const model = auditModelToken(device?.modelRaw);
-      if (!allowedModels.includes(model)) continue;
+      if (!allowedModels.includes(model)) return;
       coverage.files += 1;
       if (row.matchStatus !== "Сопоставлено" || !device || row.ip !== normalizeIpv4(device.ipNormalized || device.ipRaw)
-        || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei") { coverage.excludedFiles += 1; continue; }
-      if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; continue; }
+        || device.category !== "vcs" || normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) !== "huawei") { coverage.excludedFiles += 1; return; }
+      if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; return; }
       coverage.scannedFiles += 1;
       const location = locations.get(device.locationId);
       const gapsByBoot = new Map((entry.scan.bootGaps || []).map((gap) => [gap.bootLocalAt, gap]));
@@ -2403,7 +2645,10 @@
               knownAction: gap.knownAction === true, clockAnomalyOrLongGap: gap.clockAnomalyOrLongGap === true } : null;
         const prior = events.get(key);
         if (prior) {
-          if (!prior.sources.some((item) => item.path === source.path && item.line === source.line)) prior.sources.push(source);
+          if (!prior.sources.some((item) => item.path === source.path && item.line === source.line)) {
+            prior.sourceCount += 1;
+            if (prior.sources.length < LOG_EVENT_SOURCE_SAMPLE_LIMIT) prior.sources.push(source);
+          }
           if (prior.kind === "unknown_start" && parsed.kind === "start_after_shutdown") { prior.kind = parsed.kind; prior.silenceGap = null; prior.actionMethod = parsed.method || null; if (modelGroup === "bar") prior.validationStatus = "confirmed_local_validation"; }
           if (silenceGap && prior.kind === "unknown_start" && (!prior.silenceGap || silenceGap.seconds < prior.silenceGap.seconds)) prior.silenceGap = silenceGap;
           continue;
@@ -2416,9 +2661,10 @@
           ruleVersion: model === "bar300" ? HUAWEI_300_LOG_EVENTS.RULE_VERSION : `huawei-${model}-log-v2`,
           validationStatus: modelGroup === "box" ? "confirmed_user_validation" : parsed.kind === "power_off" || parsed.kind === "start_after_shutdown" ? "confirmed_local_validation" : "bar300_boot_observed",
           actionMethod: parsed.method || null, shutdownMethod: parsed.kind === "power_off" ? parsed.method || null : null,
-          silenceGap, sources: [source] });
+          silenceGap, sources: [source], sourceCount: 1 });
       }
     }
+    function finish() {
     const ordered = [...events.values()].sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
     coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
     coverage.startsAfterShutdown = ordered.filter((item) => item.kind === "start_after_shutdown").length;
@@ -2426,6 +2672,14 @@
     coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
     return { events: ordered, coverage, validationStatus: modelGroup === "box" ? "confirmed_user_validation" : "bar300_boot_observed",
       sourceSrSha256: currentState?.srImports?.at(-1)?.rawSha256 || null };
+    }
+    return { add, finish };
+  }
+
+  function buildHuawei300LogEventIndex(scannedEntries, currentState, modelGroup = "bar") {
+    const accumulator = createHuawei300LogEventIndex(currentState, modelGroup);
+    for (const entry of scannedEntries || []) accumulator.add(entry);
+    return accumulator.finish();
   }
 
   function ensurePollingRun(next, input, capturedAt) {
@@ -2936,6 +3190,7 @@
       category: device.category || "other",
       manufacturer: device.manufacturerRaw || device.manufacturerNormalized || "Не указано",
       model: device.modelRaw || "Не указано",
+      domain: device.domain || "",
       ip: device.ipNormalized || device.ip || "Не указано",
       mac: device.macNormalized || device.macRaw || "Не указано",
       vip: Boolean(device.deviceVip || location?.vip),
@@ -3154,6 +3409,8 @@
       && (!filters.category || event.category === filters.category)
       && (!filters.manufacturer || normalizeText(event.manufacturer) === normalizeText(filters.manufacturer))
       && (!filters.model || normalizeText(event.model) === normalizeText(filters.model))
+      && (!filters.domain || normalizeText(event.domain) === normalizeText(filters.domain))
+      && (!filters.vip || (filters.vip === "yes") === Boolean(event.vip))
       && (!filters.locationId || event.locationId === filters.locationId)
       && (!filters.location || normalizeText(event.locationName) === normalizeText(filters.location))
       && (!filters.address || normalizeText(event.address) === normalizeText(filters.address));
@@ -3199,6 +3456,7 @@
     const currentDigest = candidateState?.srImports?.at(-1)?.rawSha256 || null;
     const stale = Boolean(index?.sourceSrSha256 && currentDigest && index.sourceSrSha256 !== currentDigest);
     const currentDevices = new Map((candidateState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
+    const currentLocations = new Map((candidateState?.locations || []).map((item) => [item.id, item]));
     const scopedEvents = stale ? [] : (index?.events || []).filter((event) => {
       const device = currentDevices.get(event.deviceId);
       return device && normalizeIpv4(device.ipNormalized || device.ipRaw) === event.ip
@@ -3206,6 +3464,8 @@
         && (!filters.category || event.category === filters.category)
         && (!filters.manufacturer || normalizeText(event.manufacturer) === normalizeText(filters.manufacturer))
         && (!filters.model || normalizeText(event.model) === normalizeText(filters.model))
+        && (!filters.domain || normalizeText(device.domain) === normalizeText(filters.domain))
+        && (!filters.vip || (filters.vip === "yes") === Boolean(device.deviceVip || currentLocations.get(device.locationId)?.vip))
         && (!filters.locationId || event.locationId === filters.locationId)
         && (!filters.address || normalizeText(event.address) === normalizeText(filters.address));
     });
@@ -3231,6 +3491,71 @@
     return { valid: true, errors: [], stale, coverage: index?.coverage || null, validationStatus: index?.validationStatus || null, silenceMinutes, groups };
   }
 
+  function getAccountedVcsAnalytics(candidateState, analyticsSources, inputFilters) {
+    const filters = inputFilters || {};
+    const locations = new Map((candidateState?.locations || []).map((item) => [item.id, item]));
+    const cohort = (candidateState?.inventoryDevices || []).filter((device) => {
+      if (device.inCurrentSr === false || device.category !== "vcs"
+        || normalizeText(device.equipmentOverallStatus || "").replace(/ё/g, "е") !== "учет") return false;
+      const location = locations.get(device.locationId);
+      const vip = Boolean(device.deviceVip || location?.vip);
+      return (!filters.category || filters.category === "vcs")
+        && (!filters.domain || normalizeText(device.domain) === normalizeText(filters.domain))
+        && (!filters.manufacturer || normalizeManufacturer(device.manufacturerRaw || device.manufacturerNormalized) === normalizeManufacturer(filters.manufacturer))
+        && (!filters.model || normalizeText(device.modelRaw) === normalizeText(filters.model))
+        && (!filters.locationId || device.locationId === filters.locationId)
+        && (!filters.address || normalizeText(location?.address) === normalizeText(filters.address))
+        && (!filters.vip || (filters.vip === "yes") === vip);
+    });
+    const rows = cohort.map((device) => {
+      const location = locations.get(device.locationId);
+      return { deviceId: device.id, deviceName: device.nameRaw || device.modelRaw || "Устройство без названия",
+        model: device.modelRaw || "Не указано", manufacturer: device.manufacturerRaw || "Не указано",
+        ip: device.ipNormalized || device.ipRaw || "", mac: device.macNormalized || device.macRaw || "",
+        domain: device.domain || "", vip: Boolean(device.deviceVip || location?.vip),
+        locationName: location?.name || "", address: location?.address || "",
+        rebootCount: 0, powerConfirmedCount: 0, powerSuspectedCount: 0,
+        firstReboot: null, lastReboot: null, firstPowerConfirmed: null, lastPowerConfirmed: null,
+        firstPowerSuspected: null, lastPowerSuspected: null };
+    });
+    const byId = new Map(rows.map((row) => [row.deviceId, row]));
+    const kinds = { confirmed_reboot: ["rebootCount", "firstReboot", "lastReboot"],
+      power_off: ["powerConfirmedCount", "firstPowerConfirmed", "lastPowerConfirmed"],
+      suspected_power_loss: ["powerSuspectedCount", "firstPowerSuspected", "lastPowerSuspected"] };
+    const eventsByKind = { confirmed_reboot: [], power_off: [], suspected_power_loss: [] };
+    const seen = new Set();
+    for (const source of analyticsSources || []) {
+      if (!source?.valid || source.stale || source.validationStatus === "provisional_user_validation") continue;
+      for (const [kind, [counter, first, last]] of Object.entries(kinds)) {
+        for (const event of source.groups?.[kind]?.events || []) {
+          const row = byId.get(event.deviceId);
+          if (!row) continue;
+          const at = String(event.deviceLocalTime || event.estimatedAt || "");
+          const key = `${event.deviceId}|${kind}|${at}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          row[counter] += 1;
+          if (!row[first] || at < row[first]) row[first] = at;
+          if (!row[last] || at > row[last]) row[last] = at;
+          eventsByKind[kind].push({ ...event, deviceName: row.deviceName, model: row.model,
+            ip: row.ip, mac: row.mac, domain: row.domain, vip: row.vip,
+            locationName: row.locationName, address: row.address });
+        }
+      }
+    }
+    const rank = (items, count) => [...items].sort((left, right) => count(right) - count(left)
+      || left.deviceName.localeCompare(right.deviceName, "ru") || left.deviceId.localeCompare(right.deviceId));
+    const powerCount = (row) => row.powerConfirmedCount + row.powerSuspectedCount;
+    return { totalDevices: rows.length, rows, eventsByKind,
+      rebootDevices: rows.filter((row) => row.rebootCount > 0).length, rebootEvents: eventsByKind.confirmed_reboot.length,
+      powerConfirmedDevices: rows.filter((row) => row.powerConfirmedCount > 0).length, powerConfirmedEvents: eventsByKind.power_off.length,
+      powerSuspectedDevices: rows.filter((row) => row.powerSuspectedCount > 0).length, powerSuspectedEvents: eventsByKind.suspected_power_loss.length,
+      powerUnionDevices: rows.filter((row) => powerCount(row) > 0).length,
+      topReboots: rank(rows.filter((row) => row.rebootCount > 0), (row) => row.rebootCount).slice(0, 5),
+      topPowerConfirmed: rank(rows.filter((row) => row.powerConfirmedCount > 0), (row) => row.powerConfirmedCount).slice(0, 5),
+      topPowerSuspected: rank(rows.filter((row) => row.powerSuspectedCount > 0), (row) => row.powerSuspectedCount).slice(0, 5) };
+  }
+
   const POWER_DURATION_BUCKETS = Object.freeze([
     { id: "hour", label: "До 1 часа", maxSeconds: 3600, color: "#37a6bd" },
     { id: "day", label: "1 час — 1 сутки", maxSeconds: 86400, color: "#408dc5" },
@@ -3250,6 +3575,8 @@
       return (!filters.category || device.category === filters.category)
         && (!filters.manufacturer || normalizeText(device.manufacturerRaw || device.manufacturerNormalized) === normalizeText(filters.manufacturer))
         && (!filters.model || normalizeText(device.modelRaw || device.modelNormalized) === normalizeText(filters.model))
+        && (!filters.domain || normalizeText(device.domain) === normalizeText(filters.domain))
+        && (!filters.vip || (filters.vip === "yes") === Boolean(device.deviceVip || location?.vip))
         && (!filters.locationId || device.locationId === filters.locationId)
         && (!filters.address || normalizeText(location?.address) === normalizeText(filters.address));
     });
@@ -3260,9 +3587,15 @@
     for (const event of selectedEvents) {
       if (!["confirmed_reboot", "unknown_start", "start_after_shutdown", "suspected_power_loss"].includes(event.kind)) continue;
       if (!starts.has(event.deviceId)) starts.set(event.deviceId, []);
-      starts.get(event.deviceId).push(event);
+      starts.get(event.deviceId).push(timeValue(event.estimatedAt));
     }
-    for (const list of starts.values()) list.sort((a, b) => timeValue(a.estimatedAt) - timeValue(b.estimatedAt));
+    for (const list of starts.values()) list.sort((a, b) => a - b);
+    function nextStartAfter(deviceId, at) {
+      const list = starts.get(deviceId) || [];
+      let low = 0; let high = list.length;
+      while (low < high) { const middle = (low + high) >>> 1; if (list[middle] <= at) low = middle + 1; else high = middle; }
+      return low < list.length ? list[low] : null;
+    }
     function consider(event, seconds, basis) {
       if (!selectedIds.has(event.deviceId) || !Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 10 * 365 * 86400) return;
       const previous = byDevice.get(event.deviceId);
@@ -3271,8 +3604,9 @@
     for (const event of selectedEvents) {
       if (event.kind === "suspected_power_loss") consider(event, event.silenceGap?.seconds, "suspected");
       if (event.kind !== "power_off") continue;
-      const next = (starts.get(event.deviceId) || []).find((start) => timeValue(start.estimatedAt) > timeValue(event.estimatedAt));
-      if (next) consider(event, Math.round((timeValue(next.estimatedAt) - timeValue(event.estimatedAt)) / 1000), "confirmed");
+      const offAt = timeValue(event.estimatedAt);
+      const next = nextStartAfter(event.deviceId, offAt);
+      if (next !== null) consider(event, Math.round((next - offAt) / 1000), "confirmed");
     }
     const buckets = POWER_DURATION_BUCKETS.map((item) => ({ ...item, devices: [] }));
     for (const item of byDevice.values()) buckets.find((bucket) => item.seconds <= bucket.maxSeconds).devices.push(item);
@@ -3580,6 +3914,43 @@
       return { ok: true, bytes: global.XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true }), errors: [] };
     } catch (_error) {
       return { ok: false, errors: ["Не удалось сформировать XLSX с Site name"] };
+    }
+  }
+
+  function buildAccountedVcsXlsx(analytics, kind) {
+    if (!global.XLSX || !["reboot", "power"].includes(kind)) return { ok: false, errors: ["Локальный XLSX-экспорт недоступен"] };
+    try {
+      const selected = (analytics?.rows || []).filter((row) => kind === "reboot" ? row.rebootCount > 0
+        : row.powerConfirmedCount > 0 || row.powerSuspectedCount > 0);
+      selected.sort((left, right) => (kind === "reboot" ? right.rebootCount - left.rebootCount
+        : right.powerConfirmedCount + right.powerSuspectedCount - left.powerConfirmedCount - left.powerSuspectedCount)
+        || left.deviceName.localeCompare(right.deviceName, "ru") || left.deviceId.localeCompare(right.deviceId));
+      const commonHeaders = ["Устройство", "Модель", "IP", "MAC", "Домен", "VIP", "Локация", "Адрес"];
+      const headers = kind === "reboot" ? [...commonHeaders, "Перезагрузки", "Первое событие", "Последнее событие", "Основание", "Статус SR"]
+        : [...commonHeaders, "Штатные выключения", "Предполагаемые паузы", "Первое штатное", "Последнее штатное", "Первая пауза", "Последняя пауза", "Достоверность", "Статус SR"];
+      const text = (value) => value == null ? "" : String(value);
+      const common = (row) => [text(row.deviceName), text(row.model), text(row.ip), text(row.mac), text(row.domain), row.vip ? "Да" : "Нет", text(row.locationName), text(row.address)];
+      const matrix = [headers, ...selected.map((row) => kind === "reboot"
+        ? [...common(row), row.rebootCount, text(row.firstReboot), text(row.lastReboot), "Подтверждено логом", "Учёт"]
+        : [...common(row), row.powerConfirmedCount, row.powerSuspectedCount, text(row.firstPowerConfirmed), text(row.lastPowerConfirmed),
+          text(row.firstPowerSuspected), text(row.lastPowerSuspected),
+          [row.powerConfirmedCount ? "штатное выключение: подтверждено" : "", row.powerSuspectedCount ? "пауза: предположение" : ""].filter(Boolean).join("; "), "Учёт"])];
+      const sheet = global.XLSX.utils.aoa_to_sheet(matrix);
+      for (let rowIndex = 1; rowIndex < matrix.length; rowIndex += 1) {
+        for (let columnIndex = 0; columnIndex < headers.length; columnIndex += 1) {
+          const cell = sheet[global.XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })];
+          if (!cell) continue;
+          if (columnIndex === 8 || (kind === "power" && columnIndex === 9)) cell.t = "n";
+          else { cell.t = "s"; delete cell.f; }
+        }
+      }
+      sheet["!autofilter"] = { ref: `A1:${global.XLSX.utils.encode_col(headers.length - 1)}${matrix.length}` };
+      sheet["!cols"] = headers.map((_, index) => ({ wch: [32, 24, 18, 20, 22, 8, 30, 36][index] || 22 }));
+      const workbook = global.XLSX.utils.book_new();
+      global.XLSX.utils.book_append_sheet(workbook, sheet, kind === "reboot" ? "Перезагрузки" : "Питание");
+      return { ok: true, bytes: global.XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true }), errors: [] };
+    } catch {
+      return { ok: false, errors: ["Не удалось сформировать XLSX для терминалов в учёте"] };
     }
   }
 
@@ -3935,6 +4306,30 @@
     return `${runId}|${filename}|${rawSha256}`;
   }
 
+  async function selectNewPollingFiles(files, previousResults, readPrefixHash) {
+    const byPath = new Map();
+    for (const result of previousResults || []) {
+      const path = normalizePollingRelativePath(result.sourceRelativePath || "");
+      if (!path || !Number.isSafeInteger(result.sourceFileSize) || !Number.isSafeInteger(result.sourceFileLastModified)
+        || !/^[0-9a-f]{64}$/i.test(String(result.sourcePrefixSha256 || ""))) continue;
+      if (!byPath.has(path)) byPath.set(path, []);
+      byPath.get(path).push(result);
+    }
+    const decorated = await mapWithBoundedConcurrency(files || [], 6, async (file) => {
+      let prefix = null;
+      try { prefix = await readPrefixHash(file); } catch { /* full read will report the failure */ }
+      return { ...file, sourcePrefixSha256: prefix };
+    });
+    const pending = [], skipped = [];
+    for (const file of decorated) {
+      const path = normalizePollingRelativePath(file.relativePath || file.name || "");
+      const matches = (byPath.get(path) || []).some((prior) => prior.sourceFileSize === file.size
+        && prior.sourceFileLastModified === file.lastModified && prior.sourcePrefixSha256 === file.sourcePrefixSha256);
+      (matches ? skipped : pending).push(file);
+    }
+    return { pending, skipped };
+  }
+
   function createPollingImportContext(candidateState) {
     const { currentInventoryByIp, historicalInventoryByIp } = createPollingInventoryIndexes(candidateState.inventoryDevices);
     const runByIdentity = new Map(candidateState.pollingRuns.filter((run) => run.identityKey).map((run) => [run.identityKey, run]));
@@ -4084,6 +4479,9 @@
       id: createId("polling-result"), runId: input.run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
       deviceId: device?.id || null, capturedAt: timestamp.capturedAt, capturedAtSource: timestamp.source, sourceLastModified: timestamp.sourceLastModified, importedAt: input.importedAt || nowIso(),
+      sourceFileSize: Number.isSafeInteger(input.size) ? input.size : null,
+      sourceFileLastModified: Number.isSafeInteger(input.lastModified) ? input.lastModified : null,
+      sourcePrefixSha256: /^[0-9a-f]{64}$/i.test(String(input.sourcePrefixSha256 || "")) ? input.sourcePrefixSha256 : null,
       observationAt: observationTimestamp.observationAt, observationAtSource: observationTimestamp.source, observationConfidence: observationTimestamp.confidence, observationUncertaintyMs: observationTimestamp.uncertaintyMs,
       rawText, rawSha256, parseStatus: parseError ? "malformed" : "parsed", parseError,
       detectedCategory, matchStatus: match.matchStatus,
@@ -5809,10 +6207,15 @@
     clearSessionUserId,
     createBackup,
     createDemoState,
+    buildWorkspaceProjection,
     buildPollingPlanExport,
+    selectNewPollingFiles,
     buildDeviceLogImportRows,
+    prepareDeviceLogImport,
     buildHuaweiTeLogEventIndex,
+    createHuaweiTeLogEventIndex,
     buildHuawei300LogEventIndex,
+    createHuawei300LogEventIndex,
     classifyDeviceLogPrefix,
     writeDeviceLogFile,
     createPollingPlan,
@@ -5846,6 +6249,7 @@
     filterInventoryDevices,
     buildVcsSiteNameRows,
     buildVcsSiteNameXlsx,
+    buildAccountedVcsXlsx,
     buildDeviceSettingsAuditRows,
     buildDeviceSettingsAuditXlsx,
     getActivePreviousChangeSets,
@@ -5858,9 +6262,13 @@
     buildRebootAnalysisIndex,
     getRebootAnalytics,
     getHuaweiTeLogAnalytics,
+    getAccountedVcsAnalytics,
+    getAccountedVcsHeatmap,
     getPowerDurationAnalytics,
     getPowerHeatmapAnalytics,
+    createRebootAnalyticsCache,
     buildHuawei310LogEventIndex,
+    createHuawei310LogEventIndex,
     getVersionAnalysis,
     getConnectionErrorAnalysis,
     getChangeEvents,
@@ -5951,6 +6359,10 @@
   let pollingImportContextCache = null;
   let pollingProgressRenderTimer = null;
   let pollingProgressLastRenderAt = 0;
+  let logImportLastProgressAt = 0;
+  let activeLogScanClient = null;
+  let workspaceSaveInFlight = null;
+  let workspaceSaveRequested = false;
   let recovery = loaded.recovery;
   let startupMessage = null;
   const sessionStorageRef = resolveSessionStorage();
@@ -6012,6 +6424,11 @@
     huawei300BarLogIndex: { events: [], coverage: null, sourceSrSha256: null },
     huawei300BoxLogIndex: { events: [], coverage: null, sourceSrSha256: null, validationStatus: "confirmed_user_validation" },
     logImportProgress: null,
+    logImportBusy: false,
+    logImportCancelRequested: false,
+    logFileRegistry: [],
+    workspaceStatus: null,
+    workspaceSaveStatus: null,
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
@@ -6033,10 +6450,15 @@
     powerDurationBucket: "over_year",
     powerHeatmapKind: "confirmed",
     powerHeatmapCell: null,
+    accountedView: "reboot",
+    accountedDeviceId: null,
+    accountedHeatmapKind: "confirmed_reboot",
+    accountedHeatmapCell: null,
     analyticsPage: { rebootEvents: 0, project: 0, firmware: 0, authorization: 0, network: 0 },
     helpQuery: "",
     helpTopicId: null
   };
+  const rebootAnalyticsCache = createRebootAnalyticsCache();
 
   document.addEventListener("click", handleClick);
   document.addEventListener("submit", handleSubmit);
@@ -6045,7 +6467,7 @@
   render();
   if (launchMode.kind === "local") runtimeRequest("/api/session").then((session) => {
     ui.adminAccess = { adminConfigured: session.adminConfigured === true, adminUnlocked: session.adminUnlocked === true };
-    render();
+    if (ui.adminAccess.adminUnlocked) void restoreWorkspaceAfterLogin(); else render();
   }).catch(() => { ui.adminAccess = { error: true }; render(); });
 
   function currentUser() {
@@ -6067,6 +6489,66 @@
     try { payload = await response.json(); } catch { payload = null; }
     if (!response.ok) throw Object.assign(new Error(payload?.error || "local_runtime_error"), { safeCode: payload?.error || "local_runtime_error", status: response.status });
     return payload;
+  }
+
+  async function restoreWorkspaceAfterLogin() {
+    if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true) return;
+    try {
+      const status = await runtimeRequest("/api/workspace/status");
+      ui.workspaceStatus = status;
+      ui.workspaceSaveStatus = null;
+      if (status.status !== "ready" || !status.hasSnapshot) { render(); return; }
+      const restored = await runtimeRequest("/api/workspace/snapshot");
+      const payload = restored?.payload;
+      if (restored?.revision !== status.revision || !payload || !validateState(payload.state).ok || !isPlainObject(payload.log)) {
+        throw new Error("workspace_snapshot_invalid");
+      }
+      state = payload.state;
+      ui.teLogIndex = payload.log.indexes?.te || { events: [], coverage: null, sourceSrSha256: null };
+      ui.huawei310LogIndex = payload.log.indexes?.huawei310 || { events: [], coverage: null, sourceSrSha256: null };
+      ui.huawei300BarLogIndex = payload.log.indexes?.huawei300Bar || { events: [], coverage: null, sourceSrSha256: null };
+      ui.huawei300BoxLogIndex = payload.log.indexes?.huawei300Box || { events: [], coverage: null, sourceSrSha256: null, validationStatus: "confirmed_user_validation" };
+      ui.logImportRows = Array.isArray(payload.log.rows) ? payload.log.rows : [];
+      ui.logImportSummary = payload.log.summary?.files ? payload.log.summary : null;
+      ui.logFileRegistry = Array.isArray(payload.log.registry) ? payload.log.registry : [];
+      rebootAnalyticsCache.clear();
+      ui.workspaceSaveStatus = "restored";
+      render();
+    } catch (error) {
+      ui.workspaceStatus = { status: "error", code: error?.safeCode || "workspace_restore_failed" };
+      ui.workspaceSaveStatus = "error";
+      setMessage("Рабочую базу не удалось восстановить. Прежние файлы не удалены; проверьте папку и целостность базы.", "error");
+      render();
+    }
+  }
+
+  function queueWorkspaceSave() {
+    if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true || ui.workspaceStatus?.status !== "ready") return Promise.resolve(false);
+    workspaceSaveRequested = true;
+    if (workspaceSaveInFlight) return workspaceSaveInFlight;
+    workspaceSaveInFlight = (async () => {
+      while (workspaceSaveRequested) {
+        workspaceSaveRequested = false;
+        ui.workspaceSaveStatus = "saving";
+        const projection = buildWorkspaceProjection(state, { rows: ui.logImportRows, summary: ui.logImportSummary,
+          indexes: { te: ui.teLogIndex, huawei310: ui.huawei310LogIndex,
+            huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex }, registry: ui.logFileRegistry });
+        const result = await runtimeRequest("/api/workspace/commit", { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseRevision: ui.workspaceStatus.revision, payload: projection }) });
+        ui.workspaceStatus = { ...ui.workspaceStatus, revision: result.revision, hasSnapshot: true, updatedAt: result.updatedAt };
+        ui.workspaceSaveStatus = "saved";
+      }
+      return true;
+    })().catch((error) => {
+      workspaceSaveRequested = false;
+      ui.workspaceSaveStatus = "error";
+      setMessage(error?.safeCode === "workspace_revision_conflict"
+        ? "Рабочая база изменена в другой вкладке. Текущие данные не записаны; не закрывайте вкладку до сверки изменений."
+        : "Не удалось сохранить рабочую базу. Данные пока есть только в текущей вкладке.", "error");
+      if (ui.route === "upload") render();
+      return false;
+    }).finally(() => { workspaceSaveInFlight = null; if (workspaceSaveRequested) void queueWorkspaceSave(); });
+    return workspaceSaveInFlight;
   }
 
   async function ensurePollingOutputPermission(handle) {
@@ -6372,6 +6854,7 @@
     recovery = null;
     if (successMessage) setMessage(successMessage, "success");
     render();
+    void queueWorkspaceSave();
     return true;
   }
 
@@ -6408,6 +6891,22 @@
         if (ui.route === "upload" && ui.inventoryBusy) render();
       }, Math.max(0, 100 - (current - pollingProgressLastRenderAt)));
     }
+  }
+
+  function logImportProgressText(progress) {
+    const phase = progress.phase === "classifying" ? "Проверка файлов" : "Анализ логов";
+    return `${phase}: ${progress.processed} из ${progress.total}; прочитано ${formatBytes(progress.bytesRead || 0)} из ${formatBytes(progress.totalBytes || 0)}.`;
+  }
+
+  function updateLogImportProgress(progress, force = false) {
+    ui.logImportProgress = progress;
+    const now = Date.now();
+    if (!force && now - logImportLastProgressAt < 250) return;
+    logImportLastProgressAt = now;
+    const label = app.querySelector("[data-log-import-progress]");
+    if (label) label.textContent = logImportProgressText(progress);
+    const meter = app.querySelector("[data-log-import-meter]");
+    if (meter) meter.value = progress.totalBytes ? Math.min(100, progress.bytesRead / progress.totalBytes * 100) : 0;
   }
 
   function formatPollingEta(seconds) {
@@ -6570,6 +7069,8 @@
       <div class="field"><label>Дата от</label><input type="date" name="dateFrom" value="${escapeHtml(filters.dateFrom || "")}"></div><div class="field"><label>Дата до</label><input type="date" name="dateTo" value="${escapeHtml(filters.dateTo || "")}"></div>
       <div class="field"><label>Порог тишины логов, минут<input type="number" name="logSilenceMinutes" min="15" max="10080" step="1" value="${escapeHtml(filters.logSilenceMinutes ?? "60")}" required></label></div>
       <div class="field"><label>Категория</label><select name="category"><option value="">Все</option>${EQUIPMENT_CATEGORY_CATALOG.map((item) => `<option value="${item.id}"${filters.category === item.id ? " selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}</select></div>
+      <div class="field"><label>Домен</label><select name="domain">${filterOptions(values("domain"), filters.domain)}</select></div>
+      <div class="field"><label>VIP</label><select name="vip"><option value="">Все</option><option value="yes"${filters.vip === "yes" ? " selected" : ""}>VIP</option><option value="no"${filters.vip === "no" ? " selected" : ""}>Не VIP</option></select></div>
       <div class="field"><label>Производитель</label><select name="manufacturer">${filterOptions(values("manufacturerRaw"), filters.manufacturer)}</select></div><div class="field"><label>Модель</label><select name="model">${filterOptions(values("modelRaw"), filters.model)}</select></div>
       <div class="field"><label>Локация</label><select name="locationId"><option value="">Все</option>${locations.map((item) => `<option value="${escapeHtml(item.id)}"${filters.locationId === item.id ? " selected" : ""}>${escapeHtml(item.name || "Без названия")}</option>`).join("")}</select></div>
       <div class="field"><label>Адрес</label><select name="address">${filterOptions(addresses, filters.address)}</select></div>
@@ -6615,6 +7116,12 @@
     return rows.length ? `<div class="table-wrap"><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : `<p class="muted">В выбранной области данных нет.</p>`;
   }
 
+  function formatLogSources(event, markerLabel = "признак") {
+    const examples = (event.sources || []).map((source) => `${source.path}:${source.line}${source.markerLines?.length ? ` (${markerLabel}: ${source.markerLines.join(", ")})` : ""}`);
+    const omitted = Math.max(0, Number(event.sourceCount || examples.length) - examples.length);
+    return examples.join("; ") + (omitted ? `; ещё ${omitted} повторных источников` : "");
+  }
+
   function renderRebootDetail(analytics) {
     const view = ui.rebootView;
     if (!view) return "";
@@ -6654,7 +7161,7 @@
     const coverage = analytics.coverage;
     if (!coverage?.files) return `<section class="card section-gap"><h2>Терминалы ВКС Huawei: события из логов</h2><p class="muted">Импортируйте общую папку логов в разделе «Загрузка данных и опрос устройств».</p></section>`;
     if (analytics.stale) return `<section class="card section-gap"><h2>Терминалы ВКС Huawei: события из логов</h2><p class="warning-panel">Выгрузка SR изменилась. Импортируйте папку логов повторно для точного сопоставления устройств.</p></section>`;
-    const eventRows = (events) => events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${event.shutdownMethod === "remote_control" ? "Пульт ДУ" : event.shutdownMethod === "web" ? "Web" : "—"}</td><td>${event.kind === "suspected_power_loss" ? `${escapeHtml(event.silenceGap.minutes)} мин; ${escapeHtml(event.silenceGap.fromLocalAt)}–${escapeHtml(event.silenceGap.toLocalAt)}` : "—"}</td><td>${event.confidence === "low" ? "Низкая" : "—"}</td><td>${escapeHtml(event.sources.map((source) => `${source.path}:${source.line}${source.markerLines.length ? ` (признак: ${source.markerLines.join(", ")})` : ""}`).join("; "))}</td></tr>`);
+    const eventRows = (events) => events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${event.shutdownMethod === "remote_control" ? "Пульт ДУ" : event.shutdownMethod === "web" ? "Web" : "—"}</td><td>${event.kind === "suspected_power_loss" ? `${escapeHtml(event.silenceGap.minutes)} мин; ${escapeHtml(event.silenceGap.fromLocalAt)}–${escapeHtml(event.silenceGap.toLocalAt)}` : "—"}</td><td>${event.confidence === "low" ? "Низкая" : "—"}</td><td>${escapeHtml(formatLogSources(event, "признак"))}</td></tr>`);
     const table = (group) => `${renderRebootTable(["Локальное время терминала", "Устройство", "Модель", "IP", "Локация", "Адрес", "Способ выключения", "Пауза без логов", "Достоверность", "Файл и строка"], eventRows(group.events))}${group.events.length > 100 ? `<p class="muted">Показаны первые 100 событий из ${group.events.length}; итоги рассчитаны по всем событиям.</p>` : ""}`;
     const section = (title, group, note) => `<section class="card section-gap"><div class="section-heading"><div><p class="eyebrow">Терминалы ВКС Huawei</p><h2>${escapeHtml(title)}</h2></div></div><p class="muted">${escapeHtml(note)}</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${group.count}</strong></div><div class="card"><span>Устройств</span><strong>${group.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${group.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", group.byDate, { limit: 31 })}${renderRebootChart("По часам", group.byHour, { limit: 24 })}</div><div class="reboot-leader-grid section-gap">${renderRebootChart("TOP 5 устройств", group.topDevices, { limit: 5 })}${renderRebootChart("TOP 5 локаций", group.topLocations, { limit: 5 })}${renderRebootChart("TOP 5 адресов", group.topAddresses, { limit: 5 })}</div>${table(group)}</section>`;
     return `<section class="section-gap"><p class="muted">Проверено файлов: ${coverage.scannedFiles} из ${coverage.files}; исключено: ${coverage.excludedFiles}; ошибки разбора: ${coverage.invalidFiles}. Время показано как локальное время терминала без подтверждённого часового пояса. Порог предположения: ${analytics.silenceMinutes} мин.</p>${coverage.te20Files ? `<p class="info-panel">Для TE20 подтверждённая перезагрузка требует пары «web reboots → System boot»; штатное выключение определяется отдельной web-записью или записью пульта ДУ.</p>` : ""}
@@ -6669,7 +7176,7 @@
     const coverage = analytics.coverage;
     if (!coverage?.files) return `<section class="card section-gap"><h2>Huawei CloudLink 310: события из логов</h2><p class="muted">Импортируйте папку логов Bar 310, Box 310 или Box 610 в модуле загрузки.</p></section>`;
     if (analytics.stale) return `<section class="card section-gap"><h2>Huawei CloudLink 310: события из логов</h2><p class="warning-panel">Выгрузка SR изменилась. Импортируйте папку логов повторно.</p></section>`;
-    const table = (group) => `${renderRebootTable(["Локальное время терминала", "Устройство", "Модель", "IP", "Локация", "Адрес", "Способ", "Файл и строка"], group.events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${event.actionMethod === "remote_control" ? "Пульт ДУ" : event.actionMethod === "web" ? "Web" : "—"}</td><td>${escapeHtml(event.sources.map((source) => `${source.path}:${source.line}${source.markerLines.length ? ` (команда: ${source.markerLines.join(", ")})` : ""}`).join("; "))}</td></tr>`))}${group.events.length > 100 ? `<p class="muted">Показаны первые 100 событий из ${group.events.length}; итоги рассчитаны по всем событиям.</p>` : ""}`;
+    const table = (group) => `${renderRebootTable(["Локальное время терминала", "Устройство", "Модель", "IP", "Локация", "Адрес", "Способ", "Файл и строка"], group.events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${event.actionMethod === "remote_control" ? "Пульт ДУ" : event.actionMethod === "web" ? "Web" : "—"}</td><td>${escapeHtml(formatLogSources(event, "команда"))}</td></tr>`))}${group.events.length > 100 ? `<p class="muted">Показаны первые 100 событий из ${group.events.length}; итоги рассчитаны по всем событиям.</p>` : ""}`;
     const group = analytics.groups.confirmed_reboot;
     const shutdowns = analytics.groups.power_off;
     return `<section class="section-gap"><h2>Huawei CloudLink 310: события из логов</h2><p class="muted">Проверено журналов Bar 310 / Box 310 / Box 610: ${coverage.scannedFiles}, в том числе Box: ${coverage.boxFiles}; исключено: ${coverage.excludedFiles}; ошибки: ${coverage.invalidFiles}. Время — локальное время терминала, без подтверждённого часового пояса.</p>
@@ -6685,7 +7192,7 @@
     const boxCoverage = boxAnalytics.coverage || {};
     if (!barCoverage.files && !boxCoverage.files) return `<section class="card section-gap"><h2>Huawei CloudLink 300: события из логов</h2><p class="muted">Импортируйте XML-журналы Bar 300, Box 300 или Box 600 вместе с актуальной выгрузкой SR.</p></section>`;
     if (barAnalytics.stale || boxAnalytics.stale) return `<section class="card section-gap"><h2>Huawei CloudLink 300: события из логов</h2><p class="warning-panel">Выгрузка SR изменилась. Импортируйте папку логов повторно.</p></section>`;
-    const table = (events) => renderRebootTable(["Локальное время терминала", "Устройство", "Модель", "IP", "Локация", "Адрес", "Тип события", "Пауза без логов", "Достоверность", "Файл и строка"], events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${event.kind === "power_off" ? "Штатное выключение (Web)" : event.kind === "start_after_shutdown" ? "Запуск после выключения" : event.kind === "suspected_power_loss" ? "Предполагаемая пауза питания" : "Запуск, причина неизвестна"}</td><td>${event.kind === "suspected_power_loss" ? `${escapeHtml(event.silenceGap.minutes)} мин; ${escapeHtml(event.silenceGap.fromLocalAt)}–${escapeHtml(event.silenceGap.toLocalAt)}` : "—"}</td><td>${event.validationStatus === "provisional_user_validation" ? "Предварительно" : event.confidence === "low" ? "Низкая" : event.kind === "power_off" || event.kind === "start_after_shutdown" ? "Подтверждено" : "Причина неизвестна"}</td><td>${escapeHtml(event.sources.map((source) => `${source.path}:${source.line}${source.markerLines.length ? ` (команда: ${source.markerLines.join(", ")})` : ""}`).join("; "))}</td></tr>`)) + (events.length > 100 ? `<p class="muted">Показаны первые 100 событий из ${events.length}; итоги рассчитаны по всем.</p>` : "");
+    const table = (events) => renderRebootTable(["Локальное время терминала", "Устройство", "Модель", "IP", "Локация", "Адрес", "Тип события", "Пауза без логов", "Достоверность", "Файл и строка"], events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(formatRebootEventTime(event))}</td><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td class="mono">${escapeHtml(event.ip)}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td><td>${event.kind === "power_off" ? "Штатное выключение (Web)" : event.kind === "start_after_shutdown" ? "Запуск после выключения" : event.kind === "suspected_power_loss" ? "Предполагаемая пауза питания" : "Запуск, причина неизвестна"}</td><td>${event.kind === "suspected_power_loss" ? `${escapeHtml(event.silenceGap.minutes)} мин; ${escapeHtml(event.silenceGap.fromLocalAt)}–${escapeHtml(event.silenceGap.toLocalAt)}` : "—"}</td><td>${event.validationStatus === "provisional_user_validation" ? "Предварительно" : event.confidence === "low" ? "Низкая" : event.kind === "power_off" || event.kind === "start_after_shutdown" ? "Подтверждено" : "Причина неизвестна"}</td><td>${escapeHtml(formatLogSources(event, "команда"))}</td></tr>`)) + (events.length > 100 ? `<p class="muted">Показаны первые 100 событий из ${events.length}; итоги рассчитаны по всем.</p>` : "");
     const barUnknown = barAnalytics.groups.unknown_start;
     const barSuspected = barAnalytics.groups.suspected_power_loss;
     const boxUnknown = boxAnalytics.groups.unknown_start;
@@ -6741,24 +7248,125 @@
       <div class="section-gap"><h3>${activeId ? `${POWER_HEATMAP_DAYS[selected.day]}, ${hours[selected.hour]}:00–${hours[selected.hour]}:59 — ${selected.count} устройств` : "В выбранной области событий нет"}</h3>${renderRebootTable(["Устройство", "Модель", "IP", "Локация", "Адрес", "Событий", "Последнее время", "Файлы-источники"], rows)}${selected?.count > 100 ? `<p class="muted">Показаны первые 100 устройств; итоги рассчитаны по полной выборке.</p>` : ""}</div></section>`;
   }
 
+  function getAccountedVcsHeatmap(analytics, kind) {
+    const allowed = ["confirmed_reboot", "power_off", "suspected_power_loss"];
+    const selectedKind = allowed.includes(kind) ? kind : "confirmed_reboot";
+    const cells = Array.from({ length: 168 }, (_, index) => ({ day: Math.floor(index / 24), hour: index % 24, devices: new Set(), events: [] }));
+    for (const event of analytics?.eventsByKind?.[selectedKind] || []) {
+      const at = String(event.deviceLocalTime || "");
+      if (!/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(at)) continue;
+      const date = new Date(`${at.slice(0, 10)}T${at.slice(11)}Z`);
+      if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 19).replace("T", " ") !== at) continue;
+      const day = (date.getUTCDay() + 6) % 7;
+      const cell = cells[day * 24 + date.getUTCHours()];
+      cell.devices.add(event.deviceId);
+      cell.events.push(event);
+    }
+    return { kind: selectedKind, cells, maxCount: Math.max(0, ...cells.map((cell) => cell.devices.size)) };
+  }
+
+  function renderAccountedVcsPanel(analytics, mode) {
+    const total = analytics.totalDevices;
+    const percent = (count) => total ? Math.round(count / total * 1000) / 10 : 0;
+    const rebootPercent = percent(analytics.rebootDevices);
+    const suspectedOnly = analytics.rows.filter((row) => !row.powerConfirmedCount && row.powerSuspectedCount).length;
+    const confirmedPercent = percent(analytics.powerConfirmedDevices);
+    const suspectedPercent = percent(suspectedOnly);
+    const ring = (label, value, gradient, view, summary) => `<button type="button" class="accounted-ring-card" data-accounted-view="${view}" aria-pressed="${ui.accountedView === view}" aria-label="${escapeHtml(label)}: ${value} из ${total}. Открыть список"><span class="accounted-ring" style="background:${gradient}"><span><strong>${value}</strong><small>из ${total}</small></span></span><span class="accounted-ring-caption"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(summary)}</small></span></button>`;
+    const rebootRing = ring("Учёт: с перезагрузками", analytics.rebootDevices,
+      `conic-gradient(#537fc6 0 ${rebootPercent}%, #dce7e7 ${rebootPercent}% 100%)`, "reboot", `${analytics.rebootEvents} событий · ${rebootPercent}%`);
+    const powerRing = ring("Учёт: с событиями питания", analytics.powerUnionDevices,
+      `conic-gradient(#198d8c 0 ${confirmedPercent}%, #a06ea8 ${confirmedPercent}% ${confirmedPercent + suspectedPercent}%, #dce7e7 ${confirmedPercent + suspectedPercent}% 100%)`,
+      "power_confirmed", `${analytics.powerConfirmedEvents} штатных · ${analytics.powerSuspectedEvents} предположений`);
+    const top = (title, rows, kind, field) => `<section class="card accounted-top"><h3>${escapeHtml(title)}</h3>${rows.length ? rows.map((row) => `<button type="button" data-accounted-device="${escapeHtml(row.deviceId)}" data-accounted-kind="${kind}"><span>${escapeHtml(row.deviceName)}</span><strong>${row[field]}</strong></button>`).join("") : `<p class="muted">Событий нет или журналы не разобраны.</p>`}</section>`;
+    const heatmap = getAccountedVcsHeatmap(analytics, ui.accountedHeatmapKind);
+    const active = ui.accountedHeatmapCell ? heatmap.cells.find((cell) => `${cell.day}:${cell.hour}` === ui.accountedHeatmapCell) : null;
+    const hours = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0"));
+    const days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+    const heatButtons = [
+      ["confirmed_reboot", "Перезагрузки"], ["power_off", "Штатные выключения"],
+      ["suspected_power_loss", "Предполагаемые паузы"]
+    ].map(([kind, label]) => `<button type="button" data-accounted-heatmap-kind="${kind}" aria-pressed="${heatmap.kind === kind}">${label}</button>`).join("");
+    const heatTable = `<div class="power-heatmap-scroll"><table class="power-heatmap-table"><thead><tr><th>День</th>${hours.map((hour) => `<th>${hour}</th>`).join("")}</tr></thead><tbody>${days.map((dayName, day) => `<tr><th>${dayName}</th>${hours.map((_hourName, hour) => { const cell = heatmap.cells[day * 24 + hour]; const count = cell.devices.size; const opacity = count && heatmap.maxCount ? Math.max(.18, .15 + .8 * count / heatmap.maxCount) : 0; return `<td><button class="power-heatmap-cell" type="button" data-accounted-heatmap-cell="${day}:${hour}" style="background-color:rgba(83,127,198,${opacity.toFixed(3)})" aria-label="${dayName} ${hours[hour]}:00: ${count} устройств, ${cell.events.length} событий" aria-pressed="${ui.accountedHeatmapCell === `${day}:${hour}`}">${count || "·"}</button></td>`; }).join("")}</tr>`).join("")}</tbody></table></div>`;
+    const cellDetail = active ? `<div class="section-gap"><h4>${days[active.day]}, ${hours[active.hour]}:00 — ${active.devices.size} устройств, ${active.events.length} событий</h4>${renderRebootTable(["Устройство", "Модель", "IP", "Время терминала", "Тип", "Локация", "Адрес"], active.events.slice(0, 100).map((event) => `<tr><td>${escapeHtml(event.deviceName)}</td><td>${escapeHtml(event.model)}</td><td>${escapeHtml(event.ip)}</td><td>${escapeHtml(event.deviceLocalTime)}</td><td>${heatmap.kind === "confirmed_reboot" ? "Перезагрузка" : heatmap.kind === "power_off" ? "Штатное выключение" : "Предполагаемая пауза"}</td><td>${escapeHtml(event.locationName)}</td><td>${escapeHtml(event.address)}</td></tr>`))}${active.events.length > 100 ? `<p class="muted">Показаны первые 100 событий.</p>` : ""}</div>` : "";
+    const selectedView = ["reboot", "power_confirmed", "power_suspected", "none"].includes(ui.accountedView) ? ui.accountedView : "reboot";
+    let rows = analytics.rows.filter((row) => selectedView === "reboot" ? row.rebootCount > 0
+      : selectedView === "power_confirmed" ? row.powerConfirmedCount > 0
+        : selectedView === "power_suspected" ? row.powerSuspectedCount > 0
+          : !row.rebootCount && !row.powerConfirmedCount && !row.powerSuspectedCount);
+    if (ui.accountedDeviceId) rows = rows.filter((row) => row.deviceId === ui.accountedDeviceId);
+    if (active) rows = rows.filter((row) => active.devices.has(row.deviceId));
+    rows = [...rows].sort((left, right) => (selectedView === "reboot" ? right.rebootCount - left.rebootCount
+      : right.powerConfirmedCount + right.powerSuspectedCount - left.powerConfirmedCount - left.powerSuspectedCount)
+      || left.deviceName.localeCompare(right.deviceName, "ru"));
+    const detailRows = rows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.deviceName)}</td><td>${escapeHtml(row.model)}</td><td>${escapeHtml(row.ip)}</td><td>${escapeHtml(row.domain)}</td><td>${escapeHtml(row.locationName)}</td><td>${escapeHtml(row.address)}</td><td>${row.rebootCount}</td><td>${row.powerConfirmedCount}</td><td>${row.powerSuspectedCount}</td></tr>`);
+    return `<section class="card section-gap accounted-vcs-panel"><div class="section-heading"><div><p class="eyebrow">Актуальная SR · статус оборудования «Учёт»</p><h2>ВКС в учёте: события по логам</h2></div><strong>${total} устройств</strong></div>
+      <p class="muted">Событие выключения — историческая запись, не текущее состояние питания. Пауза без логов — отдельное предположение. Если есть оба вида, устройство попадает в подтверждённый сектор, но предположение отдельно сохраняется в списке. Серый сектор включает устройства без выявленного события или без поддерживаемого разбора журнала.</p>
+      <div class="accounted-rings">${rebootRing}${powerRing}</div>
+      <div class="accounted-legend"><button type="button" data-accounted-view="reboot">Перезагрузки: ${analytics.rebootDevices}</button><button type="button" data-accounted-view="power_confirmed">Штатные выключения: ${analytics.powerConfirmedDevices}</button><button type="button" data-accounted-view="power_suspected">Предполагаемые паузы: ${analytics.powerSuspectedDevices}</button><button type="button" data-accounted-view="none">Без выявленного события / без данных</button></div>
+      <div class="button-row section-gap"><button class="button secondary" type="button" data-download-accounted="reboot"${analytics.rebootDevices ? "" : " disabled"}>Скачать перезагрузки XLSX</button><button class="button secondary" type="button" data-download-accounted="power"${analytics.powerUnionDevices ? "" : " disabled"}>Скачать питание XLSX</button></div>
+      <div class="reboot-leader-grid section-gap">${top("TOP 5 по перезагрузкам", analytics.topReboots, "reboot", "rebootCount")}${top("TOP 5 по штатным выключениям", analytics.topPowerConfirmed, "power_confirmed", "powerConfirmedCount")}${top("TOP 5 по предполагаемым паузам", analytics.topPowerSuspected, "power_suspected", "powerSuspectedCount")}</div>
+      <section class="section-gap"><h3>Тепловая карта терминалов «Учёт»</h3><div class="accounted-heatmap-toolbar">${heatButtons}</div><p class="muted">Ячейка показывает уникальные устройства; число событий указано при наведении. Время — локальное время терминала.</p>${heatTable}${cellDetail}</section>
+      <section class="section-gap"><div class="section-heading"><h3>Устройства по выбранному виду — ${rows.length}</h3><button class="button secondary" type="button" data-accounted-clear-detail>Сбросить выбор</button></div>${renderRebootTable(["Устройство", "Модель", "IP", "Домен", "Локация", "Адрес", "Перезагрузки", "Штатные выключения", "Предполагаемые паузы"], detailRows)}${rows.length > 100 ? `<p class="muted">На экране первые 100; XLSX формируется по всем выбранным устройствам.</p>` : ""}</section></section>`;
+  }
+
+  function createRebootAnalyticsCache() {
+    let current = null;
+    return {
+      get(candidateState, indexes, filters, mode, heatmapKind) {
+        const selectedIndexes = [indexes.te, indexes.huawei310, indexes.huawei300Bar, indexes.huawei300Box];
+        const filterKey = JSON.stringify(filters || {});
+        const clockKey = filters?.period && filters.period !== "all" ? Math.floor(Date.now() / 60000) : 0;
+        if (!current || current.state !== candidateState || current.filterKey !== filterKey || current.clockKey !== clockKey
+          || selectedIndexes.some((index, position) => current.indexes[position] !== index)) {
+          current = { state: candidateState, indexes: selectedIndexes, filterKey, clockKey,
+            main: getRebootAnalytics(candidateState, filters),
+            te: getHuaweiTeLogAnalytics(indexes.te, candidateState, filters),
+            huawei310: getHuaweiTeLogAnalytics(indexes.huawei310, candidateState, filters),
+            huawei300Bar: getHuaweiTeLogAnalytics(indexes.huawei300Bar, candidateState, filters),
+            huawei300Box: getHuaweiTeLogAnalytics(indexes.huawei300Box, candidateState, filters),
+            duration: null, accounted: null, heatmaps: new Map(), views: new Map() };
+        }
+        if (!current.accounted) current.accounted = getAccountedVcsAnalytics(candidateState,
+          [current.te, current.huawei310, current.huawei300Bar, current.huawei300Box], filters);
+        const viewKey = `${mode === "power" ? "power" : "reboots"}|${heatmapKind === "suspected" ? "suspected" : "confirmed"}`;
+        if (current.views.has(viewKey)) return current.views.get(viewKey);
+        if (mode === "power" && current.main.valid) {
+          if (!current.duration) current.duration = getPowerDurationAnalytics(current.te, current.huawei310, candidateState, filters, current.huawei300Bar, current.huawei300Box);
+          if (!current.heatmaps.has(viewKey)) current.heatmaps.set(viewKey,
+            getPowerHeatmapAnalytics(current.te, current.huawei310, heatmapKind, current.huawei300Bar, current.huawei300Box));
+        }
+        const view = { main: current.main, te: current.te, huawei310: current.huawei310,
+          huawei300Bar: current.huawei300Bar, huawei300Box: current.huawei300Box,
+          duration: current.duration, heatmap: current.heatmaps.get(viewKey) || null, accounted: current.accounted };
+        current.views.set(viewKey, view);
+        return view;
+      },
+      clear() { current = null; }
+    };
+  }
+
   function renderReboots() {
-    const analytics = getRebootAnalytics(state, ui.rebootFilters);
-    const teAnalytics = getHuaweiTeLogAnalytics(ui.teLogIndex, state, ui.rebootFilters);
     const mode = ui.rebootSubmodule === "power" ? "power" : "reboots";
+    const data = rebootAnalyticsCache.get(state, { te: ui.teLogIndex, huawei310: ui.huawei310LogIndex,
+      huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex }, ui.rebootFilters, mode, ui.powerHeatmapKind);
+    const analytics = data.main;
+    const teAnalytics = data.te;
     const teSections = renderHuaweiTeLogAnalytics(teAnalytics, mode);
-    const barAnalytics = getHuaweiTeLogAnalytics(ui.huawei310LogIndex, state, ui.rebootFilters);
+    const barAnalytics = data.huawei310;
     const huawei310Sections = renderHuawei310LogAnalytics(barAnalytics, mode);
-    const bar300Analytics = getHuaweiTeLogAnalytics(ui.huawei300BarLogIndex, state, ui.rebootFilters);
-    const box300Analytics = getHuaweiTeLogAnalytics(ui.huawei300BoxLogIndex, state, ui.rebootFilters);
+    const bar300Analytics = data.huawei300Bar;
+    const box300Analytics = data.huawei300Box;
     const huawei300Sections = renderHuawei300LogAnalytics(bar300Analytics, box300Analytics, mode);
     const header = `<header class="page-header reboot-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "reboots").title)}</h1></div><button class="button secondary" type="button" data-help-topic="${HELP_TOPIC_BY_ROUTE.reboots}">О модуле</button></header>`;
     const filters = renderRebootFilters(ui.rebootFilters, analytics);
     const tabs = `<nav class="reboot-submodules" aria-label="Разделы анализа"><button type="button" data-reboot-submodule="reboots" aria-current="${mode === "reboots" ? "page" : "false"}">Анализ перезагрузок</button><button type="button" data-reboot-submodule="power" aria-current="${mode === "power" ? "page" : "false"}">Анализ отключения питания</button></nav>`;
     if (!analytics.valid) return `${header}${tabs}${filters}<div class="error-panel section-gap" role="alert">${escapeHtml(analytics.errors.join("; "))}</div>`;
-    if (mode === "power") return `${header}${tabs}${filters}${renderPowerDurationDashboard(getPowerDurationAnalytics(teAnalytics, barAnalytics, state, ui.rebootFilters, bar300Analytics, box300Analytics))}${renderPowerHeatmap(getPowerHeatmapAnalytics(teAnalytics, barAnalytics, ui.powerHeatmapKind, bar300Analytics, box300Analytics))}${teSections}${huawei310Sections}${huawei300Sections}`;
+    const accountedPanel = renderAccountedVcsPanel(data.accounted, mode);
+    if (mode === "power") return `${header}${tabs}${filters}${accountedPanel}${renderPowerDurationDashboard(data.duration)}${renderPowerHeatmap(data.heatmap)}${teSections}${huawei310Sections}${huawei300Sections}`;
     const empty = analytics.emptyState ? `<div class="${analytics.emptyState === "no_events" ? "success" : "info"}-panel section-gap"><strong>${escapeHtml(rebootEmptyMessage(analytics.emptyState))}</strong></div>` : "";
-    if (["no_sr", "no_polling", "insufficient"].includes(analytics.emptyState)) return `${header}${tabs}${filters}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}${teSections}${huawei310Sections}${huawei300Sections}`;
-    return `${header}${tabs}${filters}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}
+    if (["no_sr", "no_polling", "insufficient"].includes(analytics.emptyState)) return `${header}${tabs}${filters}${accountedPanel}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}${teSections}${huawei310Sections}${huawei300Sections}`;
+    return `${header}${tabs}${filters}${accountedPanel}<h2 class="section-gap">Перезагрузки по JSON-опросам</h2>${empty}
       <section class="dashboard-kpi-grid reboot-kpi-grid section-gap">
         ${renderRebootCard("Общее количество перезагрузок", analytics.summary.minimumReboots, "events")}
         ${renderRebootCard("Количество перезагруженных устройств", analytics.summary.affectedDevices, "devices")}
@@ -6779,6 +7387,12 @@
         ${renderRebootCard("Адреса", analytics.details.addresses.length, "byAddress")}
       </section>
       ${renderRebootDetail(analytics)}${teSections}${huawei310Sections}${huawei300Sections}`;
+  }
+
+  function currentAccountedAnalytics() {
+    return rebootAnalyticsCache.get(state, { te: ui.teLogIndex, huawei310: ui.huawei310LogIndex,
+      huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex },
+    ui.rebootFilters, ui.rebootSubmodule, ui.powerHeatmapKind).accounted;
   }
 
   function renderAnalyticsPage(key, headers, rows, renderRow) {
@@ -7213,6 +7827,11 @@
         : `<section class="card upload-card"><h2>${ui.adminAccess.adminConfigured ? "Вход в план опроса" : "Первичная настройка доступа"}</h2><form data-admin-access-form autocomplete="off"><div class="field"><label>Логин<input name="adminUsername" autocomplete="username" required maxlength="64"></label></div><div class="field"><label>Пароль<input name="adminPassword" type="password" autocomplete="${ui.adminAccess.adminConfigured ? "current-password" : "new-password"}" required minlength="12" maxlength="1024"></label></div>${ui.adminAccess.adminConfigured ? "" : `<div class="field"><label>Повторите пароль<input name="adminPasswordConfirm" type="password" autocomplete="new-password" required minlength="12" maxlength="1024"></label></div>`}<button class="button primary" type="submit">${ui.adminAccess.adminConfigured ? "Войти" : "Создать доступ"}</button></form></section>`;
     return `
       <header class="page-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "upload").title)}</h1></div></header>
+      ${launchMode.kind === "local" ? `<section class="card section-gap workspace-status"><div class="section-heading"><h2>Рабочая база</h2><span class="badge ${ui.workspaceStatus?.status === "ready" ? "success" : "warning"}">${ui.workspaceStatus?.status === "ready" ? "Подключена" : "Не подключена"}</span></div>
+        <p class="muted">Завершённые SR, JSON-опросы и аналитика логов сохраняются в выбранной локальной папке и восстанавливаются после входа. Исходные логи и пароли в базу не копируются. База не шифруется: ограничьте доступ к папке средствами Windows.</p>
+        ${ui.workspaceStatus?.status === "ready" ? `<p>Папка: <span class="mono break-word">${escapeHtml(ui.workspaceStatus.path)}</span> · ревизия ${ui.workspaceStatus.revision}</p>` : ui.workspaceStatus?.status === "error" ? `<p class="warning-panel">Рабочая база недоступна или повреждена. Прежние файлы не удалены.</p>` : ""}
+        ${ui.workspaceSaveStatus === "saving" ? `<p role="status">Сохранение рабочей базы…</p>` : ui.workspaceSaveStatus === "saved" ? `<p role="status">Изменения сохранены.</p>` : ui.workspaceSaveStatus === "restored" ? `<p role="status">Данные восстановлены после входа.</p>` : ""}
+        ${adminLocked ? `<p>Войдите в локальный доступ, чтобы подключить рабочую папку.</p>` : `<form class="form-grid" data-workspace-select-form><div class="field"><label>Путь к рабочей папке<input name="workspacePath" type="text" value="${escapeHtml(ui.workspaceStatus?.path || "")}" placeholder="C:\\AI\\MVP_SPHERE_SR_Data" required></label></div><div class="button-row"><button class="button secondary" type="button" data-workspace-choose>Обзор…</button><button class="button secondary" type="submit">Подключить папку</button></div></form>`}${ui.workspaceStatus?.status === "ready" ? `<button class="button secondary section-gap" type="button" data-workspace-save-now>Сохранить сейчас</button>` : ""}</section>` : ""}
       <div class="upload-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR</h2>
           <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file" class="sr-only">Выберите XLSX-файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить SR</button></form>
@@ -7220,7 +7839,7 @@
           ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
         <section class="card upload-card upload-folder-card"><h2>2. Общая папка результатов опросов</h2>
-          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files" class="sr-only">Выберите общую папку результатов</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
+          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files" class="sr-only">Выберите общую папку результатов</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forcePollingRescan" type="checkbox"${ui.inventoryBusy ? " disabled" : ""}> Перепроверить ранее загруженные JSON</label><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
           <div class="output-folder-picker section-gap"><div><strong>Папка для новых автоматических опросов</strong><p class="muted">${launchMode.kind === "local" ? (ui.pollingOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.pollingOutputFolderName)}` : "Выберите общую папку до формирования плана.") : "Автоматический опрос доступен после запуска START_MVP_SPHERE_SR.py."}</p></div><button class="button secondary" type="button" data-select-polling-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку</button></div>
           ${ui.pollingRecoverySummary ? `<div class="warning-panel section-gap" role="status"><strong>Незавершённый опрос: ${escapeHtml(ui.pollingRecoverySummary.folder)}</strong><p>Не подтверждено сохранение для ${ui.pollingRecoverySummary.remaining} устройств. Для продолжения повторно загрузите исходную SR или список целей и введите учётные данные.${ui.pollingRecoverySummary.requiresReview ? ` Неясный исход изменения настроек: ${ui.pollingRecoverySummary.requiresReview} устройств требуют отдельной проверки.` : ""}</p><button class="button primary" type="button" data-resume-automatic-polling${automaticPollingMonitor || !credentialPoolSession?.sourceSha256 ? " disabled" : ""}>Продолжить опрос</button></div>` : ""}
           ${pollingProgress && ui.inventoryBusy ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="true">
@@ -7271,8 +7890,8 @@
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
         ${automatic ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(automaticPollingStatusLabel(automatic.status))}</span><strong>${automatic.processed || 0} из ${automatic.total || 0} устройств</strong></div><strong>${automaticPercent}%</strong></div><progress max="100" value="${automaticPercent}">${automaticPercent}%</progress><dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${automatic.successful || 0}</dd></div><div><dt>Ошибки опроса</dt><dd>${automatic.failed || 0}</dd></div><div><dt>Ошибки сохранения</dt><dd>${automatic.saveFailed || 0}</dd></div><div><dt>Не поддерживается</dt><dd>${automatic.unsupported || 0}</dd></div><div><dt>Папка запуска</dt><dd class="mono">${escapeHtml(automatic.runFolderName || "будет создана при старте")}</dd></div></dl>${automatic.allowInsecureTls ? `<p class="muted">Для этого запуска разрешён самоподписанный HTTPS-сертификат. Обычный HTTP не используется.</p>` : ""}${!["completed", "cancelled", "failed"].includes(automatic.status) ? `<button class="button danger" type="button" data-cancel-automatic-polling>Отменить опрос</button>` : ""}</section>` : ""}
       </section>
-      <section class="card section-gap"><h2>Импорт логов устройств</h2><form class="form-grid" data-log-import-form><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required></div><button class="button primary" type="submit">Импортировать папку логов</button></form>${ui.logImportProgress ? `<p role="status">Проверено файлов: ${ui.logImportProgress.processed} из ${ui.logImportProgress.total}</p>` : ""}
-        ${ui.logImportSummary ? `<div class="upload-outcome section-gap" role="status"><strong>Логи импортированы</strong><span>Файлов: ${ui.logImportSummary.files} · размер: ${escapeHtml(formatBytes(ui.logImportSummary.bytes))} · сопоставлено: ${ui.logImportSummary.matched} · проблемы: ${ui.logImportSummary.issues}</span><span>${Object.entries(ui.logImportSummary.formats).map(([kind, count]) => `${escapeHtml(kind)}: ${count}`).join(" · ")}</span><span>Huawei TE: перезагрузок ${ui.teLogIndex.coverage?.confirmedReboots || 0} · отключений ${ui.teLogIndex.coverage?.powerOffs || 0} · запусков без причины ${ui.teLogIndex.coverage?.unknownStarts || 0}</span></div><div class="table-wrap section-gap"><table><thead><tr><th>Файл</th><th>Папка запуска</th><th>Тип</th><th>Размер</th><th>IP</th><th>Устройство SR</th><th>Сопоставление</th><th>Анализ</th></tr></thead><tbody>${ui.logImportRows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.path)}</td><td>${escapeHtml(row.runFolder || "—")}</td><td>${escapeHtml(row.format)}</td><td>${escapeHtml(formatBytes(row.size))}</td><td>${escapeHtml(row.ip || "—")}</td><td>${escapeHtml(row.deviceName || "—")}</td><td>${escapeHtml(row.matchStatus)}</td><td>${escapeHtml(row.analysisStatus || "—")}</td></tr>`).join("")}</tbody></table></div>${ui.logImportRows.length > 100 ? `<p class="muted">Показаны первые 100 файлов из ${ui.logImportRows.length}; итоги рассчитаны по всей папке.</p>` : ""}` : ""}
+      <section class="card section-gap"><h2>Импорт логов устройств</h2><form class="form-grid" data-log-import-form><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required${ui.logImportBusy ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forceRescan" type="checkbox"${ui.logImportBusy ? " disabled" : ""}> Перепроверить ранее загруженные файлы целиком</label><button class="button primary" type="submit"${ui.logImportBusy ? " disabled" : ""}>Импортировать папку логов</button></form>${ui.logImportProgress ? `<div class="log-import-progress"><p data-log-import-progress role="status">${escapeHtml(logImportProgressText(ui.logImportProgress))}</p><progress data-log-import-meter max="100" value="${ui.logImportProgress.totalBytes ? Math.min(100, ui.logImportProgress.bytesRead / ui.logImportProgress.totalBytes * 100) : 0}"></progress><button class="button danger" type="button" data-cancel-log-import${ui.logImportCancelRequested ? " disabled" : ""}>${ui.logImportCancelRequested ? "Остановка…" : "Остановить импорт"}</button></div>` : ""}
+        ${ui.logImportSummary ? `<div class="upload-outcome section-gap" role="status"><strong>Логи импортированы</strong><span>Файлов: ${ui.logImportSummary.files} · размер: ${escapeHtml(formatBytes(ui.logImportSummary.bytes))} · сопоставлено: ${ui.logImportSummary.matched} · проблемы: ${ui.logImportSummary.issues} · без повторного чтения: ${ui.logImportSummary.skippedFiles || 0}</span><span>${Object.entries(ui.logImportSummary.formats).map(([kind, count]) => `${escapeHtml(kind)}: ${count}`).join(" · ")}</span><span>Huawei TE: перезагрузок ${ui.teLogIndex.coverage?.confirmedReboots || 0} · отключений ${ui.teLogIndex.coverage?.powerOffs || 0} · запусков без причины ${ui.teLogIndex.coverage?.unknownStarts || 0}</span></div><div class="table-wrap section-gap"><table><thead><tr><th>Файл</th><th>Папка запуска</th><th>Тип</th><th>Размер</th><th>IP</th><th>Устройство SR</th><th>Сопоставление</th><th>Анализ</th></tr></thead><tbody>${ui.logImportRows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.path)}</td><td>${escapeHtml(row.runFolder || "—")}</td><td>${escapeHtml(row.format)}</td><td>${escapeHtml(formatBytes(row.size))}</td><td>${escapeHtml(row.ip || "—")}</td><td>${escapeHtml(row.deviceName || "—")}</td><td>${escapeHtml(row.matchStatus)}</td><td>${escapeHtml(row.analysisStatus || "—")}</td></tr>`).join("")}</tbody></table></div>${ui.logImportRows.length > 100 ? `<p class="muted">Показаны первые 100 файлов из ${ui.logImportRows.length}; итоги рассчитаны по всей папке.</p>` : ""}` : ""}
       </section>
       `;
   }
@@ -7477,7 +8096,7 @@
       <div class="card-grid">
         <section class="card">
           <h2>Сеансовый режим</h2>
-          <p class="muted">Рабочие данные не записываются в localStorage, IndexedDB или файл на диске. Экспорт незашифрованной резервной копии отключён.</p>
+          <p class="muted">localStorage и IndexedDB для рабочих данных не используются. При локальном запуске завершённые импорты сохраняются только в явно выбранную рабочую папку; сырые логи и пароли туда не копируются. Прямой index.html остаётся сеансовым. Экспорт незашифрованной резервной копии отключён.</p>
         </section>
         <section class="card">
           <h2>Использование памяти</h2>
@@ -7564,6 +8183,30 @@
       render();
       return;
     }
+    if (event.target.closest("[data-workspace-choose]")) {
+      if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true) return;
+      if ((state.srImports.length || state.pollingResults.length || ui.logImportRows.length)
+        && !global.confirm("Открытие другой рабочей базы может заменить данные текущей вкладки. Прежняя папка останется на диске. Продолжить?")) return;
+      try {
+        if (workspaceSaveInFlight) await workspaceSaveInFlight;
+        const selected = await runtimeRequest("/api/workspace/choose", { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: "{}" });
+        ui.workspaceStatus = selected;
+        if (selected.hasSnapshot) await restoreWorkspaceAfterLogin(); else await queueWorkspaceSave();
+        setMessage("Рабочая папка подключена.", "success");
+      } catch (error) {
+        if (error?.safeCode !== "workspace_selection_cancelled")
+          setMessage("Папку не удалось выбрать. Можно указать её путь вручную.", "error");
+      }
+      render();
+      return;
+    }
+    if (event.target.closest("[data-workspace-save-now]")) {
+      const saved = await queueWorkspaceSave();
+      setMessage(saved ? "Рабочая база сохранена." : "Рабочую базу не удалось сохранить; данные пока только в текущей вкладке.", saved ? "success" : "error");
+      render();
+      return;
+    }
     const navigationAction = resolveNavigationAction(event.target);
     if (navigationAction?.type === "toggle_equipment") {
       const navigation = reduceNavigationState(ui, navigationAction);
@@ -7576,6 +8219,14 @@
       ui.pollingCancelRequested = true;
       if (ui.pollingProgress) ui.pollingProgress.cancelRequested = true;
       render();
+      return;
+    }
+    if (event.target.closest("[data-cancel-log-import]")) {
+      ui.logImportCancelRequested = true;
+      activeLogScanClient?.cancel();
+      const button = event.target.closest("[data-cancel-log-import]");
+      button.disabled = true;
+      button.textContent = "Остановка…";
       return;
     }
     if (event.target.closest("[data-select-polling-output]")) {
@@ -7716,6 +8367,8 @@
     if (event.target.closest("[data-clear-reboot-filters]")) {
       ui.rebootFilters = { period: "all", logSilenceMinutes: "60" };
       ui.powerHeatmapCell = null;
+      ui.accountedDeviceId = null;
+      ui.accountedHeatmapCell = null;
       render();
       return;
     }
@@ -7723,6 +8376,10 @@
     if (rebootSubmodule) {
       ui.rebootSubmodule = rebootSubmodule.dataset.rebootSubmodule === "power" ? "power" : "reboots";
       ui.rebootView = null;
+      ui.accountedHeatmapKind = ui.rebootSubmodule === "power" ? "power_off" : "confirmed_reboot";
+      ui.accountedView = ui.rebootSubmodule === "power" ? "power_confirmed" : "reboot";
+      ui.accountedHeatmapCell = null;
+      ui.accountedDeviceId = null;
       render();
       return;
     }
@@ -7742,6 +8399,57 @@
     const heatmapCell = event.target.closest("[data-power-heatmap-cell]");
     if (heatmapCell) {
       ui.powerHeatmapCell = /^([0-6]):(\d|1\d|2[0-3])$/.test(heatmapCell.dataset.powerHeatmapCell || "") ? heatmapCell.dataset.powerHeatmapCell : null;
+      render();
+      return;
+    }
+    const accountedView = event.target.closest("[data-accounted-view]");
+    if (accountedView) {
+      ui.accountedView = ["reboot", "power_confirmed", "power_suspected", "none"].includes(accountedView.dataset.accountedView) ? accountedView.dataset.accountedView : "reboot";
+      if (ui.accountedView !== "none") ui.accountedHeatmapKind = ui.accountedView === "reboot" ? "confirmed_reboot" : ui.accountedView === "power_confirmed" ? "power_off" : "suspected_power_loss";
+      ui.accountedDeviceId = null;
+      ui.accountedHeatmapCell = null;
+      render();
+      return;
+    }
+    const accountedDevice = event.target.closest("[data-accounted-device]");
+    if (accountedDevice) {
+      ui.accountedView = ["reboot", "power_confirmed", "power_suspected"].includes(accountedDevice.dataset.accountedKind) ? accountedDevice.dataset.accountedKind : "reboot";
+      ui.accountedHeatmapKind = ui.accountedView === "reboot" ? "confirmed_reboot" : ui.accountedView === "power_confirmed" ? "power_off" : "suspected_power_loss";
+      ui.accountedDeviceId = accountedDevice.dataset.accountedDevice;
+      ui.accountedHeatmapCell = null;
+      render();
+      return;
+    }
+    const accountedKind = event.target.closest("[data-accounted-heatmap-kind]");
+    if (accountedKind) {
+      ui.accountedHeatmapKind = ["confirmed_reboot", "power_off", "suspected_power_loss"].includes(accountedKind.dataset.accountedHeatmapKind) ? accountedKind.dataset.accountedHeatmapKind : "confirmed_reboot";
+      ui.accountedView = ui.accountedHeatmapKind === "confirmed_reboot" ? "reboot" : ui.accountedHeatmapKind === "power_off" ? "power_confirmed" : "power_suspected";
+      ui.accountedHeatmapCell = null;
+      ui.accountedDeviceId = null;
+      render();
+      return;
+    }
+    const accountedCell = event.target.closest("[data-accounted-heatmap-cell]");
+    if (accountedCell) {
+      ui.accountedHeatmapCell = /^([0-6]):(\d|1\d|2[0-3])$/.test(accountedCell.dataset.accountedHeatmapCell || "") ? accountedCell.dataset.accountedHeatmapCell : null;
+      ui.accountedView = ui.accountedHeatmapKind === "confirmed_reboot" ? "reboot" : ui.accountedHeatmapKind === "power_off" ? "power_confirmed" : "power_suspected";
+      ui.accountedDeviceId = null;
+      render();
+      return;
+    }
+    if (event.target.closest("[data-accounted-clear-detail]")) {
+      ui.accountedDeviceId = null;
+      ui.accountedHeatmapCell = null;
+      render();
+      return;
+    }
+    const accountedDownload = event.target.closest("[data-download-accounted]");
+    if (accountedDownload) {
+      const kind = accountedDownload.dataset.downloadAccounted;
+      const file = buildAccountedVcsXlsx(currentAccountedAnalytics(), kind);
+      if (!file.ok || !downloadBlob(file.bytes, `${kind === "reboot" ? "vcs-reboots" : "vcs-power"}-accounted-${nowIso().slice(0, 10)}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
+        setMessage("XLSX-список терминалов в учёте не сформирован.", "error");
+      } else setMessage("Отфильтрованный список терминалов сохранён локально.", "success");
       render();
       return;
     }
@@ -8005,9 +8713,34 @@
         await runtimeRequest(setup ? "/api/admin/setup" : "/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
         ui.adminAccess = { adminConfigured: true, adminUnlocked: true };
         setMessage("Доступ к плану открыт для текущего запуска.", "success");
+        await restoreWorkspaceAfterLogin();
       } catch (error) {
         if (error.safeCode === "admin_already_configured") ui.adminAccess = { adminConfigured: true, adminUnlocked: false };
         setMessage(setup ? "Не удалось создать доступ. Используйте логин до 64 символов и пароль от 12 символов." : "Неверный логин или пароль либо вход временно ограничен.", "error");
+      }
+      render();
+      return;
+    }
+    const workspaceForm = event.target.closest("[data-workspace-select-form]");
+    if (workspaceForm) {
+      event.preventDefault();
+      if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true) return;
+      const path = String(new FormData(workspaceForm).get("workspacePath") || "").trim();
+      if (!path) { setMessage("Укажите локальную папку рабочей базы.", "error"); render(); return; }
+      if (ui.workspaceStatus?.status === "ready" && path === ui.workspaceStatus.path) return;
+      if ((state.srImports.length || state.pollingResults.length || ui.logImportRows.length)
+        && !global.confirm("Подключение другой рабочей базы может заменить данные текущей вкладки после восстановления. Прежняя папка останется на диске. Продолжить?")) return;
+      try {
+        if (workspaceSaveInFlight) await workspaceSaveInFlight;
+        const selected = await runtimeRequest("/api/workspace/select", { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
+        ui.workspaceStatus = selected;
+        if (selected.hasSnapshot) await restoreWorkspaceAfterLogin();
+        else await queueWorkspaceSave();
+        setMessage("Рабочая папка подключена. Завершённые данные будут сохраняться локально.", "success");
+      } catch (error) {
+        setMessage(error?.safeCode === "workspace_path_invalid" ? "Выберите существующую отдельную локальную папку вне каталога проекта."
+          : "Рабочую папку не удалось подключить; прежние данные не удалены.", "error");
       }
       render();
       return;
@@ -8034,8 +8767,10 @@
     if (rebootFilterForm) {
       event.preventDefault();
       const formData = new FormData(rebootFilterForm);
-      ui.rebootFilters = Object.fromEntries(["period", "dateFrom", "dateTo", "category", "manufacturer", "model", "locationId", "address", "logSilenceMinutes"].map((key) => [key, String(formData.get(key) || "")]));
+      ui.rebootFilters = Object.fromEntries(["period", "dateFrom", "dateTo", "category", "domain", "vip", "manufacturer", "model", "locationId", "address", "logSilenceMinutes"].map((key) => [key, String(formData.get(key) || "")]));
       ui.powerHeatmapCell = null;
+      ui.accountedDeviceId = null;
+      ui.accountedHeatmapCell = null;
       render();
       return;
     }
@@ -8060,68 +8795,51 @@
     const logImportForm = event.target.closest("[data-log-import-form]");
     if (logImportForm) {
       event.preventDefault();
+      if (ui.logImportBusy) return;
+      if (launchMode.kind === "local" && ui.workspaceStatus?.status !== "ready") {
+        setMessage("Сначала войдите и подключите рабочую папку, чтобы логи не потерялись при закрытии браузера.", "error"); render(); return;
+      }
       const files = [...(logImportForm.querySelector('[name="logFiles"]')?.files || [])].filter((file) => file.name !== POLLING_RECOVERY.FILE && !["Thumbs.db", ".DS_Store"].includes(file.name));
-      if (!files.length) { setMessage("Выберите общую папку логов.", "error"); return; }
-      ui.logImportProgress = { processed: 0, total: files.length };
-      ui.logImportRows = [];
-      ui.teLogIndex = { events: [], coverage: null, sourceSrSha256: null };
-      ui.huawei310LogIndex = { events: [], coverage: null, sourceSrSha256: null };
-      ui.huawei300BarLogIndex = { events: [], coverage: null, sourceSrSha256: null };
-      ui.huawei300BoxLogIndex = { events: [], coverage: null, sourceSrSha256: null, validationStatus: "confirmed_user_validation" };
-      ui.logImportSummary = null;
+      if (!files.length) { setMessage("Выберите общую папку логов.", "error"); render(); return; }
+      ui.logImportBusy = true;
+      ui.logImportCancelRequested = false;
+      const totalBytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+      ui.logImportProgress = { phase: "classifying", processed: 0, total: files.length, bytesRead: 0, totalBytes };
       render();
-      const entries = [];
-      for (let start = 0; start < files.length; start += 64) {
-        const batch = await Promise.all(files.slice(start, start + 64).map(async (file) => {
-          try { return { name: file.name, relativePath: file.webkitRelativePath || file.name, size: file.size, lastModified: file.lastModified, prefix: new Uint8Array(await file.slice(0, 2048).arrayBuffer()) }; }
-          catch { return { name: file.name, relativePath: file.webkitRelativePath || file.name, size: file.size, lastModified: file.lastModified, readError: true, prefix: new Uint8Array() }; }
-        }));
-        entries.push(...batch);
-        ui.logImportProgress = { processed: entries.length, total: files.length };
-        if (entries.length % 256 === 0 || entries.length === files.length) { render(); await new Promise((resolve) => global.setTimeout(resolve, 0)); }
+      try {
+        const imported = await prepareDeviceLogImport(files, state, {
+          shouldCancel: () => ui.logImportCancelRequested,
+          onClient: (client) => { activeLogScanClient = client; if (ui.logImportCancelRequested) client.cancel(); },
+          onProgress: (progress) => updateLogImportProgress(progress),
+          existing: ui.logFileRegistry.length ? { rows: ui.logImportRows, summary: ui.logImportSummary,
+            indexes: { te: ui.teLogIndex, huawei310: ui.huawei310LogIndex,
+              huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex }, registry: ui.logFileRegistry } : null,
+          forceRescan: new FormData(logImportForm).get("forceRescan") === "on"
+        });
+        if (ui.logImportCancelRequested) throw new Error("log_import_cancelled");
+        ui.teLogIndex = imported.indexes.te;
+        ui.huawei310LogIndex = imported.indexes.huawei310;
+        ui.huawei300BarLogIndex = imported.indexes.huawei300Bar;
+        ui.huawei300BoxLogIndex = imported.indexes.huawei300Box;
+        ui.logImportRows = imported.rows;
+        ui.logImportSummary = { ...imported.summary, skippedFiles: imported.skippedFiles };
+        ui.logFileRegistry = imported.registry;
+        const workspaceSaved = ui.workspaceStatus?.status !== "ready" || await queueWorkspaceSave();
+        setMessage(workspaceSaved ? "Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ". Исходные файлы не изменены."
+          : "Логи импортированы, но рабочую базу сохранить не удалось. До закрытия вкладки повторите сохранение.", workspaceSaved ? "success" : "warning");
+      } catch (error) {
+        setMessage(error?.message === "log_full_reimport_required" ? "Один из прежних файлов или выгрузка SR изменились. Для точной перепроверки выберите полную папку всех ранее импортированных логов; прежняя аналитика сохранена."
+          : error?.message === "log_recheck_incomplete" ? "Полная перепроверка одного из прежних логов не завершилась. Старая аналитика сохранена без потери доказательств."
+          : ui.logImportCancelRequested || error?.message === "log_import_cancelled"
+          ? "Импорт логов остановлен. Прежние данные и аналитика сохранены."
+          : "Импорт логов не завершён. Прежние данные и аналитика сохранены.", ui.logImportCancelRequested ? "warning" : "error");
+      } finally {
+        activeLogScanClient = null;
+        ui.logImportBusy = false;
+        ui.logImportCancelRequested = false;
+        ui.logImportProgress = null;
+        render();
       }
-      const imported = buildDeviceLogImportRows(entries, state);
-      entries.forEach((entry) => entry.prefix.fill(0));
-      const currentDevices = new Map(state.inventoryDevices.filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
-      const scans = [];
-      ui.logImportProgress = { processed: 0, total: files.length };
-      for (let index = 0; index < files.length; index += 1) {
-        const row = imported.rows[index];
-        const device = currentDevices.get(row.deviceId);
-        const eligible = row.matchStatus === "Сопоставлено" && row.format === "Huawei TE XML" && device?.category === "vcs"
-          && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei"
-          && ["te20", "te30", "te40", "te50", "te60"].includes(auditModelToken(device.modelRaw));
-        const huawei310Model = auditModelToken(device?.modelRaw);
-        const huawei310Eligible = row.matchStatus === "Сопоставлено" && row.format === "Huawei 310 XML" && device?.category === "vcs"
-          && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei" && ["bar310", "box310", "box610"].includes(huawei310Model);
-        const huawei300Eligible = row.matchStatus === "Сопоставлено" && row.format === "Huawei 300 XML" && device?.category === "vcs"
-          && normalizeManufacturer(device.manufacturerNormalized || device.manufacturerRaw) === "huawei" && ["bar300", "box300", "box600"].includes(huawei310Model);
-        let scan = null;
-        if (eligible) {
-          try { scan = await TE_LOG_EVENTS.scanFile(files[index], { model: auditModelToken(device.modelRaw) }); }
-          catch { scan = { ok: false, reason: "read_failed", markers: [] }; }
-        } else if (huawei310Eligible) {
-          try { scan = await HUAWEI_310_LOG_EVENTS.scanFile(files[index]); }
-          catch { scan = { ok: false, reason: "read_failed", markers: [] }; }
-        } else if (huawei300Eligible) {
-          try { scan = await HUAWEI_300_LOG_EVENTS.scanFile(files[index]); }
-          catch { scan = { ok: false, reason: "read_failed", markers: [] }; }
-        }
-        row.analysisStatus = row.format === "Polycom Group TGZ" && row.matchStatus === "Сопоставлено" ? "Архив Polycom: только метаданные"
-          : !eligible && !huawei310Eligible && !huawei300Eligible ? "Вне анализа Huawei TE/310/300" : scan?.ok ? `Маркеров: ${scan.markers.length}` : "Ошибка разбора";
-        scans.push({ row, scan });
-        ui.logImportProgress = { processed: index + 1, total: files.length };
-        if ((index + 1) % 8 === 0 || index + 1 === files.length) { render(); await new Promise((resolve) => global.setTimeout(resolve, 0)); }
-      }
-      ui.teLogIndex = buildHuaweiTeLogEventIndex(scans, state);
-      ui.huawei310LogIndex = buildHuawei310LogEventIndex(scans, state);
-      ui.huawei300BarLogIndex = buildHuawei300LogEventIndex(scans, state, "bar");
-      ui.huawei300BoxLogIndex = buildHuawei300LogEventIndex(scans, state, "box");
-      ui.logImportRows = imported.rows;
-      ui.logImportSummary = imported.summary;
-      ui.logImportProgress = null;
-      setMessage(`Метаданные логов загружены: ${imported.summary.files} файлов, сопоставлено ${imported.summary.matched}. Исходные файлы не изменены.`, "success");
-      render();
       return;
     }
 
@@ -8466,20 +9184,27 @@
   async function handleSrImport(form) {
     const file = form.elements.srFile?.files?.[0];
     if (!file) return;
+    if (launchMode.kind === "local" && ui.workspaceStatus?.status !== "ready") {
+      setMessage("Сначала войдите и подключите рабочую папку для сохранения SR.", "error"); render(); return;
+    }
     ui.inventoryBusy = true;
     ui.srImportResults = [];
     ui.srProgress = { stage: "Чтение выгрузки SR", processed: 0, total: 0, accepted: 0, rejected: 0 };
     render();
+    let workspaceSaved = true;
     try {
       const result = await importSrWorkbook(state, { filename: file.name, arrayBuffer: await readFileArrayBuffer(file), actorId: currentUser()?.id || "system", onProgress(progress) { ui.srProgress = progress; render(); } });
       if (result.ok && result.outcome !== "duplicate") {
         state = result.state;
+        if (ui.workspaceStatus?.status === "ready") workspaceSaved = await queueWorkspaceSave();
         pollingImportContextCache = null;
         ui.pollingPlanSelection = { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalMinSeconds: ui.pollingPlanSelection.intervalMinSeconds ?? "0", intervalMaxSeconds: ui.pollingPlanSelection.intervalMaxSeconds ?? "0", allowInsecureTls: ui.pollingPlanSelection.allowInsecureTls === true, disableInsecureManagementServices: false };
         ui.pollingPlanResult = null;
       }
       ui.srImportResults.push({ name: file.name, ok: result.ok, label: result.outcome, detail: result.ok ? `Принято ${result.acceptedCount ?? 0}, отклонено ${result.rejectedCount ?? 0}` : result.errors.join("; ") });
-      setMessage(result.ok ? "Выгрузка SR обработана." : "Выгрузка SR не импортирована.", result.ok ? "success" : "error");
+      setMessage(result.ok ? workspaceSaved ? launchMode.kind === "local" ? "Выгрузка SR обработана и сохранена." : "Выгрузка SR обработана в текущем сеансе."
+        : "Выгрузка SR обработана, но рабочая база не сохранена."
+        : "Выгрузка SR не импортирована.", result.ok ? workspaceSaved ? "success" : "warning" : "error");
     } catch (error) {
       ui.srImportResults.push({ name: file.name, ok: false, label: "failed", detail: `Не удалось обработать файл ${file.name}. Проверьте структуру XLSX и обязательные столбцы.` });
       setMessage(`Не удалось загрузить выгрузку SR ${file.name}. Прежние данные сохранены; проверьте файл и повторите попытку.`, "error");
@@ -8490,6 +9215,9 @@
 
   async function handlePollingImport(form) {
     const selectedFiles = Array.from(form.elements.pollingFiles?.files || []);
+    if (launchMode.kind === "local" && ui.workspaceStatus?.status !== "ready") {
+      setMessage("Сначала войдите и подключите рабочую папку для сохранения JSON-опросов.", "error"); render(); return;
+    }
     if (!selectedFiles.length) {
       setMessage("Выберите главную папку с результатами опросов.", "error"); render(); return;
     }
@@ -8499,16 +9227,26 @@
     ui.pollingImportSummary = null;
     ui.pollingProgress = { stage: "Поиск файлов", total: selectedFiles.length, processed: 0, succeeded: 0, errors: 0, duplicates: 0, currentRun: null, filesPerSecond: 0, etaSeconds: null, status: "running" };
     render();
+    let workspaceSaved = true;
     try {
-      const descriptors = selectedFiles.map((file) => ({ name: file.name, relativePath: file.webkitRelativePath || file.name, lastModified: file.lastModified, sourceFile: file }));
-      const result = await processPollingImportBatches(state, {
+      const descriptors = selectedFiles.map((file) => ({ name: file.name, relativePath: file.webkitRelativePath || file.name,
+        lastModified: file.lastModified, size: file.size, sourceFile: file }));
+      const fullRecheck = new FormData(form).get("forcePollingRescan") === "on";
+      const selected = await selectNewPollingFiles(descriptors, fullRecheck ? [] : state.pollingResults, async (descriptor) => {
+        const prefix = new Uint8Array(await descriptor.sourceFile.slice(0, 2048).arrayBuffer());
+        const hash = await sha256Bytes(prefix);
+        prefix.fill(0);
+        return hash;
+      });
+      const result = selected.pending.length ? await processPollingImportBatches(state, {
         actorId: currentUser()?.id || "system",
-        files: descriptors,
+        files: selected.pending,
         context: pollingImportContextCache,
         readText: (descriptor) => readFileText(descriptor.sourceFile),
         shouldCancel: () => ui.pollingCancelRequested,
         onProgress: (progress) => updatePollingProgress(progress, progress.status !== "running")
-      });
+      }) : { ok: true, cancelled: false, outcome: "duplicate", state, context: pollingImportContextCache,
+        importedFolderCount: 0, summary: { processed: 0, succeeded: 0, duplicates: 0 }, errorCount: 0, ignored: [] };
       if (!result.ok) {
         ui.pollingImportSummary = { title: "Импорт не завершён", folders: 0, files: 0, succeeded: 0, duplicates: 0, errors: result.rejected?.length || 0, ignored: result.ignored?.length || 0 };
         setMessage(result.errors.join("; "), "error");
@@ -8521,10 +9259,14 @@
         return;
       }
       state = result.state;
+      if (ui.workspaceStatus?.status === "ready") workspaceSaved = await queueWorkspaceSave();
       pollingImportContextCache = result.context;
-      ui.pollingImportSummary = { title: result.cancelled ? "Импорт остановлен" : result.outcome === "partial" ? "Импорт завершён частично" : "Папка импортирована", folders: result.importedFolderCount, files: result.summary.processed, succeeded: result.summary.succeeded, duplicates: result.summary.duplicates, errors: result.errorCount, ignored: result.ignored.length };
+      ui.pollingImportSummary = { title: result.cancelled ? "Импорт остановлен" : result.outcome === "duplicate" ? "Новых опросов нет" : result.outcome === "partial" ? "Импорт завершён частично" : "Папка импортирована", folders: result.importedFolderCount,
+        files: result.summary.processed + selected.skipped.length, succeeded: result.summary.succeeded,
+        duplicates: result.summary.duplicates + selected.skipped.length, errors: result.errorCount, ignored: result.ignored.length };
       if (result.cancelled) setMessage("Загрузка остановлена пользователем.", "warning");
-      else setMessage(`Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.summary.processed}; успешно: ${result.summary.succeeded}; дубликатов: ${result.summary.duplicates}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`, result.outcome === "partial" ? "warning" : "success");
+      else setMessage(workspaceSaved ? `Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.summary.processed + selected.skipped.length}; успешно: ${result.summary.succeeded}; без повторного чтения: ${selected.skipped.length}; дубликатов: ${result.summary.duplicates}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`
+        : "JSON-опросы загружены, но рабочая база не сохранена. Повторите сохранение до закрытия вкладки.", result.outcome === "partial" || !workspaceSaved ? "warning" : "success");
     } catch (error) {
       ui.pollingImportSummary = { title: "Импорт не завершён", folders: 0, files: 0, succeeded: 0, duplicates: 0, errors: 1, ignored: 0 };
       setMessage("Импорт результатов опросов не завершён. Прежние данные сохранены.", "error");
@@ -8573,7 +9315,7 @@
         if (shouldPersist) {
           const saved = saveState(result.state, persistenceStorage);
           persisted = saved.ok;
-          if (persisted) state = deepClone(result.state);
+          if (persisted) { state = deepClone(result.state); void queueWorkspaceSave(); }
         }
         const ok = persisted && !["failed", "unsupported", "quota_rejected"].includes(result.outcome);
         ui.uploadResults.push({
