@@ -73,6 +73,7 @@ class RuntimeSession:
     credential_summary: dict[str, Any] | None = None
     active_job_id: str | None = None
     last_job_id: str | None = None
+    workspace_progress: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def clear_credentials(self) -> None:
         if self.credential_pool is not None:
@@ -565,7 +566,7 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
                    {"ok": accepted, "adminUnlocked": accepted, **({} if accepted else {"error": "admin_login_failed"})})
         return True
 
-    def _workspace_routes(self, path: str) -> bool:
+    def _workspace_routes(self, path: str, session: RuntimeSession) -> bool:
         if not path.startswith("/api/workspace/"):
             return False
         store = self.server.state.workspace_store
@@ -591,7 +592,27 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
             elif action == "batch":
                 result = model.batch(workspace, value.get("token"), value.get("label"), value.get("rows"))
             elif action == "finish":
-                result = model.finish(workspace, value.get("token"), value.get("sourceSr"))
+                token=value.get("token")
+                if not isinstance(token,str) or not re.fullmatch(r"[0-9a-f]{32}",token):raise WorkspaceError("db_import_invalid")
+                key=workspace+":"+token
+                started=time.monotonic()
+                def report(progress):
+                    with self.server.state.lock:
+                        if key not in session.workspace_progress and len(session.workspace_progress)>=64:
+                            del session.workspace_progress[next(iter(session.workspace_progress))]
+                        session.workspace_progress[key]={**progress,"elapsedSeconds":time.monotonic()-started}
+                try:
+                    result = model.finish(workspace,token,value.get("sourceSr"),on_progress=report)
+                except BaseException:
+                    with self.server.state.lock:
+                        if key in session.workspace_progress:session.workspace_progress[key]={**session.workspace_progress[key],"status":"failed"}
+                    raise
+            elif action == "progress":
+                token=value.get("token")
+                if not re.fullmatch(r"[0-9a-f]{32}",workspace) or not isinstance(token,str) or not re.fullmatch(r"[0-9a-f]{32}",token):
+                    raise WorkspaceError("db_import_invalid")
+                with self.server.state.lock:
+                    result=dict(session.workspace_progress.get(workspace+":"+token,{"status":"pending","percent":0,"stage":"preparing"}))
             elif action == "files":
                 result = {"skip": model.files(workspace, value.get("files"))}
             elif action == "latest":
@@ -689,7 +710,7 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         if (path.startswith("/api/polling/") or path.startswith("/api/workspace/")) and not admin_unlocked:
             self._json(HTTPStatus.FORBIDDEN, {"error": "admin_login_required"})
             return
-        if self._workspace_routes(path):
+        if self._workspace_routes(path,session):
             return
         if self._credentials_route(session):
             return

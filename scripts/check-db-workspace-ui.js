@@ -8,10 +8,19 @@ const allowed=new Set(["/index.html","/styles.css","/app.js","/product-catalog.j
       "log-scan-worker","log-scan-client","sphere","db-views"].map((name)=>"/runtime/"+name+".js")]);
 const counts={inventoryDevices:5000,pollingResults:25000,logRows:5000,"events:te":1000000};
 const revision="1:0";
+let publication={status:"pending",percent:0,stage:"preparing"};
 function respond(data){
   if(data.action==="prepare")return {ready:true,processed:1001,total:1001,revision};
   if(data.action==="bootstrap")return {revision,counts,settings:{}};
-  if(data.action==="context")return {revision,rows:[],next:null};
+  if(data.action==="context"){
+    const rows=process.env.SPHERE_TEST_IMPORT_CONTEXT==="1"?{
+      inventoryDevices:[{id:"synthetic-poly",nameRaw:"Synthetic terminal",category:"vcs",manufacturerRaw:"Polycom",manufacturerNormalized:"polycom",modelRaw:"RealPresence Group 310",modelNormalized:"realpresence group 310",ipNormalized:"192.0.2.40",inCurrentSr:true,locationId:"synthetic-location"}],
+      locations:[{id:"synthetic-location",name:"Synthetic room",address:"Synthetic address"}],
+      srImports:[{id:"synthetic-sr",rawSha256:"a".repeat(64),importedAt:"2026-11-19T10:00:00Z"}]
+    }[data.label]||[]:[];
+    return {revision,rows,next:null};
+  }
+  if(data.action==="progress")return publication;
   if(data.action==="files")return {skip:data.files.map(()=>false)};
   if(data.action==="begin")return {token:"b".repeat(32)};
   if(data.action==="neighbors-batch")return {seeds:data.results.map((row)=>({id:row.id,duplicate:false,rows:[]}))};
@@ -42,13 +51,21 @@ const server=http.createServer(async(req,res)=>{
   const json=(value)=>{res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify(value));};
   if(req.url==="/api/session"){json({adminConfigured:true,adminUnlocked:true});return;}
   if(req.url==="/api/workspace/status"){json({status:"ready",workspaceId:"a".repeat(32),revision:1,partCount:1001,hasSnapshot:true});return;}
+  if(req.url.startsWith("/api/workspace/log-list/")){json({value:[]});return;}
   if(req.url==="/api/workspace/db"){
     let body="";for await(const chunk of req)body+=chunk;const data=JSON.parse(body);
     if(process.env.SPHERE_TEST_DB_ERROR==="1"&&data.action==="context"&&data.label==="logRows"){
       res.writeHead(503,{"Content-Type":"application/json"});res.end(JSON.stringify({error:"db_query_timeout"}));return;
     }
+    if(process.env.SPHERE_TEST_FAIL_FINISH==="1"&&data.action==="finish"){
+      res.writeHead(503,{"Content-Type":"application/json"});res.end(JSON.stringify({error:"workspace_write_failed"}));return;
+    }
     if(data.name==="tops")await new Promise((resolve)=>setTimeout(resolve,200));
-    if(data.action==="finish"&&process.env.SPHERE_TEST_DELAY_FINISH==="1")await new Promise((resolve)=>setTimeout(resolve,1200));
+    if(data.action==="finish"&&process.env.SPHERE_TEST_DELAY_FINISH==="1"){
+      publication={status:"running",percent:0,stage:"preparing"};
+      for(const percent of [15,30,50,70,90,99]){await new Promise((resolve)=>setTimeout(resolve,300));publication={status:"running",percent,stage:percent<90?"records":"commit"};}
+      publication={status:"completed",percent:100,stage:"completed"};
+    }
     json(respond(data));return;
   }
   let route=decodeURIComponent((req.url||"/").split("?")[0]);

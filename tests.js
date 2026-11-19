@@ -3876,6 +3876,27 @@
     assertEqual(api.importProgressDisplay({processed:3192,total:3192,status:"completed"}).percent,100);
   });
 
+  test("Общий прогресс импорта растёт только по выполненной работе, ETA приблизительный, не по таймеру", () => {
+    for(const kind of ["sr","json","logs"]){
+      let activity=api.createImportActivity(kind,0);
+      assertEqual(api.importActivityView(activity,10000).percent,0);
+      activity=api.advanceImportActivity(activity,{phase:"analyzing",done:50,total:100},1000);
+      const half=api.importActivityView(activity,1000);
+      assert(half.percent>0&&half.percent<80);
+      assert(half.etaSeconds>0);
+      assertEqual(api.importActivityView(activity,60000).percent,half.percent);
+      assertEqual(api.importActivityView(activity,60000).etaSeconds,null);
+      activity=api.advanceImportActivity(activity,{phase:"publishing",done:90,total:100},2000);
+      assert(api.importActivityView(activity,2000).percent<100);
+      assert(api.importActivityView(activity,2000).percent>half.percent);
+      assertEqual(api.importActivityView({...activity,status:"completed"},2001).percent,100);
+      assert(api.importActivityView({...activity,status:"failed"},2001).percent<100);
+      assert(api.importActivityView({...activity,status:"cancelled"},2001).percent<100);
+      assertEqual(api.advanceImportActivity({...activity,status:"failed"},{phase:"publishing",done:100,total:100},5000).status,"failed");
+      assert(Number.isFinite(api.advanceImportActivity(activity,{phase:"publishing",done:NaN,total:100},3000).percent));
+    }
+  });
+
   if (typeof require === "function") test("DB-first открывает миллион событий через bounded запросы, не скачивая snapshot", async () => {
     const vm=require("vm"), fs=require("fs"), path=require("path");
     const handlers={}, calls=[];

@@ -310,7 +310,7 @@ class ReadModel:
                     "revision": f'{state["source_revision"]}:{state["data_revision"]}'}
 
     @staticmethod
-    def rebuild_json_events(c) -> None:
+    def rebuild_json_events(c, on_progress=None) -> None:
         c.execute("DELETE FROM rm_records WHERE label='events:json'")
         devices={row["key"]:json.loads(row["payload"]) for row in c.execute("SELECT key,payload FROM rm_records WHERE label='inventoryDevices'")}
         current_device=None; cluster=None
@@ -337,6 +337,9 @@ class ReadModel:
                 AND (json_extract(conflicting.payload,'$._dbBoot.signature')!=json_extract(r.payload,'$._dbBoot.signature')
                      OR conflicting.key<r.key))
             ORDER BY r.device,r.gap,r.stamp,r.key"""
+        total=c.execute("SELECT count(*) FROM rm_records WHERE label='pollingResults' AND kind='boot_observation'").fetchone()[0] if on_progress else 0
+        processed=0
+        if on_progress:on_progress(0,total)
         for row in c.execute(query):
             observation=json.loads(row["observation"])
             if cluster and (row["device"]!=current_device or abs(row["gap"]-math.floor(cluster["sum"]/cluster["n"]+.5))>5000):
@@ -349,8 +352,11 @@ class ReadModel:
             if len(cluster["ids"])<16:cluster["ids"].append(row["key"])
             if len(pending)>=500:
                 ReadModel.put(c,"events:json",pending);pending=[]
+            processed+=1
+            if on_progress and processed%500==0:on_progress(processed,total)
         flush()
         ReadModel.put(c,"events:json",pending)
+        if on_progress:on_progress(total,total)
 
     @staticmethod
     def header(c) -> dict:
@@ -463,10 +469,13 @@ class ReadModel:
                 self.put(c, label, rows, token)
         return {"stored": len(rows)}
 
-    def finish(self, workspace: str, token: str, source_sr: str | None = None) -> dict:
+    def finish(self, workspace: str, token: str, source_sr: str | None = None, on_progress=None) -> dict:
+        def report(stage,percent,processed=0,total=0,status="running"):
+            if on_progress:on_progress({"stage":stage,"percent":percent,"processed":processed,"total":total,"status":status})
         with closing(self.connect(workspace)) as c, c:
             c.execute("BEGIN IMMEDIATE")
             imp = self.require_import(c, token)
+            report("preparing",0)
             if imp["mode"] == "sr":
                 c.execute("DELETE FROM rm_records WHERE label IN ('inventoryDevices','locations')")
             elif imp["mode"] == "logs-replace":
@@ -480,16 +489,33 @@ class ReadModel:
                 c.execute("""DELETE FROM rm_staging WHERE batch=? AND label='pollingResults' AND EXISTS
                   (SELECT 1 FROM rm_records r WHERE r.label='pollingResults'
                    AND r.source=rm_staging.source)""", (token,))
-            c.execute(f"INSERT OR REPLACE INTO rm_records SELECT {','.join(COLS)} FROM rm_staging WHERE batch=?", (token,))
+            if on_progress:
+                total=c.execute("SELECT count(*) FROM rm_staging WHERE batch=?",(token,)).fetchone()[0]
+                cursor=c.execute("SELECT label,key FROM rm_staging WHERE batch=? ORDER BY label,key",(token,))
+                copied=0;previous=None
+                while keys:=cursor.fetchmany(2000):
+                    last=tuple(keys[-1])
+                    lower=" AND (label,key)>(?,?)" if previous else ""
+                    c.execute(f"INSERT OR REPLACE INTO rm_records SELECT {','.join(COLS)} FROM rm_staging WHERE batch=?{lower} AND (label,key)<=(?,?)",
+                              (token,*(previous or ()),*last))
+                    previous=last;copied+=len(keys)
+                    report("records",75*copied/max(1,total),copied,total)
+                cursor.close()
+                if not total:report("records",75,0,0)
+            else:
+                c.execute(f"INSERT OR REPLACE INTO rm_records SELECT {','.join(COLS)} FROM rm_staging WHERE batch=?", (token,))
             if imp["mode"] in ("json","sr"):
-                self.rebuild_json_events(c)
+                self.rebuild_json_events(c,(lambda done,total:report("relations",75+15*done/max(1,total),done,total)) if on_progress else None)
+            report("cleanup",90)
             if imp["mode"].startswith("logs"):
                 header = self.header(c)
                 for family in ("te", "huawei310", "huawei300Bar", "huawei300Box"):
                     header.setdefault("log", {}).setdefault("indexes", {})[family] = {"sourceSrSha256": source_sr}
                 c.execute("INSERT OR REPLACE INTO rm_meta VALUES('header',?)", (encode(header),))
             c.execute("DELETE FROM rm_staging WHERE batch=?", (token,))
+            report("cleanup",92)
             c.execute("INSERT OR IGNORE INTO rm_evidence SELECT '',label,event_key,path,line FROM rm_evidence WHERE batch=?",(token,))
+            report("evidence",94)
             c.execute("DELETE FROM rm_evidence WHERE batch=?",(token,))
             c.execute("DELETE FROM rm_imports WHERE token=?", (token,))
             c.execute("DELETE FROM rm_pair_removals WHERE batch=?",(token,))
@@ -498,7 +524,10 @@ class ReadModel:
             c.execute("DELETE FROM rm_imports WHERE base_revision!=?",(self.revision(c),))
             c.execute("DELETE FROM rm_evidence WHERE batch!='' AND batch NOT IN (SELECT token FROM rm_imports)")
             c.execute("DELETE FROM rm_pair_removals WHERE batch NOT IN (SELECT token FROM rm_imports)")
-            return {"revision": self.revision(c)}
+            report("commit",99)
+            result={"revision": self.revision(c)}
+        report("completed",100,status="completed")
+        return result
 
     def clear_checkpoints(self, workspace: str, revision: str, scope: str, keys: list) -> dict:
         if not _hex(scope) or not isinstance(keys,list) or len(keys)>512 or not all(_hex(key) for key in keys):

@@ -197,6 +197,47 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status,400)
         self.assertEqual(json.loads(body)["error"],"workspace_db_first_required")
 
+    def test_import_progress_is_session_scoped_and_does_not_wait_for_database(self) -> None:
+        from mvp_runtime.read_model import ReadModel
+        from mvp_runtime.server import RuntimeSession
+        from python_tests.test_read_model import fixture
+        selected=Path(self.harness.admin_dir.name)/"progress-workspace";selected.mkdir()
+        store=WorkspaceStore(Path(self.harness.admin_dir.name)/"progress-location.json",self.harness.server.state.project_root)
+        self.harness.server.state.workspace_store=store
+        workspace=store.select(selected)["workspaceId"];store.commit(0,fixture())
+        cookie,csrf=self.harness.session()
+        headers=self._mutation_headers(cookie,csrf,**{"Content-Type":"application/json"})
+        def call(action,**values):return self.harness.request("POST","/api/workspace/db",headers=headers,body=json.dumps({"workspace":workspace,"action":action,**values}))
+        call("prepare");revision=json.loads(call("bootstrap")[2])["revision"]
+        token=json.loads(call("begin",revision=revision,mode="logs")[2])["token"]
+        call("batch",token=token,label="logRows",rows=[{"id":"progress","path":"synthetic.xml"}])
+        entered=threading.Event();release=threading.Event();finished=[]
+        original=ReadModel.finish
+        def delayed(model,workspace,token,source_sr=None,on_progress=None):
+            def report(value):
+                on_progress(value)
+                if value["stage"]=="records":entered.set();release.wait(2)
+            return original(model,workspace,token,source_sr,on_progress=report)
+        with patch.object(ReadModel,"finish",delayed):
+            thread=threading.Thread(target=lambda:finished.append(call("finish",token=token)))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(1))
+                with patch.object(ReadModel,"connect",side_effect=AssertionError("Progress must not query SQLite")):
+                    status,_,body=call("progress",token=token)
+                    self.assertEqual(status,200,body)
+                    progress=json.loads(body)
+                    self.assertGreater(progress["percent"],0);self.assertLess(progress["percent"],100)
+                    self.assertNotIn("payload",progress)
+                    with self.harness.server.state.lock:
+                        self.harness.server.state.sessions["synthetic-other"]=RuntimeSession(csrf_token="other-csrf",admin_unlocked=True)
+                    other_headers=self._mutation_headers("mvp_sphere_session=synthetic-other","other-csrf",**{"Content-Type":"application/json"})
+                    status,_,body=self.harness.request("POST","/api/workspace/db",headers=other_headers,body=json.dumps({"workspace":workspace,"action":"progress","token":token}))
+                    self.assertEqual(status,200,body);self.assertEqual(json.loads(body)["status"],"pending")
+            finally:release.set();thread.join(2)
+        self.assertEqual(finished[0][0],200,finished)
+        self.assertEqual(json.loads(call("progress",token=token)[2])["percent"],100)
+
     def test_local_worker_assets_are_served_with_same_origin_policy(self) -> None:
         cookie, _csrf = self.harness.session(unlock=False)
         for path in ("/runtime/log-scan-worker.js", "/runtime/log-scan-client.js"):

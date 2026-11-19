@@ -114,6 +114,38 @@ class ReadModelTests(unittest.TestCase):
         with self.assertRaises(WorkspaceError):
             self.store.commit(1, fixture())
 
+    def test_publish_progress_counts_batches_and_reaches_100_only_after_commit(self):
+        token=self.model.begin(self.workspace,self.revision,"logs")["token"]
+        for label in ("logRows","logRegistry"):
+            for start in range(0,2550,500):
+                self.model.batch(self.workspace,token,label,[{"id":f"progress-{i}","path":f"synthetic-{i}.xml"} for i in range(start,min(start+500,2550))])
+        progress=[]
+        def report(value):
+            progress.append(value)
+            if value["status"]=="completed":
+                self.assertNotEqual(self.model.bootstrap(self.workspace)["revision"],self.revision)
+            else:self.assertLess(value["percent"],100)
+        self.model.finish(self.workspace,token,on_progress=report)
+        self.assertEqual(progress[-1]["percent"],100)
+        self.assertEqual(progress[-1]["status"],"completed")
+        self.assertEqual([p["percent"] for p in progress],sorted(p["percent"] for p in progress))
+        copying=[p for p in progress if p["stage"]=="records"]
+        self.assertGreaterEqual(len(copying),3)
+        self.assertEqual(copying[-1]["processed"],5100)
+        counts=self.model.bootstrap(self.workspace)["counts"]
+        self.assertEqual(counts["logRows"],2550)
+        self.assertEqual(counts["logRegistry"],2550)
+
+    def test_publish_progress_failure_rolls_back_and_retains_staging(self):
+        token=self.model.begin(self.workspace,self.revision,"logs")["token"]
+        self.model.batch(self.workspace,token,"logRows",[{"id":"not-published","path":"synthetic.xml"}])
+        def fail(value):
+            if value["stage"]=="records" and value["processed"]:raise RuntimeError("synthetic observer error")
+        with self.assertRaises(RuntimeError):self.model.finish(self.workspace,token,on_progress=fail)
+        self.assertEqual(self.model.bootstrap(self.workspace)["revision"],self.revision)
+        with closing(self.model.connect(self.workspace)) as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM rm_staging WHERE batch=?",(token,)).fetchone()[0],1)
+
     def test_big_event_page_has_bounded_response_and_complete_aggregates(self):
         with closing(self.model.connect(self.workspace)) as c, c:
             self.model.put(c, "events:te", [{"id": f"bulk-{i}", "deviceId": "te", "ip": "192.0.2.40",

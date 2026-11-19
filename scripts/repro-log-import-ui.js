@@ -3,6 +3,7 @@
 const fs=require("fs"),path=require("path"),os=require("os");
 const {server,chromium}=require("./check-db-workspace-ui.js");
 (async()=>{
+  process.env.SPHERE_TEST_IMPORT_CONTEXT="1";
   const logs=await fs.promises.mkdtemp(path.join(os.tmpdir(),"sphere-import-"));
   await Promise.all(Array.from({length:3192},(_,i)=>fs.promises.writeFile(path.join(logs,`10.248.${Math.floor(i/250)}.${i%250+1}.xml`),"<?xml version='1.0'?><LogModule>\n</LogModule>")));
   await new Promise((resolve)=>server.listen(0,"127.0.0.1",resolve));
@@ -41,18 +42,53 @@ const {server,chromium}=require("./check-db-workspace-ui.js");
     const run=path.join(logs,"2026-11-19_10-00-00");await fs.promises.mkdir(run);
     await fs.promises.writeFile(path.join(run,"192.0.2.40.json"),JSON.stringify({ok:true,webBlocks:{"Device Info":{Model:"TE40"}}}));
     await page.locator('input[name="pollingFiles"]').setInputFiles(run);
+    const publish=page.waitForRequest((request)=>request.url().endsWith("/api/workspace/db")&&request.postDataJSON().action==="finish");
     await page.locator('[data-polling-import-form] button[type="submit"]').click();
-    await page.waitForFunction(()=>document.querySelector('[data-polling-import-form]')?.parentElement.textContent.includes("Публикация JSON-опросов в рабочей базе"));
+    await publish;
+    const first=await page.locator('[data-import-live="json"] progress').getAttribute("value");
+    await page.waitForFunction(()=>document.querySelector('[data-import-live="json"]')?.textContent.includes("Осталось примерно"));
     const saving=await page.evaluate(()=>({
-      meter:document.querySelector('progress[aria-label="Импорт JSON"]')?.hasAttribute("value"),
+      percent:Number(document.querySelector('[data-import-live="json"] progress')?.value),
+      eta:document.querySelector('[data-import-live="json"]')?.textContent,
       blocked:document.querySelector('[data-log-import-form] button[type="submit"]')?.disabled,
       feedback:document.querySelector('[data-log-import-feedback]')?.textContent,
       global:document.querySelector('[data-operation-strip]')?.textContent
     }));
-    if(saving.meter||!saving.blocked||!saving.global.includes("Публикация"))throw new Error("Publishing was not visibly distinct from 100% complete");
+    if(!(saving.percent>Number(first)&&saving.percent<100)||!saving.blocked||!saving.global.includes("%")||!saving.eta.includes("Осталось"))throw new Error("Publishing lacks progressing percent and ETA");
     await page.waitForFunction(()=>document.querySelector('[data-log-import-form] button[type="submit"]')?.disabled===false);
     if(!(await page.locator('[data-operation-strip]').textContent()).includes("сохранены в базе"))throw new Error("Completion not visible");
-    process.stdout.write(JSON.stringify({saving,ok:true}));
+    if(!(await page.locator('[data-import-live="json"]').textContent()).includes("Успешно завершено"))throw new Error("JSON success not visible");
+    require("../app.js");const api=global.MvpSphereSR,xlsx=require("../vendor/xlsx.full.min.js");
+    const row={"SmartRoom ID локации":"synthetic-location","Наименование локации":"Synthetic room","Адрес локации":"Synthetic address","Признак VIP":"Нет","SmartRoom ID оборудования":"synthetic-poly","Класс оборудования":"vcs","Наименование оборудования":"Synthetic terminal","Общий статус оборудования":"Учёт","Тип":"Терминал ВКС","Производитель":"Polycom","Модель":"RealPresence Group 310","IP адрес":"192.0.2.40","MAC адрес":"02:00:00:00:00:40","Серийный номер":"SYNTHETIC-PROGRESS","Инвентарный номер":"SYNTHETIC-PROGRESS"};
+    const book=xlsx.utils.book_new();xlsx.utils.book_append_sheet(book,xlsx.utils.aoa_to_sheet([api.SR_CANONICAL_HEADERS,api.SR_CANONICAL_HEADERS.map((key)=>row[key]||"")]),"SR");
+    const srFile=path.join(logs,"synthetic-sr.xlsx");await fs.promises.writeFile(srFile,xlsx.write(book,{type:"buffer",bookType:"xlsx"}));
+    await page.locator('[name="srFile"]').setInputFiles(srFile);
+    const srPublish=page.waitForRequest((request)=>request.url().endsWith("/api/workspace/db")&&request.postDataJSON().action==="finish");
+    await page.locator('[data-sr-import-form] button[type="submit"]').click();await srPublish;
+    const srPercent=Number(await page.locator('[data-import-live="sr"] progress').getAttribute("value"));
+    if(!(srPercent>0&&srPercent<100))throw new Error("SR write percentage missing");
+    await page.waitForFunction(()=>document.querySelector('[data-import-live="sr"]')?.textContent.includes("Успешно завершено"));
+    const logFolder=path.join(logs,"metadata-only");await fs.promises.mkdir(logFolder);
+    await fs.promises.writeFile(path.join(logFolder,"192.0.2.40.tgz"),Buffer.from([0x1f,0x8b,0x08,0,0,0,0,0]));
+    await page.waitForFunction(()=>document.querySelector('[data-log-import-form] button[type="submit"]')?.disabled===false);
+    await page.locator('[name="logFiles"]').setInputFiles(logFolder);
+    const logPublish=page.waitForRequest((request)=>request.url().endsWith("/api/workspace/db")&&request.postDataJSON().action==="finish");
+    await page.locator('[data-log-import-form] button[type="submit"]').click();await logPublish;
+    const logPercent=Number(await page.locator('[data-import-live="logs"] progress').getAttribute("value"));
+    if(!(logPercent>0&&logPercent<100))throw new Error("Log write percentage missing");
+    await page.waitForFunction(()=>document.querySelector('[data-import-live="logs"]')?.textContent.includes("Успешно завершено"));
+    if((await page.locator('[data-import-live="logs"] progress').getAttribute("value"))!=="100")throw new Error("Log completion lacks 100%");
+    const images=await fs.promises.mkdtemp(path.join(os.tmpdir(),"sphere-progress-ui-"));
+    await page.locator('[data-import-live="logs"]').screenshot({path:path.join(images,"success.png")});
+    process.env.SPHERE_TEST_FAIL_FINISH="1";
+    await page.waitForFunction(()=>document.querySelector('[data-polling-import-form] button[type="submit"]')?.disabled===false);
+    await page.locator('[name="pollingFiles"]').setInputFiles(run);
+    await page.locator('[data-polling-import-form] button[type="submit"]').click();
+    await page.waitForFunction(()=>document.querySelector('[data-import-live="json"]')?.classList.contains("import-live-failed"));
+    if(Number(await page.locator('[data-import-live="json"] progress').getAttribute("value"))>=100)throw new Error("Failed commit falsely reached 100%");
+    if((await page.locator('[data-import-live="json"]').textContent()).includes("Успешно завершено"))throw new Error("Failed commit falsely reported success");
+    if(errors.length)throw new Error(errors.join("; "));
+    process.stdout.write(JSON.stringify({saving,images,failureVisible:true,ok:true}));
   }catch(error){process.stderr.write(JSON.stringify({errors,text:(await page.locator('body').innerText()).slice(-7000)}));throw error;}
   finally{
     await browser.close();server.close();
