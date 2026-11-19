@@ -21,3 +21,7 @@ Python stdlib SQLite строит индексируемый read model в то�
 ## JSON publication lookup
 
 `json-publication-performance.md`: NOT EXISTS использует существующий `rm_idx_observation` явно, чтобы отсутствие/устаревание статистики не превращало equality lookup устройства и времени наблюдения в повторный проход всех опросов. Предикаты, порядок, правила и атомарность остаются прежними. Готовый staging той же revision сохраняется при rollback и переиспользуется после restart; до продолжения не менять SR и не включать force rescan.
+
+## Filter availability and compact analytics reads
+
+`filter-availability.md`: metadata shared cache уведомляет текущего consumer, отдельно обновляет select, не блокирует Apply периода/поиска. До двух аналитических запросов одновременно. Совместимый covering `rm_idx_event_scope` добавляется к существующей БД при prepare, без source reimport или data revision. SR-first lookup и page-keys-before-payload ограничивают чтение больших доказательств текущей страницей. Предел времени запросов и правила аналитики не ослабляются.

@@ -12,7 +12,7 @@
 
   function createController(options) {
     let revision = null, generation = 0, activeKey = "", activeDescriptor = null, controller=null;
-    let bootstrap = null;
+    let bootstrap = null,facetInputTimer=null;
     const states = new Map(), cache = new Map(), pending = new Map();
     const facetCache=new Map();
     const dimensions=["domain","category","manufacturer","model","locationId","address"];
@@ -21,6 +21,8 @@
       return states.get(route);
     };
     function setRevision(info) {
+      if(facetInputTimer){clearTimeout(facetInputTimer);facetInputTimer=null;}
+      for(const entry of new Set(facetCache.values()))entry.controller?.abort();
       revision = info.revision; bootstrap = info;
       controller?.abort(); controller=null;
       generation += 1; activeKey = ""; cache.clear(); pending.clear();
@@ -40,28 +42,34 @@
       const key=facetKey(descriptor,values);
       if(facetCache.has(key))return facetCache.get(key);
       const entry={};
+      entry.controller=typeof root.AbortController==="function"?new root.AbortController():null;
       facetCache.set(key,entry);
       while(facetCache.size>12)facetCache.delete(facetCache.keys().next().value);
-      entry.promise=options.request("view",{revision,name:"facets",page:0,size:50,filters:{...values,scopeCategory:descriptor.category||""}})
-        .then((data)=>{entry.data=data;return data;}).catch((error)=>{entry.error="Не удалось получить доступные значения фильтров.";throw error;});
+      const version=revision;
+      const notify=()=>{
+        const current=activeDescriptor;
+        if(version!==revision||!current)return;
+        const state=stateFor(current.route);
+        if(facetKey(current,state.draftFilters||state.filters)!==key)return;
+        if(entry.data){
+          if(state.draftFilters)state.draftFilters=normalizeFilters(state.draftFilters,entry.data);
+          else state.filters=normalizeFilters(state.filters,entry.data);
+          facetCache.set(facetKey(current,state.draftFilters||state.filters),entry);
+        }
+        if(!options.updateFilters?.(filters(state,current.renderer==="reboots",current.renderer==="inventory",entry)))options.render();
+      };
+      const timer=entry.controller?setTimeout(()=>entry.controller.abort(),options.facetTimeoutMs||10000):null;
+      entry.promise=options.request("view",{revision,name:"facets",page:0,size:50,filters:{...values,scopeCategory:descriptor.category||""}},{signal:entry.controller?.signal})
+        .then((data)=>{entry.data=data;notify();return data;})
+        .catch(()=>{entry.error="Не удалось загрузить списки. Поиск и период остаются доступны.";notify();return null;})
+        .finally(()=>{if(timer)clearTimeout(timer);});
       return entry;
     }
     function ensureFacets(descriptor,state){
       const values=state.draftFilters||state.filters, key=facetKey(descriptor,values);
       const found=facetCache.get(key);
       if(found)return found;
-      const entry=fetchFacets(descriptor,values),version=revision;
-      entry.promise.then((data)=>{
-        if(version!==revision||activeDescriptor?.route!==descriptor.route||facetKey(descriptor,state.draftFilters||state.filters)!==key)return;
-        if(!state.applyingFilters) {
-          if(state.draftFilters)state.draftFilters=normalizeFilters(state.draftFilters,data);
-          else state.filters=normalizeFilters(state.filters,data);
-        }
-        const nextKey=facetKey(descriptor,state.draftFilters||state.filters);
-        facetCache.set(nextKey,entry);
-        options.render();
-      }).catch(()=>{if(version===revision&&activeDescriptor?.route===descriptor.route)options.render();});
-      return entry;
+      return fetchFacets(descriptor,values);
     }
     function request(name, state, extra = {}, scope = null) {
       return options.request("view", { revision:scope?.revision||revision, name, page: state.page, size: 50,
@@ -92,15 +100,20 @@
         const view = { loading: true };
         cache.set(key, view);
         while (cache.size > 8) cache.delete(cache.keys().next().value);
-        Promise.all(names.map(async (name) => {
+        const read=async (name) => {
+          if(generation!==epoch||activeKey!==key)return;
           try { view[name] = await request(name, state,{},entry); }
           catch (error) { if(error?.name==="AbortError")return;
             view.conflict=view.conflict||["workspace_revision_conflict","db_preparation_required"].includes(error?.safeCode);
             view.error = view.conflict ? "База изменилась. Нажмите «Повторить», чтобы получить опубликованную версию."
-              : error?.safeCode==="db_query_timeout" ? "Расчёт широкого диапазона занял слишком много времени. Уточните период, модель или локацию."
+              : error?.safeCode==="db_query_timeout" ? "Расчёт не завершён по времени. Фильтры доступны: выберите период или нужные устройства и нажмите «Применить»."
               : "Не удалось получить данные. Можно повторить запрос, не перезапуская инструмент."; }
           if (generation === epoch && activeKey === key) publish();
-        })).finally(() => {
+        };
+        // Keep SR metadata independent and avoid five simultaneous full-history scans.
+        let cursor=0;
+        const lane=async()=>{while(cursor<names.length){if(generation!==epoch||activeKey!==key)return;await read(names[cursor++]);}};
+        Promise.all(Array.from({length:Math.min(2,names.length)},lane)).finally(() => {
           if(pending.get(key)===entry)pending.delete(key);
           view.loading = false;
           if(generation!==epoch && cache.get(key)===view)cache.delete(key);
@@ -110,6 +123,7 @@
     }
     function publish(){if(!options.update?.())options.render();}
     function deactivate(){
+      if(facetInputTimer){clearTimeout(facetInputTimer);facetInputTimer=null;}
       if(!activeKey)return;
       controller?.abort();controller=null;generation+=1;activeKey="";activeDescriptor=null;pending.clear();
       for(const [key,view] of cache)if(view.loading)cache.delete(key);
@@ -121,7 +135,7 @@
     function filters(state, events, inventory=false, facets={}) {
       const f = state.draftFilters||state.filters, data=facets.data;
       const select=(name,items,fallback="")=>`<select name="${name}">${items.map(([value,label])=>`<option value="${value}"${(f[name]||fallback)===value?" selected":""}>${label}</option>`).join("")}</select>`;
-      const choices=(name,list,all)=>`<select name="${name}" data-db-cascade${data?"":" disabled"}><option value="">${data?all:"Загрузка значений…"}</option>${(data?.[list]||[]).map((row)=>`<option value="${escape(row.value)}"${String(f[name]||"")===String(row.value)?" selected":""}>${escape(name==="category"?(CATEGORY_LABELS[row.value]||row.label):name==="locationId"&&row.address?row.label+" — "+row.address:row.label)}</option>`).join("")}</select>`;
+      const choices=(name,list,all)=>`<select name="${name}" data-db-cascade${data?"":" disabled"}><option value="">${data?all:facets.error?"Списки недоступны":"Загрузка значений…"}</option>${(data?.[list]||[]).map((row)=>`<option value="${escape(row.value)}"${String(f[name]||"")===String(row.value)?" selected":""}>${escape(name==="category"?(CATEGORY_LABELS[row.value]||row.label):name==="locationId"&&row.address?row.label+" — "+row.address:row.label)}</option>`).join("")}</select>`;
       return `<form class="db-filter-bar" data-db-filters aria-busy="${Boolean(state.applyingFilters)}"><fieldset class="db-filter-fields"${state.applyingFilters?" disabled":""}>
         <label class="db-search"><span>Поиск устройства</span><input name="search" type="search" value="${escape(f.search)}" placeholder="Название, модель или IP"></label>
         <label><span>Домен</span>${choices("domain","domains","Все домены")}</label>
@@ -137,9 +151,9 @@
         <label><span>Дата до</span><input name="dateTo" type="date" value="${escape(f.dateTo)}"></label>
         <label><span>Пауза без логов, мин</span><input name="logSilenceMinutes" type="number" min="15" max="10080" value="${escape(f.logSilenceMinutes || "60")}"></label>
         <label class="db-check"><input type="checkbox" name="accounted"${f.accounted ? " checked" : ""}>Только ВКС «Учёт»</label>` : ""}
-        <button type="submit" class="button primary"${state.applyingFilters||!data?" disabled":""}>${state.applyingFilters?"Применение…":"Применить"}</button><button type="button" class="text-button" data-db-reset>Сбросить</button>
+        <button type="submit" class="button primary">Применить</button><button type="button" class="text-button" data-db-reset>Сбросить</button>
         <span class="db-filter-state" role="status">${facets.error?escape(facets.error):!data?"Обновляем доступные значения…":state.draftFilters?"Изменения фильтров ещё не применены":""}</span>
-        ${facets.error?'<button type="button" class="text-button" data-db-facets-retry>Повторить загрузку списков</button>':""}
+        <button type="button" class="text-button" data-db-facets-retry${facets.error?"":" hidden"}>Повторить загрузку списков</button>
         <details class="db-advanced"><summary>Локация, адрес и дополнительные условия</summary><div>
           <label><span>Наименование локации</span>${choices("locationId","locations","Все локации")}</label>
           <label><span>Адрес локации</span>${choices("address","addresses","Все адреса")}</label>
@@ -306,20 +320,15 @@
     }
     function handleSubmit(form) {
       if (!form.matches("[data-db-filters]") || !activeDescriptor) return false;
-      const descriptor=activeDescriptor,state = stateFor(descriptor.route),version=revision;
-      if(state.applyingFilters)return true;
+      const descriptor=activeDescriptor,state = stateFor(descriptor.route);
       const values={...(state.draftFilters||state.filters),...Object.fromEntries(new FormData(form))};
       values.accounted=form.querySelector('[name="accounted"]')?.checked===true;
-      state.draftFilters=values;state.applyingFilters=true;
-      const entry=fetchFacets(descriptor,values);
-      options.render();
-      entry.promise.then((data)=>{
-        if(version!==revision)return;
-        state.filters=normalizeFilters(values,data);delete state.draftFilters;
-        facetCache.set(facetKey(descriptor,state.filters),entry);
-        if(state.filters.source==="json"&&["power_off","suspected_power_loss","start_after_shutdown"].includes(state.kind)){state.kind="confirmed_reboot";state.table="events";}
-        state.page=0;delete state.filters.day;delete state.filters.hour;
-      }).catch(()=>{}).finally(()=>{state.applyingFilters=false;if(activeDescriptor?.route===descriptor.route)refresh();});
+      const entry=facetCache.get(facetKey(descriptor,values));
+      state.filters=entry?.data?normalizeFilters(values,entry.data):values;
+      delete state.draftFilters;state.applyingFilters=false;
+      if(state.filters.source==="json"&&["power_off","suspected_power_loss","start_after_shutdown"].includes(state.kind)){state.kind="confirmed_reboot";state.table="events";}
+      state.page=0;delete state.filters.day;delete state.filters.hour;
+      refresh();
       return true;
     }
     function handleChange(element,form){
@@ -335,6 +344,11 @@
       if(element.tagName==="INPUT"&&element.type!=="checkbox"){
         const status=form.querySelector(".db-filter-state");
         if(status)status.textContent="Изменения фильтров ещё не применены";
+        if(element.name==="search"){
+          if(facetInputTimer)clearTimeout(facetInputTimer);
+          const descriptor=activeDescriptor,version=revision,key=facetKey(descriptor,values);
+          facetInputTimer=setTimeout(()=>{facetInputTimer=null;if(version===revision&&activeDescriptor?.route===descriptor.route&&facetKey(descriptor,state.draftFilters||state.filters)===key)fetchFacets(descriptor,state.draftFilters||state.filters);},250);
+        }
         return true;
       }
       options.render();

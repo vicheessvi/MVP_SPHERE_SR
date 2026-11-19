@@ -3967,17 +3967,73 @@
     controller.setRevision({revision:"1:0"});
     controller.render(descriptor);
     await new Promise((resolve)=>setTimeout(resolve,10));
-    assertEqual(waves.length,5);
+    assertEqual(waves.length,2);
     controller.handleClick({closest:()=>({dataset:{dbRetry:""}})});
     await new Promise((resolve)=>setTimeout(resolve,10));
-    assertEqual(waves.length,10);
+    assertEqual(waves.length,4);
     const reply=(name)=>name==="summary"?{groups:[],denominator:0}:name==="accounted"?{counts:{denominator:0}}:name==="heatmap"?{cells:[]}:name==="tops"?{devices:[],locations:[],addresses:[],dates:[],hours:[]}:{rows:[],hasNext:false};
-    waves.slice(0,5).forEach(({name,resolve})=>resolve(reply(name)));
+    waves.slice(0,2).forEach(({name,resolve})=>resolve(reply(name)));
     await new Promise((resolve)=>setTimeout(resolve,10));
-    waves.slice(5).forEach(({name,resolve})=>resolve(reply(name)));
-    await new Promise((resolve)=>setTimeout(resolve,10));
-    assertEqual(waves.length,10,"Старый finally не должен вызывать третью волну запросов");
+    assertEqual(waves.length,4,"Старые lanes не должны запускать оставшиеся запросы");
+    for(let first=2;first<7;){const end=waves.length;waves.slice(first,end).forEach(({name,resolve})=>resolve(reply(name)));first=end;await new Promise((resolve)=>setTimeout(resolve,10));}
+    assertEqual(waves.length,7,"Должны остаться только два старых и пять новых запросов");
     assert(renderCount<20);
+  });
+
+  if(typeof require==="function")test("Общий pending facets обновляет текущий модуль после перехода, а не только первый маршрут",async()=>{
+    const db=require("./runtime/db-views.js");let resolveFacets,notifications=0,controller;
+    let current={route:"dashboard",title:"Главный",renderer:"dashboard"};
+    const data={domains:[{value:"synthetic",label:"Synthetic"}],categories:[{value:"vcs",label:"ВКС"}],manufacturers:[],models:[],locations:[],addresses:[],selected:{}};
+    controller=db.createController({render(){notifications++;controller.render(current);},update(){return true;},
+      request:(_a,q)=>q.name==="facets"?new Promise(resolve=>{resolveFacets=resolve;}):Promise.resolve(q.name==="dashboard"?{counts:{},categories:[],devices:0}:q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false})});
+    controller.setRevision({revision:"1:0"});controller.render(current);
+    current={route:"reboots",title:"События",renderer:"reboots"};controller.render(current);
+    const before=notifications;resolveFacets(data);await new Promise(resolve=>setTimeout(resolve,10));
+    assert(notifications>before,"Метаданные должны обновить форму текущего маршрута даже при partial table updates");
+    assert(controller.render(current).includes('value="synthetic"'));
+  });
+
+  if(typeof require==="function")test("Период применяется без ожидания недоступных списков БД",()=>{
+    const vm=require("vm"),fs=require("fs");
+    class FakeFormData{constructor(form){this.values=Object.entries(form.values)}[Symbol.iterator](){return this.values[Symbol.iterator]()}}
+    const context={module:{exports:{}},setTimeout,clearTimeout,AbortController,FormData:FakeFormData};
+    vm.runInNewContext(fs.readFileSync(require("path").join(__dirname,"runtime/db-views.js"),"utf8"),context);
+    const controller=context.module.exports.createController({render(){},request:()=>new Promise(()=>{})});
+    controller.setRevision({revision:"1:0"});
+    const html=controller.render({route:"reboots",title:"События",renderer:"reboots"});
+    assert(!/<button type="submit"[^>]*disabled/.test(html),"Apply не должен блокироваться загрузкой списков");
+    controller.handleSubmit({matches:()=>true,values:{period:"7d",source:"logs",search:"synthetic"},querySelector:()=>({checked:false})});
+    assertEqual(controller.stateFor("reboots").filters.period,"7d");
+    assertEqual(controller.stateFor("reboots").filters.search,"synthetic");
+    assert(!controller.stateFor("reboots").applyingFilters);
+  });
+
+  if(typeof require==="function")test("Старые metadata другой ревизии не заменяют актуальные списки",async()=>{
+    const db=require("./runtime/db-views.js"),pending=[];let updates=0;
+    const descriptor={route:"reboots",title:"События",renderer:"reboots"};
+    const controller=db.createController({render(){updates++},update(){return true},
+      request:(_a,q)=>q.name==="facets"?new Promise(resolve=>pending.push(resolve)):Promise.resolve(q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false})});
+    controller.setRevision({revision:"1:0"});controller.render(descriptor);
+    controller.setRevision({revision:"2:0"});controller.render(descriptor);
+    const response=value=>({domains:[{value,label:value}],categories:[],manufacturers:[],models:[],locations:[],addresses:[],selected:{}});
+    pending[0](response("obsolete"));await new Promise(resolve=>setTimeout(resolve,10));
+    assertEqual(updates,0);
+    pending[1](response("current"));await new Promise(resolve=>setTimeout(resolve,10));
+    assertEqual(updates,1);
+    const html=controller.render(descriptor);assert(html.includes('value="current"'));assert(!html.includes('value="obsolete"'));
+  });
+
+  if(typeof require==="function")test("Зависшее чтение списков превращается в явную ошибку без блокировки фильтров",async()=>{
+    const db=require("./runtime/db-views.js");let renders=0;
+    const descriptor={route:"reboots",title:"События",renderer:"reboots"};
+    const controller=db.createController({facetTimeoutMs:20,render(){renders++},update(){return true},
+      request:(_a,q,options)=>q.name==="facets"?new Promise((_resolve,reject)=>options.signal.addEventListener("abort",()=>reject(Object.assign(new Error("synthetic"),{name:"AbortError"}))))
+        :Promise.resolve(q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false})});
+    controller.setRevision({revision:"1:0"});controller.render(descriptor);
+    await new Promise(resolve=>setTimeout(resolve,40));
+    const html=controller.render(descriptor);
+    assert(renders>0);assert(html.includes("Списки недоступны"));assert(html.includes("Поиск и период остаются доступны"));
+    assert(!/<button type="submit"[^>]*disabled/.test(html));
   });
 
   test("Поток лога пишется в выбранную папку без JSON/base64", async () => {

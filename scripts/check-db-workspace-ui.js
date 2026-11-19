@@ -54,6 +54,13 @@ const server=http.createServer(async(req,res)=>{
   if(req.url.startsWith("/api/workspace/log-list/")){json({value:[]});return;}
   if(req.url==="/api/workspace/db"){
     let body="";for await(const chunk of req)body+=chunk;const data=JSON.parse(body);
+    if(data.name==="facets"&&process.env.SPHERE_TEST_DELAY_FACETS==="1")await new Promise(resolve=>setTimeout(resolve,1500));
+    if(data.name==="facets"&&process.env.SPHERE_TEST_FAIL_FACETS==="1"){
+      res.writeHead(503,{"Content-Type":"application/json"});res.end(JSON.stringify({error:"db_query_timeout"}));return;
+    }
+    if(data.action==="view"&&data.name!=="facets"&&process.env.SPHERE_TEST_TIMEOUT_ANALYTICS==="1"&&data.filters?.period!=="7d"){
+      await new Promise(resolve=>setTimeout(resolve,100));res.writeHead(503,{"Content-Type":"application/json"});res.end(JSON.stringify({error:"db_query_timeout"}));return;
+    }
     if(process.env.SPHERE_TEST_DB_ERROR==="1"&&data.action==="context"&&data.label==="logRows"){
       res.writeHead(503,{"Content-Type":"application/json"});res.end(JSON.stringify({error:"db_query_timeout"}));return;
     }

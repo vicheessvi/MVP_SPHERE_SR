@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from contextlib import closing
 from hashlib import sha256
 from pathlib import Path
@@ -86,6 +87,28 @@ class ReadModelTests(unittest.TestCase):
         scoped=self.view("facets",{"scopeCategory":"vcs"})
         self.assertEqual(values(scoped,"domains"),{"a","b"})
         self.assertEqual(scoped["selected"]["category"],"vcs")
+
+    def test_event_queries_use_selected_device_index_and_keep_sr_only_facets(self):
+        with closing(self.model.connect(self.workspace)) as c:
+            sql,args=self.model.cte(c,{"model":"TE40"},True)
+            details=[row["detail"] for row in c.execute("EXPLAIN QUERY PLAN "+sql+" SELECT event_kind,count(*) FROM events GROUP BY event_kind",args)]
+            self.assertTrue(any("SEARCH e USING COVERING INDEX rm_idx_event_scope" in detail and "device=?" in detail for detail in details),details)
+            old=sql.replace("FROM devices d CROSS JOIN rm_records e INDEXED BY rm_idx_event_scope ON d.key=e.device","FROM rm_records e JOIN devices d ON d.key=e.device")
+            query=" SELECT event_kind,count(*),count(DISTINCT device) FROM events GROUP BY event_kind"
+            self.assertEqual([tuple(row) for row in c.execute(sql+query,args)],[tuple(row) for row in c.execute(old+query,args)])
+        with patch.object(self.model,"cte",wraps=self.model.cte) as calls:
+            self.view("facets",{"model":"TE40"})
+            self.assertTrue(all(len(call.args)<3 or call.args[2] is False for call in calls.call_args_list))
+
+    def test_prepare_adds_analytics_index_to_existing_database_without_reimport_or_revision_change(self):
+        with closing(self.model.connect(self.workspace)) as c,c:
+            c.execute("DROP INDEX rm_idx_event_scope") # This test owns its temporary database.
+            before=[tuple(row) for row in c.execute("SELECT label,key,checksum FROM rm_records ORDER BY label,key")]
+        self.assertTrue(self.model.prepare(self.workspace)["ready"])
+        self.assertEqual(self.model.bootstrap(self.workspace)["revision"],self.revision)
+        with closing(self.model.connect(self.workspace)) as c:
+            self.assertIsNotNone(c.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='rm_idx_event_scope'").fetchone())
+            self.assertEqual(before,[tuple(row) for row in c.execute("SELECT label,key,checksum FROM rm_records ORDER BY label,key")])
 
     def test_inventory_versions_and_errors_are_paged_and_newest_failed_site_is_empty(self):
         result = self.view("inventory", {"deviceId": "te"})

@@ -73,6 +73,9 @@ with tempfile.TemporaryDirectory(prefix="sphere-db-benchmark-") as folder:
             if progress["ready"]:break
         print(json.dumps({"migrationSeconds":round(time.monotonic()-migration,2)}),flush=True)
     revision=model.bootstrap(workspace)["revision"]
+    start=time.monotonic()
+    facets=model.view(workspace,revision,"facets",{})
+    print(json.dumps({"view":"facets","seconds":round(time.monotonic()-start,3),"models":len(facets["models"])}),flush=True)
     for name in ("events","summary","accounted","heatmap","tops","duration","duration-rows","export-devices"):
         start=time.monotonic()
         result=model.view(workspace,revision,name,{},0,50)
@@ -84,3 +87,6 @@ with tempfile.TemporaryDirectory(prefix="sphere-db-benchmark-") as folder:
     start=time.monotonic()
     result=model.view(workspace,revision,"events",{},min(10000,max(0,count//100-1)),50)
     print(json.dumps({"latePageSeconds":round(time.monotonic()-start,3),"rows":len(result["rows"])}),flush=True)
+    for filters in ({"manufacturer":"huawei","model":"TE40"},{"deviceId":"te-0"}):
+        start=time.monotonic();result=model.view(workspace,revision,"summary",filters)
+        print(json.dumps({"filteredSummary":filters,"seconds":round(time.monotonic()-start,3),"groups":len(result["groups"])}),flush=True)

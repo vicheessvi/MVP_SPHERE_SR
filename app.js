@@ -6702,6 +6702,7 @@
     request: dbRequest,
     render,
     update: updateDatabasePanel,
+    updateFilters: updateDatabaseFilters,
     reload: async()=>{
       try {
         await activateDatabase();
@@ -6781,6 +6782,24 @@
     const next=template.content.querySelector("[data-db-panel]");
     if(!next)return false;
     panel.replaceWith(next);
+    return true;
+  }
+
+  function updateDatabaseFilters(markup) {
+    const form=app.querySelector?.("[data-db-filters]");
+    if(!form||typeof document.createElement!=="function")return false;
+    const template=document.createElement("template");template.innerHTML=markup;
+    const next=template.content.querySelector("[data-db-filters]");
+    if(!next)return false;
+    for(const select of next.querySelectorAll("select")){
+      const target=form.elements.namedItem(select.name);
+      if(target){target.innerHTML=select.innerHTML;target.disabled=select.disabled;target.value=select.value;}
+    }
+    const status=form.querySelector(".db-filter-state");
+    if(status)status.textContent=next.querySelector(".db-filter-state")?.textContent||"";
+    const retry=form.querySelector("[data-db-facets-retry]");
+    if(retry)retry.hidden=next.querySelector("[data-db-facets-retry]")?.hidden!==false;
+    form.setAttribute("aria-busy",next.getAttribute("aria-busy"));
     return true;
   }
 

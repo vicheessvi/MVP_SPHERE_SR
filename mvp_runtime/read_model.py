@@ -222,6 +222,8 @@ class ReadModel:
             WHERE label='pollingResults'""")
         connection.execute("CREATE INDEX IF NOT EXISTS rm_idx_staged_source ON rm_staging(batch,source) WHERE label='pollingResults'")
         connection.execute("CREATE INDEX IF NOT EXISTS rm_idx_staged_device ON rm_staging(batch,device,stamp DESC,key) WHERE label='pollingResults'")
+        connection.execute("""CREATE INDEX IF NOT EXISTS rm_idx_event_scope ON rm_records(
+            label,device,stamp DESC,key,ip,kind,validation,gap,known,anomaly) WHERE label GLOB 'events:*'""")
         for table in ("rm_records","rm_staging"):
             connection.execute(f"""CREATE INDEX IF NOT EXISTS {table}_change_pair ON {table}(device,
                 json_extract(payload,'$.fromPollingResultId'),json_extract(payload,'$.toPollingResultId'))
@@ -697,7 +699,7 @@ class ReadModel:
         if source not in ("all","logs","json"):raise WorkspaceError("db_filter_invalid")
         if source=="json":labels=[]
         if source in ("all","json"):labels+=["events:json"]
-        event_where = ["e.label IN (" + ",".join("?" for _ in labels) + ")", "(e.ip=d.ip OR e.label='events:json')",
+        event_where = ["e.label GLOB 'events:*'", "e.label IN (" + ",".join("?" for _ in labels) + ")", "(e.ip=d.ip OR e.label='events:json')",
                        "e.validation!='provisional_user_validation'"]
         args = values + [silence * 60] + labels
         period = filters.get("period", "all")
@@ -729,7 +731,7 @@ class ReadModel:
                   d.loc device_location,d.location_name,d.location_address,d.is_vip,
                   CASE WHEN e.kind='unknown_start' AND e.gap>=? AND e.known=0 AND e.anomaly=0
                   THEN 'suspected_power_loss' ELSE e.kind END event_kind
-                  FROM rm_records e JOIN devices d ON d.key=e.device WHERE """ + " AND ".join(event_where) + ")"
+                  FROM devices d CROSS JOIN rm_records e INDEXED BY rm_idx_event_scope ON d.key=e.device WHERE """ + " AND ".join(event_where) + ")"
         return sql, args
 
     def view(self, workspace: str, revision: str, name: str, filters: dict, page: int = 0, size: int = 50) -> dict:
@@ -778,9 +780,14 @@ class ReadModel:
                     clauses.append("((cast(strftime('%w',stamp) AS INTEGER)+6)%7)=?"); extra.append(int(filters["day"]))
                 if filters.get("hour") is not None:
                     clauses.append("cast(substr(stamp,12,2) AS INTEGER)=?"); extra.append(int(filters["hour"]))
-                return self.rows(c, sql + """ SELECT key,device,stamp,event_kind,device_name name,device_model model,device_ip ip,
-                    location_name locationName,location_address address,is_vip vip,gap,payload FROM events WHERE """ +
-                    " AND ".join(clauses) + " ORDER BY stamp DESC,key DESC", args + extra, page, size)
+                # Sort/filter compact indexed keys first; fetch evidence payload only for this page.
+                query=sql+""", page_keys AS (SELECT label,key,device,stamp,event_kind,device_name name,device_model model,device_ip ip,
+                    location_name locationName,location_address address,is_vip vip,gap FROM events WHERE """+" AND ".join(clauses)+"""
+                    ORDER BY stamp DESC,key DESC LIMIT ? OFFSET ?)
+                    SELECT p.key,p.device,p.stamp,p.event_kind,p.name,p.model,p.ip,p.locationName,p.address,p.vip,p.gap,detail.payload
+                    FROM page_keys p JOIN rm_records detail ON detail.label=p.label AND detail.key=p.key ORDER BY p.stamp DESC,p.key DESC"""
+                found=c.execute(query,[*args,*extra,size+1,page*size]).fetchall()
+                return {"rows":[dict(row) for row in found[:size]],"hasNext":len(found)>size}
             if name == "summary":
                 groups = [dict(row) for row in c.execute(sql + " SELECT event_kind kind,count(*) events,count(DISTINCT device) devices FROM events GROUP BY event_kind", args)]
                 denominator = c.execute(sql + " SELECT count(*) FROM devices", args).fetchone()[0]
