@@ -732,6 +732,8 @@ class ReadModel:
         return {"rows": [dict(row) for row in found[:size]], "hasNext": len(found) > size}
 
     def _view(self, c, name, filters, page, size):
+        if name=="facets":
+            return self.filter_options(c,filters)
         if name in {"events", "summary", "heatmap", "duration", "duration-rows", "tops", "accounted", "event-devices", "export-devices"}:
             sql, args = self.cte(c, {**filters,"source":"logs"} if name in ("accounted","duration","duration-rows","export-devices") else filters, True)
             kind = filters.get("kind") or "confirmed_reboot"
@@ -862,9 +864,33 @@ class ReadModel:
             categories = [dict(row) for row in c.execute(sql + " SELECT category label,count(*) devices FROM devices GROUP BY category", args)]
             return {"counts": counts, "categories": categories,
                     "devices": c.execute(sql + " SELECT count(*) FROM devices", args).fetchone()[0]}
-        if name == "facets":
-            result = {}
-            for key, column in (("domains", "domain"), ("models", "model"), ("manufacturers", "maker"), ("addresses", "location_address")):
-                result[key] = [row[0] for row in c.execute(sql + f" SELECT DISTINCT {column} FROM devices WHERE {column}!='' ORDER BY {column} LIMIT 500", args)]
-            return result
         raise WorkspaceError("db_query_invalid")
+
+    def filter_options(self,c,filters):
+        if not isinstance(filters,dict):raise WorkspaceError("db_filter_invalid")
+        base={key:filters[key] for key in ("current","vip","search","accounted") if filters.get(key)}
+        scope=filters.get("scopeCategory")
+        if scope:
+            base["category"]=scope
+        selected={}
+        result={}
+        chain=[("domain","domains","domain"),("category","categories","category"),("manufacturer","manufacturers","maker"),
+               ("model","models","model"),("locationId","locations","loc"),("address","addresses","location_address")]
+        for field_name,list_name,column in chain:
+            sql,args=self.cte(c,base)
+            if field_name=="locationId":
+                rows=[dict(row) for row in c.execute(sql+""" SELECT loc value,min(coalesce(location_name,'')) label,
+                    min(coalesce(location_address,'')) address FROM devices WHERE loc!='' GROUP BY loc ORDER BY label,loc""",args)]
+            elif field_name=="manufacturer":
+                rows=[dict(row) for row in c.execute(sql+""" SELECT maker value,min(coalesce(nullif(json_extract(payload,'$.manufacturerRaw'),''),maker)) label
+                    FROM devices WHERE maker!='' GROUP BY maker ORDER BY label""",args)]
+            else:
+                rows=[dict(row) for row in c.execute(sql+f" SELECT norm({column}) value,min({column}) label FROM devices WHERE coalesce({column},'')!='' GROUP BY norm({column}) ORDER BY label",args)]
+            result[list_name]=rows
+            chosen=scope if field_name=="category" and scope else filters.get(field_name)
+            match=next((row for row in rows if norm(row["value"])==norm(chosen)),None) if chosen else None
+            if match:
+                selected[field_name]=match["value"];base[field_name]=match["value"]
+            elif field_name=="category" and scope:
+                selected[field_name]=scope;base[field_name]=scope
+        return {**result,"selected":selected}

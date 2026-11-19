@@ -54,6 +54,22 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(LaunchError, "неполон"):
                 validate_environment(directory, (3, 11, 0))
 
+    def test_missing_import_and_database_scripts_are_rejected_before_browser(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for name in REQUIRED_FILES:
+                file=root/name
+                file.parent.mkdir(parents=True,exist_ok=True)
+                file.write_text("synthetic",encoding="utf-8")
+            for name in ("runtime/polling-recovery.js","runtime/db-views.js","runtime/log-scan-client.js",
+                         "runtime/log-scan-worker.js","runtime/huawei-310-log-events.js","runtime/huawei-300-log-events.js"):
+                with self.subTest(resource=name):
+                    file=root/name
+                    file.unlink()
+                    with self.assertRaisesRegex(LaunchError,"неполон"):
+                        validate_environment(root,(3,11,0))
+                    file.write_text("synthetic",encoding="utf-8")
+
 
 if __name__ == "__main__":
     unittest.main()

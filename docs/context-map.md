@@ -2,6 +2,8 @@
 
 ## Feature 061 — DB-first рабочие экраны
 
+- Регрессия запуска и фильтров: `specs/061-db-first-analytics/log-import-start-regression.md`, `scripts/repro-log-import-ui.js`. Локальные причины блокировки/ошибки логов, общий монитор операций, отдельная стадия публикации SR/JSON, SQL facets с каскадом и соседством типа/производителя/модели. Браузер проверяет 3192 синтетических файла, потерю recovery, ошибку БД, ожидание commit и клик после blur; реальная база не используется.
+
 - `mvp_runtime/read_model.py`: нормализованные индексированные записи SR/JSON/логов и событий, возобновляемая подготовка из старых порций, staged native imports, bounded SQL views и кеш небольших ответов. Шлюз `/api/workspace/db` в `server.py` сохраняет прежние session/admin/Origin/CSRF gates. Legacy replacement write блокируется после первого native import; прежние порции не удаляются.
 - `runtime/db-views.js` и `app.js`: bootstrap не собирает все массивы, страницы и сводки асинхронны, старые ответы не подменяют новые фильтры. Кольца SVG совместимы с CSP, карта 7×24 и TOP-5 кликабельны, экспорт идёт по всем страницам. Для плана/импортов временно читается SR operational context, не история. XML scan отдаётся по файлу в staging; JSON получает максимум двух соседей и tombstones соседней пары для поздних вставок. Polling adapters и команды записи не изменены. ADR-0064, `specs/061-db-first-analytics/`; проверки `test_read_model.py`, `test_server.py`, `tests.js`, `scripts/benchmark-db-views.py`.
 

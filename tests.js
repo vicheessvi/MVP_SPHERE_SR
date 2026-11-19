@@ -3863,6 +3863,19 @@
     assert(source.includes("data-log-import-speed"));
   });
 
+  test("Импорт явно блокируется до завершения записи, а 100% доступно только после подтверждения", () => {
+    const ready={adminAccess:{adminUnlocked:true},workspaceStatus:{status:"ready"},dbMode:true,dbOperationalRevision:"1:0"};
+    assertEqual(api.logImportBlockReason(ready,"local","1:0"),null);
+    assert(api.logImportBlockReason({...ready,inventoryBusy:true,pollingProgress:{status:"saving",processed:3192,total:3192}},"local","1:0").includes("сохранения"));
+    assert(api.logImportBlockReason({...ready,dbOperationLoading:true},"local","1:0").includes("Подготавливается"));
+    assert(api.logImportBlockReason({...ready,adminAccess:{adminUnlocked:false}},"local","1:0").includes("войдите"));
+    assert(api.logImportBlockReason(ready,"local","2:0").includes("Контекст"));
+    assert(api.importProgressDisplay({processed:3192,total:3192,status:"saving"}).indeterminate);
+    assertEqual(api.importProgressDisplay({processed:3192,total:3192,status:"running"}).percent,99);
+    assertEqual(api.importProgressDisplay({processed:3192,total:3192,status:"failed"}).percent,99);
+    assertEqual(api.importProgressDisplay({processed:3192,total:3192,status:"completed"}).percent,100);
+  });
+
   if (typeof require === "function") test("DB-first открывает миллион событий через bounded запросы, не скачивая snapshot", async () => {
     const vm=require("vm"), fs=require("fs"), path=require("path");
     const handlers={}, calls=[];
@@ -3929,7 +3942,7 @@
     let controller, renderCount=0;
     const descriptor={route:"reboots",title:"Анализ",renderer:"reboots"};
     const render=()=>{renderCount+=1;controller.render(descriptor);};
-    controller=db.createController({render,request:(_action,data)=>new Promise((resolve)=>waves.push({name:data.name,resolve}))});
+    controller=db.createController({render,request:(_action,data)=>data.name==="facets"?Promise.resolve({domains:[],categories:[],manufacturers:[],models:[],locations:[],addresses:[],selected:{}}):new Promise((resolve)=>waves.push({name:data.name,resolve}))});
     controller.setRevision({revision:"1:0"});
     controller.render(descriptor);
     await new Promise((resolve)=>setTimeout(resolve,10));

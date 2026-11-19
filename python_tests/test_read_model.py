@@ -65,6 +65,28 @@ class ReadModelTests(unittest.TestCase):
         self.assertFalse(self.view("summary", {"domain": "B"})["groups"])
         self.assertIn("unknown_start", {row["kind"] for row in self.view("summary", {"logSilenceMinutes": 180})["groups"]})
 
+    def test_filter_options_use_actual_sr_and_cascade_without_fictitious_types(self):
+        with closing(self.model.connect(self.workspace)) as c,c:
+            self.model.put(c,"inventoryDevices",[{"id":"control","nameRaw":"Control","modelRaw":"IPL Pro",
+                "manufacturerRaw":"Extron","category":"controller","inCurrentSr":True,"domain":"C"}])
+        values=lambda data,key:{row["value"] for row in data[key]}
+        all_options=self.view("facets")
+        self.assertEqual(values(all_options,"categories"),{"vcs","controller"})
+        self.assertEqual(values(all_options,"manufacturers"),{"huawei","polycom","extron"})
+        vcs=self.view("facets",{"category":"vcs"})
+        self.assertEqual(values(vcs,"manufacturers"),{"huawei","polycom"})
+        self.assertNotIn("ipl pro",values(vcs,"models"))
+        huawei=self.view("facets",{"category":"vcs","manufacturer":"huawei"})
+        self.assertEqual(values(huawei,"models"),{"te40","bar 310"})
+        narrowed=self.view("facets",{"domain":"A","category":"vcs","manufacturer":"huawei"})
+        self.assertEqual(values(narrowed,"models"),{"te40"})
+        invalid=self.view("facets",{"category":"controller","manufacturer":"huawei","model":"te40"})
+        self.assertEqual(invalid["selected"],{"category":"controller"})
+        self.assertEqual(values(invalid,"manufacturers"),{"extron"})
+        scoped=self.view("facets",{"scopeCategory":"vcs"})
+        self.assertEqual(values(scoped,"domains"),{"a","b"})
+        self.assertEqual(scoped["selected"]["category"],"vcs")
+
     def test_inventory_versions_and_errors_are_paged_and_newest_failed_site_is_empty(self):
         result = self.view("inventory", {"deviceId": "te"})
         self.assertEqual(result["rows"][0]["status"], "authorization_error")

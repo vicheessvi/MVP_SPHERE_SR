@@ -3,7 +3,7 @@
   const KIND_LABELS = { confirmed_reboot: "Перезагрузки", power_off: "Штатные выключения",
     suspected_power_loss: "Предполагаемые паузы", unknown_start: "Причина запуска неизвестна", start_after_shutdown: "Запуски после выключения" };
   const CATEGORY_LABELS = { vcs: "Терминалы ВКС", controller: "Контроллеры", panel: "Панели", switch: "Коммутаторы",
-    matrix_switch: "Матрицы", scaler: "Скалеры", audio_processor: "Аудиопроцессоры" };
+    matrix_switch: "Матрицы", scaler: "Скалеры", audio_processor: "Аудиопроцессоры",other:"Не классифицировано" };
   const STATUS = { success: "Успешно", never: "Не опрашивалось", authorization_error: "Ошибка авторизации",
     network_unreachable: "Недоступно по сети", processing_error: "Ошибка обработки", unmatched: "Не сопоставлено" };
   const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
@@ -14,6 +14,8 @@
     let revision = null, generation = 0, activeKey = "", activeDescriptor = null, controller=null;
     let bootstrap = null;
     const states = new Map(), cache = new Map(), pending = new Map();
+    const facetCache=new Map();
+    const dimensions=["domain","category","manufacturer","model","locationId","address"];
     const stateFor = (route) => {
       if (!states.has(route)) states.set(route, { filters: { period: "all",source:"logs" }, page: 0, kind: "confirmed_reboot", table: "events" });
       return states.get(route);
@@ -22,6 +24,44 @@
       revision = info.revision; bootstrap = info;
       controller?.abort(); controller=null;
       generation += 1; activeKey = ""; cache.clear(); pending.clear();
+      facetCache.clear();
+    }
+    function normalizeFilters(values,data){
+      const result={...values};
+      for(const key of dimensions) {
+        if(data.selected?.[key])result[key]=data.selected[key];else delete result[key];
+      }
+      return result;
+    }
+    function facetKey(descriptor,values){
+      return JSON.stringify([revision,descriptor.category||"",...["current","vip","search","accounted",...dimensions].map((key)=>values[key]||"")]);
+    }
+    function fetchFacets(descriptor,values){
+      const key=facetKey(descriptor,values);
+      if(facetCache.has(key))return facetCache.get(key);
+      const entry={};
+      facetCache.set(key,entry);
+      while(facetCache.size>12)facetCache.delete(facetCache.keys().next().value);
+      entry.promise=options.request("view",{revision,name:"facets",page:0,size:50,filters:{...values,scopeCategory:descriptor.category||""}})
+        .then((data)=>{entry.data=data;return data;}).catch((error)=>{entry.error="Не удалось получить доступные значения фильтров.";throw error;});
+      return entry;
+    }
+    function ensureFacets(descriptor,state){
+      const values=state.draftFilters||state.filters, key=facetKey(descriptor,values);
+      const found=facetCache.get(key);
+      if(found)return found;
+      const entry=fetchFacets(descriptor,values),version=revision;
+      entry.promise.then((data)=>{
+        if(version!==revision||activeDescriptor?.route!==descriptor.route||facetKey(descriptor,state.draftFilters||state.filters)!==key)return;
+        if(!state.applyingFilters) {
+          if(state.draftFilters)state.draftFilters=normalizeFilters(state.draftFilters,data);
+          else state.filters=normalizeFilters(state.filters,data);
+        }
+        const nextKey=facetKey(descriptor,state.draftFilters||state.filters);
+        facetCache.set(nextKey,entry);
+        options.render();
+      }).catch(()=>{if(version===revision&&activeDescriptor?.route===descriptor.route)options.render();});
+      return entry;
     }
     function request(name, state, extra = {}, scope = null) {
       return options.request("view", { revision:scope?.revision||revision, name, page: state.page, size: 50,
@@ -78,13 +118,18 @@
       const fraction = total ? Math.min(100, Math.max(0, Number(count || 0) / total * 100)) : 0;
       return `<button type="button" class="db-ring-card" ${attrs}><span class="db-ring"><svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="42" fill="none" stroke="#e4eaf3" stroke-width="9"/><circle cx="50" cy="50" r="42" fill="none" stroke="${color}" stroke-width="9" stroke-linecap="round" stroke-dasharray="${(fraction*2.639).toFixed(2)} 264" transform="rotate(-90 50 50)"/></svg><span><b>${number(count)}</b><small>из ${number(total)}</small></span></span><span><strong>${escape(title)}</strong><small>${fraction.toFixed(1)}% выбранных устройств</small></span></button>`;
     }
-    function filters(state, events, inventory=false) {
-      const f = state.filters;
+    function filters(state, events, inventory=false, facets={}) {
+      const f = state.draftFilters||state.filters, data=facets.data;
       const select=(name,items,fallback="")=>`<select name="${name}">${items.map(([value,label])=>`<option value="${value}"${(f[name]||fallback)===value?" selected":""}>${label}</option>`).join("")}</select>`;
-      return `<form class="db-filter-bar" data-db-filters>
+      const choices=(name,list,all)=>`<select name="${name}" data-db-cascade${data?"":" disabled"}><option value="">${data?all:"Загрузка значений…"}</option>${(data?.[list]||[]).map((row)=>`<option value="${escape(row.value)}"${String(f[name]||"")===String(row.value)?" selected":""}>${escape(name==="category"?(CATEGORY_LABELS[row.value]||row.label):name==="locationId"&&row.address?row.label+" — "+row.address:row.label)}</option>`).join("")}</select>`;
+      return `<form class="db-filter-bar" data-db-filters aria-busy="${Boolean(state.applyingFilters)}"><fieldset class="db-filter-fields"${state.applyingFilters?" disabled":""}>
         <label class="db-search"><span>Поиск устройства</span><input name="search" type="search" value="${escape(f.search)}" placeholder="Название, модель или IP"></label>
-        <label><span>Домен</span><input name="domain" value="${escape(f.domain)}" placeholder="Все домены"></label>
-        <label><span>Модель</span><input name="model" value="${escape(f.model)}" placeholder="Все модели"></label>
+        <label><span>Домен</span>${choices("domain","domains","Все домены")}</label>
+        <div class="db-device-filters${inventory?" db-device-filters-two":""}">
+        ${inventory?"":`<label><span>Тип устройства</span>${choices("category","categories","Все типы")}</label>`}
+        <label><span>Производитель</span>${choices("manufacturer","manufacturers","Все производители")}</label>
+        <label><span>Модель</span>${choices("model","models","Все модели")}</label>
+        </div>
         <label><span>VIP</span><select name="vip"><option value="">Все</option><option value="yes"${f.vip === "yes" ? " selected" : ""}>VIP</option><option value="no"${f.vip === "no" ? " selected" : ""}>Не VIP</option></select></label>
         ${events ? `<label><span>Источник событий</span><select name="source">${[["logs","Журналы ВКС"],["json","JSON: Date − Uptime"],["all","Все источники"]].map(([v,t])=>`<option value="${v}"${(f.source||"logs")===v?" selected":""}>${t}</option>`).join("")}</select></label>
         <label><span>Период событий</span><select name="period">${[["all","Вся история"],["today","Сегодня"],["7d","7 дней"],["30d","30 дней"],["custom","По датам"]].map(([v,t])=>`<option value="${v}"${f.period===v?" selected":""}>${t}</option>`).join("")}</select></label>
@@ -92,18 +137,19 @@
         <label><span>Дата до</span><input name="dateTo" type="date" value="${escape(f.dateTo)}"></label>
         <label><span>Пауза без логов, мин</span><input name="logSilenceMinutes" type="number" min="15" max="10080" value="${escape(f.logSilenceMinutes || "60")}"></label>
         <label class="db-check"><input type="checkbox" name="accounted"${f.accounted ? " checked" : ""}>Только ВКС «Учёт»</label>` : ""}
-        <button type="submit" class="button primary">Применить</button><button type="button" class="text-button" data-db-reset>Сбросить</button>
-        <details class="db-advanced"><summary>Производитель, локация и адрес</summary><div>
-          <label><span>Производитель</span><input name="manufacturer" value="${escape(f.manufacturer)}" placeholder="Например, Huawei"></label>
-          <label><span>Наименование локации</span><input name="locationName" value="${escape(f.locationName)}" placeholder="Все локации"></label>
-          <label><span>Адрес локации</span><input name="address" value="${escape(f.address)}" placeholder="Все адреса"></label>
+        <button type="submit" class="button primary"${state.applyingFilters||!data?" disabled":""}>${state.applyingFilters?"Применение…":"Применить"}</button><button type="button" class="text-button" data-db-reset>Сбросить</button>
+        <span class="db-filter-state" role="status">${facets.error?escape(facets.error):!data?"Обновляем доступные значения…":state.draftFilters?"Изменения фильтров ещё не применены":""}</span>
+        ${facets.error?'<button type="button" class="text-button" data-db-facets-retry>Повторить загрузку списков</button>':""}
+        <details class="db-advanced"><summary>Локация, адрес и дополнительные условия</summary><div>
+          <label><span>Наименование локации</span>${choices("locationId","locations","Все локации")}</label>
+          <label><span>Адрес локации</span>${choices("address","addresses","Все адреса")}</label>
           ${inventory?`<label><span>Область SR</span>${select("current",[["yes","Актуальная SR"],["no","Исторические устройства"],["all","Вся история"]],"yes")}</label>
           <label><span>Результат опроса</span>${select("status",[["","Все"],["never","Не опрашивалось"],["success","Успешно"],["authorization_error","Ошибка авторизации"],["network_unreachable","Недоступно по сети"],["processing_error","Ошибка обработки"],["unmatched","Не сопоставлено"]])}</label>
           <label><span>Доступность по сети</span>${select("ping",[["","Все"],["ok","Доступно"],["failed","Нет ответа"],["unknown","Нет данных"]])}</label>
           <label><span>Изменения</span>${select("changed",[["","Все"],["yes","Есть изменения"],["no","Без изменений"]])}</label>
           <label><span>Поддержка опроса</span>${select("support",[["","Все"],["supported","Поддерживается"],["not_implemented","Не реализован"],["protocol_required","Требует контракта"]])}</label>`:""}
         </div></details>
-      </form>`;
+      </fieldset></form>`;
     }
     function table(headers, rows) {
       if (!rows.length) return '<div class="db-empty"><span aria-hidden="true">◎</span><h3>Нет записей по выбранным условиям</h3><p>Измените фильтры или выберите другой вид событий.</p></div>';
@@ -199,8 +245,10 @@
       activeDescriptor = descriptor;
       const state = stateFor(descriptor.route);
       if (descriptor.category) state.filters.category = descriptor.category;
+      const facets=descriptor.compact?{}:ensureFacets(descriptor,state);
       const clock=["today","7d","30d"].includes(state.filters.period)?Math.floor(Date.now()/60000):0;
-      const key = JSON.stringify([revision,descriptor.route,state,clock]);
+      const queryState={...state};delete queryState.draftFilters;delete queryState.applyingFilters;
+      const key = JSON.stringify([revision,descriptor.route,queryState,clock]);
       if(activeKey!==key){controller?.abort();controller=typeof root.AbortController==="function"?new root.AbortController():null;generation+=1;}
       activeKey = key;
       schedule(descriptor, JSON.parse(JSON.stringify(state)), key);
@@ -221,7 +269,7 @@
       } else content = genericTable(data[routeView(descriptor,state)],state);
       if(data.error&&!data.loading&&!data[routeView(descriptor,state)])content='<div class="db-empty"><h3>Запрос не подтверждён</h3><p>Данные не удалены. Повторите запрос или откройте другой раздел.</p></div>';
       return `<div class="db-workspace">${descriptor.compact ? `<h2>${escape(descriptor.title)}</h2>` : `<header class="db-hero page-header"><div><p class="eyebrow">Локальная аналитика · SQLite</p><h1>${escape(descriptor.title)}</h1><p>${escape(descriptor.summary||"Данные из выбранной локальной базы.")}</p></div><div class="db-live"><span></span>База подключена<small>Ревизия ${escape(revision)}</small></div></header>`}
-        ${descriptor.compact ? "" : filters(state,descriptor.renderer==="reboots",descriptor.renderer==="inventory")}
+        ${descriptor.compact ? "" : filters(state,descriptor.renderer==="reboots",descriptor.renderer==="inventory",facets)}
         <section data-db-panel>
         ${slices.length?`<div class="db-drill-chips">${slices.map((label)=>`<span>${escape(label)}</span>`).join("")}<button type="button" data-db-clear-slice>Снять выбор</button></div>`:""}
         ${data.error ? `<div class="error-panel" role="alert">${escape(data.error)} <button type="button" class="text-button" data-db-retry>Повторить</button></div>` : ""}
@@ -232,9 +280,10 @@
     function refresh() { controller?.abort();controller=typeof root.AbortController==="function"?new root.AbortController():null;
       cache.delete(activeKey); pending.delete(activeKey); generation += 1; options.render(); }
     function handleClick(target) {
-      const button = target.closest("[data-db-kind],[data-db-cell],[data-db-page],[data-db-reset],[data-db-retry],[data-db-device],[data-db-clear-device],[data-db-clear-cell],[data-db-site],[data-db-export],[data-db-duration],[data-db-dimension],[data-db-clear-slice]");
+      const button = target.closest("[data-db-kind],[data-db-cell],[data-db-page],[data-db-reset],[data-db-retry],[data-db-device],[data-db-clear-device],[data-db-clear-cell],[data-db-site],[data-db-export],[data-db-duration],[data-db-dimension],[data-db-clear-slice],[data-db-facets-retry]");
       if (!button || !activeDescriptor) return false;
       const state = stateFor(activeDescriptor.route), d = button.dataset;
+      if("dbFacetsRetry" in d){facetCache.delete(facetKey(activeDescriptor,state.draftFilters||state.filters));options.render();return true;}
       if("dbRetry" in d && cache.get(activeKey)?.conflict && options.reload){void options.reload();return true;}
       if (d.dbExport) { void exportRows(d.dbExport, state); return true; }
       if (d.dbKind) { state.kind=d.dbKind; state.table="events";delete state.filters.durationBucket; delete state.filters.day; delete state.filters.hour;
@@ -251,28 +300,57 @@
       if ("dbClearDevice" in d) delete state.deviceId;
       if ("dbClearCell" in d) { delete state.filters.day; delete state.filters.hour; }
       if("dbClearSlice" in d){delete state.deviceId;delete state.deviceName;for(const key of ["date","day","hour","locationId","durationBucket"])delete state.filters[key];state.table="events";}
-      if ("dbReset" in d) { state.filters={period:"all"}; delete state.deviceId; }
+      if ("dbReset" in d) { state.filters={period:"all",source:"logs"}; delete state.draftFilters;delete state.deviceId; }
       if ("dbSite" in d) { state.site=!state.site; delete state.deviceId; }
       refresh(); return true;
     }
     function handleSubmit(form) {
       if (!form.matches("[data-db-filters]") || !activeDescriptor) return false;
-      const state = stateFor(activeDescriptor.route);
-      state.filters={...state.filters,...Object.fromEntries(new FormData(form))};
-      state.filters.accounted=form.querySelector('[name="accounted"]')?.checked === true;
-      if(state.filters.source==="json"&&["power_off","suspected_power_loss","start_after_shutdown"].includes(state.kind)){state.kind="confirmed_reboot";state.table="events";}
-      state.page=0; delete state.filters.day; delete state.filters.hour;
-      refresh(); return true;
+      const descriptor=activeDescriptor,state = stateFor(descriptor.route),version=revision;
+      if(state.applyingFilters)return true;
+      const values={...(state.draftFilters||state.filters),...Object.fromEntries(new FormData(form))};
+      values.accounted=form.querySelector('[name="accounted"]')?.checked===true;
+      state.draftFilters=values;state.applyingFilters=true;
+      const entry=fetchFacets(descriptor,values);
+      options.render();
+      entry.promise.then((data)=>{
+        if(version!==revision)return;
+        state.filters=normalizeFilters(values,data);delete state.draftFilters;
+        facetCache.set(facetKey(descriptor,state.filters),entry);
+        if(state.filters.source==="json"&&["power_off","suspected_power_loss","start_after_shutdown"].includes(state.kind)){state.kind="confirmed_reboot";state.table="events";}
+        state.page=0;delete state.filters.day;delete state.filters.hour;
+      }).catch(()=>{}).finally(()=>{state.applyingFilters=false;if(activeDescriptor?.route===descriptor.route)refresh();});
+      return true;
+    }
+    function handleChange(element,form){
+      if(!form?.matches("[data-db-filters]")||!activeDescriptor)return false;
+      const state=stateFor(activeDescriptor.route);
+      if(state.applyingFilters)return true;
+      const values={...(state.draftFilters||state.filters),...Object.fromEntries(new FormData(form))};
+      values.accounted=form.querySelector('[name="accounted"]')?.checked===true;
+      const index=dimensions.indexOf(element.name);
+      if(index>=0)for(const name of dimensions.slice(index+1))delete values[name];
+      state.draftFilters=values;
+      // A blur/change must not replace the button the user is about to click.
+      if(element.tagName==="INPUT"&&element.type!=="checkbox"){
+        const status=form.querySelector(".db-filter-state");
+        if(status)status.textContent="Изменения фильтров ещё не применены";
+        return true;
+      }
+      options.render();
+      return true;
     }
     async function exportRows(kind, state) {
       if (!root.XLSX) return;
       const startRevision=revision, rows=[];
+      options.activity?.({label:"Экспорт Excel",detail:"Получение всех строк выборки из БД"});
       try {
         for(let page=0;;page+=1) {
           const name=kind==="site"?"site-name":"export-devices";
           const data=await request(name,{...state,page},{size:100,filters:{...state.filters,...(state.deviceId?{deviceId:state.deviceId}:{}),accounted:kind!=="site",kind:kind==="power"?"power_off":"confirmed_reboot"}});
           if (revision!==startRevision) throw new Error("changed");
           rows.push(...data.rows);
+          options.activity?.({label:"Экспорт Excel",detail:"Получено строк: "+number(rows.length)});
           if(!data.hasNext)break;
         }
         const headers=kind==="site"?["Наименование устройства","Site name","IP","MAC","Адрес","Наименование локации","Домен"]
@@ -283,10 +361,14 @@
         Object.keys(sheet).filter((key)=>!key.startsWith("!")).forEach((key)=>{if(typeof sheet[key].v==="string"){sheet[key].t="s";delete sheet[key].f;}});
         sheet["!autofilter"]={ref:sheet["!ref"]};
         const book=root.XLSX.utils.book_new();root.XLSX.utils.book_append_sheet(book,sheet,"Данные");
-        options.download(root.XLSX.write(book,{type:"array",bookType:"xlsx",compression:true}),`vcs-${kind}.xlsx`);
+        options.activity?.({label:"Экспорт Excel",detail:"Формирование файла XLSX"});
+        await new Promise((resolve)=>setTimeout(resolve,0));
+        if(options.download(root.XLSX.write(book,{type:"array",bookType:"xlsx",compression:true}),`vcs-${kind}.xlsx`)===false)throw new Error("download_failed");
+        options.activity?.({completed:true,detail:"XLSX сформирован и передан браузеру · "+number(rows.length)+" строк"});
       }catch{options.message?.("Экспорт не завершён. Повторите после обновления раздела.");}
+      finally{options.activity?.(null);}
     }
-    return {setRevision,render,handleClick,handleSubmit,refresh,stateFor,deactivate,get revision(){return revision;},get bootstrap(){return bootstrap;}};
+    return {setRevision,render,handleClick,handleSubmit,handleChange,refresh,stateFor,deactivate,get revision(){return revision;},get bootstrap(){return bootstrap;}};
   }
   const api={createController,escape, KIND_LABELS};
   if(typeof module==="object"&&module.exports)module.exports=api;

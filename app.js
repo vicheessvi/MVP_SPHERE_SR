@@ -2602,6 +2602,22 @@
   }
 
   const LOG_EVENT_SOURCE_SAMPLE_LIMIT = 16;
+
+  function importProgressDisplay(progress) {
+    const completed=progress?.status==="completed";
+    const indeterminate=!completed&&(progress?.status==="saving"||!progress?.total);
+    return {indeterminate,percent:completed?100:Math.min(99,Math.max(0,Math.round((progress?.processed||0)/Math.max(1,progress?.total||0)*100)))};
+  }
+
+  function logImportBlockReason(candidate, runtimeKind, revision) {
+    if(candidate.logImportBusy)return "Импорт логов уже выполняется. Дождитесь завершения или остановите его.";
+    if(candidate.inventoryBusy)return "Сейчас выполняется импорт SR или JSON. Дождитесь его завершения и сохранения базы.";
+    if(candidate.dbPrepare||candidate.dbOperationLoading)return "Подготавливается рабочая база и контекст устройств. Дождитесь завершения.";
+    if(runtimeKind==="local"&&candidate.adminAccess?.adminUnlocked!==true)return "Сначала войдите в локальный доступ инструмента.";
+    if(runtimeKind==="local"&&candidate.workspaceStatus?.status!=="ready")return "Сначала подключите рабочую папку базы данных.";
+    if(candidate.dbMode&&(!revision||candidate.dbOperationalRevision!==revision))return "Контекст устройств ещё не подтверждён. Повторите подключение рабочей базы.";
+    return null;
+  }
   function logDeviceContext(candidateState) {
     const inventory = candidateState?.inventoryDevices || [], locations = candidateState?.locations || [];
     return {devices:new Map(inventory.filter((item)=>item.inCurrentSr!==false).map((item)=>[item.id,item])),
@@ -6377,6 +6393,8 @@
     selectNewPollingFiles,
     buildDeviceLogImportRows,
     prepareDeviceLogImport,
+    logImportBlockReason,
+    importProgressDisplay,
     buildHuaweiTeLogEventIndex,
     createHuaweiTeLogEventIndex,
     buildHuawei300LogEventIndex,
@@ -6590,6 +6608,7 @@
     huawei300BarLogIndex: { events: [], coverage: null, sourceSrSha256: null },
     huawei300BoxLogIndex: { events: [], coverage: null, sourceSrSha256: null, validationStatus: "confirmed_user_validation" },
     logImportProgress: null,
+    logImportFeedback: null,
     logCompletedCheckpoint: null,
     logImportBusy: false,
     logImportCancelRequested: false,
@@ -6619,6 +6638,11 @@
     automaticPolling: null,
     pollingRecoverySummary: null,
     inventoryBusy: false,
+    inventoryImportKind: null,
+    pendingRequests: {},
+    exportActivity: null,
+    managementTargetBusy: false,
+    lastOperation: null,
     equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
     rebootFilters: { period: "all", logSilenceMinutes: "60" },
@@ -6636,6 +6660,7 @@
     helpTopicId: null
   };
   const rebootAnalyticsCache = createRebootAnalyticsCache();
+  let operationTimer=null,operationSequence=0;
   const dbViews = global.MVP_DB_VIEWS?.createController?.({
     request: dbRequest,
     render,
@@ -6648,8 +6673,9 @@
       }catch{setMessage("Не удалось обновить базу. Проверьте подключённую рабочую папку.","error");render();}
     },
     download: (bytes, name) => downloadBlob(bytes, name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-    message: (message) => { setMessage(message, "error"); render(); },
-    formatStatus:formatPollStatus
+    message: (message) => {ui.lastOperation={message,type:"error"};setMessage(message, "error"); render(); },
+    formatStatus:formatPollStatus,
+    activity:(value)=>{ui.exportActivity=value?.completed?null:value;if(value?.completed)ui.lastOperation={message:value.detail||"Файл подготовлен и передан браузеру.",type:"info"};refreshOperationStrip();}
   });
 
   document.addEventListener("click", handleClick);
@@ -6681,12 +6707,17 @@
     const method = String(options.method || "GET").toUpperCase();
     const headers = { ...(options.headers || {}) };
     if (!["GET", "HEAD"].includes(method)) headers["X-MVP-CSRF"] = String(global.__MVP_CSRF__ || "");
-    const response = await global.fetch(pathname, { method, headers, body: options.body, signal:options.signal, credentials: "same-origin", cache: "no-store" });
-    if (response.status === 204) return null;
-    let payload = null;
-    try { payload = await response.json(); } catch { payload = null; }
-    if (!response.ok) throw Object.assign(new Error(payload?.error || "local_runtime_error"), { safeCode: payload?.error || "local_runtime_error", status: response.status });
-    return payload;
+    const tracked=!pathname.startsWith("/api/polling/jobs/")&&!(pathname==="/api/polling/jobs/active");
+    const operation=tracked?++operationSequence:null;
+    if(tracked){ui.pendingRequests[operation]={label:options.operationLabel||(pathname.startsWith("/api/admin/")?"Проверка доступа":pathname.includes("credentials")?"Подготовка учётных данных":"Запрос к локальному исполнителю"),started:Date.now()};refreshOperationStrip();}
+    try {
+      const response = await global.fetch(pathname, { method, headers, body: options.body, signal:options.signal, credentials: "same-origin", cache: "no-store" });
+      if (response.status === 204) return null;
+      let payload = null;
+      try { payload = await response.json(); } catch { payload = null; }
+      if (!response.ok) throw Object.assign(new Error(payload?.error || "local_runtime_error"), { safeCode: payload?.error || "local_runtime_error", status: response.status });
+      return payload;
+    }finally{if(tracked){delete ui.pendingRequests[operation];refreshOperationStrip();}}
   }
 
   function postWorkspace(action, data) {
@@ -6695,8 +6726,11 @@
   }
 
   function dbRequest(action, data = {}, options = {}) {
+    const labels={prepare:"Подготовка индексов БД",bootstrap:"Проверка опубликованных данных",context:"Получение контекста из БД",
+      view:"Расчёт выборки и сводок",begin:"Подготовка записи в БД",batch:"Запись порции в БД",finish:"Подтверждение записи в БД",
+      files:"Проверка ранее загруженных JSON",latest:"Получение последних фактов", "neighbors-batch":"Подготовка сравнений JSON"};
     return runtimeRequest("/api/workspace/db",{ method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({...data,action,workspace:ui.workspaceStatus?.workspaceId}),...options });
+      body:JSON.stringify({...data,action,workspace:ui.workspaceStatus?.workspaceId}),operationLabel:labels[action]||"Операция рабочей базы",...options });
   }
 
   function updateDatabasePanel() {
@@ -7320,11 +7354,44 @@
       ui.route = previous;
       setMessage("Раздел не удалось отобразить. Данные базы не изменены; можно открыть другой модуль.", "error");
     }
-    global.MVP_SPHERE_BRAND?.mount(app);
+    try {global.MVP_SPHERE_BRAND?.mount(app);}catch{/* Optional decoration must not interrupt import or navigation. */}
+    refreshOperationStrip();
+  }
+
+  function operationRows() {
+    const rows=[];
+    if(ui.dbPrepare)rows.push({label:"Подготовка индексов БД",detail:ui.dbPrepare.processed+" / "+ui.dbPrepare.total+" порций"});
+    if(ui.dbOperationLoading)rows.push({label:"Загрузка актуального контекста устройств",detail:"Получение данных из БД"});
+    if(ui.inventoryBusy){
+      const progress=ui.inventoryImportKind==="sr"?ui.srProgress:ui.pollingProgress;
+      rows.push({label:ui.inventoryImportKind==="sr"?"Импорт SR":"Импорт JSON",detail:(progress?.stage||"Обработка")+" · "+(progress?.processed||0)+" / "+(progress?.total||0)});
+    }
+    if(ui.logImportBusy)rows.push({label:"Импорт и анализ логов",detail:ui.logImportProgress?logImportProgressText(ui.logImportProgress):"Подготовка"});
+    if(ui.automaticPolling&&!["completed","cancelled","failed"].includes(ui.automaticPolling.status))rows.push({label:"Опрос устройств",detail:automaticPollingStatusLabel(ui.automaticPolling.status)+" · "+(ui.automaticPolling.processed||0)+" / "+(ui.automaticPolling.total||0)});
+    if(ui.managementTargetBusy)rows.push({label:"Загрузка таблицы параметров",detail:"Чтение и проверка XLSX"});
+    if(ui.exportActivity)rows.push({label:ui.exportActivity.label,detail:ui.exportActivity.detail||"Выполняется"});
+    if(!rows.length){
+      const requests=Object.values(ui.pendingRequests);
+      if(requests.length)rows.push({label:requests[0].label,detail:"Активных запросов: "+requests.length+" · "+Math.max(0,Math.floor((Date.now()-requests[0].started)/1000))+" с"});
+    }
+    return rows;
+  }
+
+  function refreshOperationStrip() {
+    const host=app.querySelector?.("[data-operation-strip]");
+    if(!host)return;
+    const rows=operationRows(),last=ui.lastOperation;
+    host.hidden=!rows.length&&!last;
+    host.className="operation-strip"+(!rows.length&&last?.type==="error"?" operation-strip-error":"");
+    host.innerHTML=rows.length?'<span class="operation-spinner" aria-hidden="true"></span><div>'+rows.map((row)=>'<p><strong>'+escapeHtml(row.label)+'</strong><span>'+escapeHtml(row.detail)+'</span></p>').join("")+'</div>'
+      :last?'<div><p><strong>'+escapeHtml(last.type==="error"?"Ошибка операции":last.type==="warning"?"Требуется внимание":"Операция завершена")+'</strong><span>'+escapeHtml(last.message)+'</span></p></div><button type="button" class="text-button" data-dismiss-operation>Скрыть</button>':"";
+    if(rows.length&&!operationTimer)operationTimer=global.setInterval(refreshOperationStrip,1000);
+    if(!rows.length&&operationTimer){global.clearInterval(operationTimer);operationTimer=null;}
   }
 
   function updatePollingProgress(snapshot, forceRender) {
     ui.pollingProgress = { ...snapshot };
+    refreshOperationStrip();
     if (ui.route !== "upload") return;
     const current = Date.now();
     const renderNow = forceRender || current - pollingProgressLastRenderAt >= 100;
@@ -7345,7 +7412,7 @@
   }
 
   function logImportProgressText(progress) {
-    const phase = { classifying: "Проверка файлов", analyzing: "Чтение и анализ логов",
+    const phase = { preparing:"Подготовка импорта и проверка прежних результатов в БД", classifying: "Проверка файлов", analyzing: "Чтение и анализ логов",
       summarizing: "Объединение событий", saving: "Запись аналитики в рабочую базу" }[progress.phase] || "Импорт";
     if (progress.phase === "classifying") return `${phase}: ${progress.processed} из ${progress.total}.`;
     return `${phase}: ${progress.processed} из ${progress.total} файлов · обработано ${formatBytes(progress.bytesRead || 0)} из ${formatBytes(progress.totalBytes || 0)} · перечитывать не пришлось: ${progress.skippedFiles || 0}.`;
@@ -7363,12 +7430,26 @@
     const now = Date.now();
     if (!force && now - logImportLastProgressAt < 250) return;
     logImportLastProgressAt = now;
+    refreshOperationStrip();
     const label = app.querySelector("[data-log-import-progress]");
     if (label) label.textContent = logImportProgressText(progress);
     const speed = app.querySelector("[data-log-import-speed]");
     if (speed) speed.textContent = logImportSpeedText(progress);
     const meter = app.querySelector("[data-log-import-meter]");
-    if (meter) meter.value = progress.totalBytes ? Math.min(100, progress.bytesRead / progress.totalBytes * 100) : 0;
+    if (meter) {
+      if(["preparing","summarizing","saving"].includes(progress.phase))meter.removeAttribute("value");
+      else meter.value=progress.phase==="classifying"?(progress.total?progress.processed/progress.total*100:0):(progress.totalBytes?Math.min(99,progress.bytesRead/progress.totalBytes*100):0);
+    }
+  }
+
+  function setLogImportFeedback(message,type="info") {
+    ui.logImportFeedback=message?{message,type}:null;
+    if(message)ui.lastOperation={message,type};
+    refreshOperationStrip();
+    const element=app.querySelector("[data-log-import-feedback]");
+    if(!element)return;
+    element.hidden=!message;element.textContent=message||"";
+    element.className=type==="error"?"error-panel":type==="warning"?"warning-panel":"info-panel";
   }
 
   function formatPollingEta(seconds) {
@@ -7419,6 +7500,7 @@
           </nav>
         </aside>
         <div class="workspace">
+          <section data-operation-strip class="operation-strip" role="status" hidden></section>
           <main id="main-content" class="page" tabindex="-1">
             ${renderMessage()}
             ${renderRoute(user)}
@@ -8301,14 +8383,17 @@
 
   function renderUpload() {
     const pollingProgress = ui.pollingProgress;
-    const pollingPercent = pollingProgress?.total ? Math.min(100, Math.round((pollingProgress.processed / pollingProgress.total) * 100)) : 0;
+    const pollingMeter=importProgressDisplay(pollingProgress);
     const automatic = ui.automaticPolling;
     const automaticPercent = automatic?.total ? Math.min(100, Math.round((automatic.processed / automatic.total) * 100)) : 0;
-    const srPercent = ui.srProgress?.total ? Math.min(100, Math.round((ui.srProgress.processed / ui.srProgress.total) * 100)) : 0;
+    const srMeter=importProgressDisplay(ui.srProgress);
+    const importsBusy=ui.inventoryBusy||ui.logImportBusy||Boolean(ui.dbPrepare)||ui.dbOperationLoading||ui.workspaceSaveStatus==="restoring";
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     const zeroInterval = isZeroIntervalRange(ui.pollingPlanSelection);
     const adminLocked = launchMode.kind === "local" && ui.adminAccess?.adminUnlocked !== true;
+    const logBlock=logImportBlockReason(ui,launchMode.kind,dbViews?.revision);
+    const logFeedback=!ui.logImportBusy&&logBlock?{message:logBlock,type:"warning"}:ui.logImportFeedback;
     const adminGate = !adminLocked ? "" : ui.adminAccess?.error
       ? `<section class="card upload-card"><h2>Доступ к плану</h2><p role="alert">Не удалось проверить локальный доступ. Перезапустите инструмент.</p></section>`
       : ui.adminAccess === null
@@ -8324,17 +8409,17 @@
         ${adminLocked ? `<p>Войдите в локальный доступ, чтобы подключить рабочую папку.</p>` : `<form class="form-grid" data-workspace-select-form><div class="field"><label>Путь к рабочей папке<input name="workspacePath" type="text" value="${escapeHtml(ui.workspaceStatus?.path || "")}" placeholder="C:\\AI\\MVP_SPHERE_SR_Data" required></label></div><div class="button-row"><button class="button secondary" type="button" data-workspace-choose>Обзор…</button><button class="button secondary" type="submit">Подключить папку</button></div></form>`}${ui.workspaceStatus?.status === "ready" ? `<button class="button secondary section-gap" type="button" data-workspace-save-now>Сохранить сейчас</button>` : ""}</section>` : ""}
       <div class="upload-grid section-gap">
         <section class="card upload-card"><h2>1. Выгрузка SR</h2>
-          <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="sr-file" class="sr-only">Выберите XLSX-файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Загрузить SR</button></form>
-          ${ui.srProgress ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(ui.srProgress.stage)}</span><strong>${ui.srProgress.processed || 0} из ${ui.srProgress.total || 0} строк</strong></div><strong>${srPercent}%</strong></div><progress max="100" value="${srPercent}">${srPercent}%</progress><p class="muted">Принято: ${ui.srProgress.accepted || 0} · отклонено: ${ui.srProgress.rejected || 0}</p></section>` : ""}
+          <form class="form-grid" data-sr-import-form aria-busy="${ui.inventoryBusy&&ui.inventoryImportKind==="sr"}"><div class="field"><label for="sr-file" class="sr-only">Выберите XLSX-файл выгрузки SR</label><input id="sr-file" name="srFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required${importsBusy?" disabled":""}></div><button class="button primary" type="submit"${importsBusy ? " disabled" : ""}>Загрузить SR</button></form>
+          ${ui.srProgress ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(ui.srProgress.stage)}</span><strong>${ui.srProgress.processed || 0} из ${ui.srProgress.total || 0} строк</strong></div><strong>${srMeter.indeterminate?"Выполняется…":srMeter.percent+"%"}</strong></div><progress aria-label="Импорт SR" max="100"${srMeter.indeterminate?"":` value="${srMeter.percent}"`}></progress><p class="muted">Принято: ${ui.srProgress.accepted || 0} · отклонено: ${ui.srProgress.rejected || 0}</p></section>` : ""}
           ${ui.srImportResults.length ? `<ul class="result-list section-gap">${ui.srImportResults.map((item) => `<li><div><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.detail || "")}</span></div><span class="badge ${item.ok ? "success" : "critical"}">${escapeHtml(formatImportOutcome(item.label))}</span></li>`).join("")}</ul>` : ""}
         </section>
         <section class="card upload-card upload-folder-card"><h2>2. Общая папка результатов опросов</h2>
-          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy ? "true" : "false"}"><div class="field"><label for="polling-files" class="sr-only">Выберите общую папку результатов</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${ui.inventoryBusy ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forcePollingRescan" type="checkbox"${ui.inventoryBusy ? " disabled" : ""}> Перепроверить ранее загруженные JSON</label><button class="button primary" type="submit"${ui.inventoryBusy ? " disabled" : ""}>Импортировать папку</button></form>
+          <form class="form-grid" data-polling-import-form aria-busy="${ui.inventoryBusy&&ui.inventoryImportKind==="json"}"><div class="field"><label for="polling-files" class="sr-only">Выберите общую папку результатов</label><input id="polling-files" name="pollingFiles" type="file" accept=".json,application/json" webkitdirectory directory multiple required${importsBusy ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forcePollingRescan" type="checkbox"${importsBusy ? " disabled" : ""}> Перепроверить ранее загруженные JSON</label><button class="button primary" type="submit"${importsBusy ? " disabled" : ""}>Импортировать папку</button></form>
           <div class="output-folder-picker section-gap"><div><strong>Папка для новых автоматических опросов</strong><p class="muted">${launchMode.kind === "local" ? (ui.pollingOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.pollingOutputFolderName)}` : "Выберите общую папку до формирования плана.") : "Автоматический опрос доступен после запуска START_MVP_SPHERE_SR.py."}</p></div><button class="button secondary" type="button" data-select-polling-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку</button></div>
           ${ui.pollingRecoverySummary ? `<div class="warning-panel section-gap" role="status"><strong>Незавершённый опрос: ${escapeHtml(ui.pollingRecoverySummary.folder)}</strong><p>Не подтверждено сохранение для ${ui.pollingRecoverySummary.remaining} устройств. Для продолжения повторно загрузите исходную SR или список целей и введите учётные данные.${ui.pollingRecoverySummary.requiresReview ? ` Неясный исход изменения настроек: ${ui.pollingRecoverySummary.requiresReview} устройств требуют отдельной проверки.` : ""}</p><button class="button primary" type="button" data-resume-automatic-polling${automaticPollingMonitor || !credentialPoolSession?.sourceSha256 ? " disabled" : ""}>Продолжить опрос</button></div>` : ""}
           ${pollingProgress && ui.inventoryBusy ? `<section class="polling-progress section-gap" aria-live="polite" aria-busy="true">
-            <div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(pollingProgress.stage)}</span><strong>${pollingProgress.processed} из ${pollingProgress.total} JSON</strong></div><strong>${pollingPercent}%</strong></div>
-            <div class="polling-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pollingPercent}"><span style="width:${pollingPercent}%"></span></div>
+            <div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(pollingProgress.stage)}</span><strong>${pollingProgress.processed} из ${pollingProgress.total} JSON</strong></div><strong>${pollingMeter.indeterminate?"Выполняется…":pollingMeter.percent+"%"}</strong></div>
+            <progress aria-label="Импорт JSON" max="100"${pollingMeter.indeterminate?"":` value="${pollingMeter.percent}"`}></progress>
             <dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${pollingProgress.succeeded}</dd></div><div><dt>Ошибки</dt><dd>${pollingProgress.errors}</dd></div><div><dt>Дубликаты</dt><dd>${pollingProgress.duplicates}</dd></div><div><dt>Скорость</dt><dd>${Number(pollingProgress.filesPerSecond || 0).toFixed(1)} файл/с</dd></div><div><dt>Осталось</dt><dd>${escapeHtml(formatPollingEta(pollingProgress.etaSeconds))}</dd></div></dl>
             ${pollingProgress.currentRun ? `<p class="muted">Текущий запуск: <span class="mono">${escapeHtml(pollingProgress.currentRun)}</span></p>` : ""}
             ${ui.inventoryBusy ? `<button class="button danger" type="button" data-cancel-polling-import${ui.pollingCancelRequested ? " disabled" : ""}>${ui.pollingCancelRequested ? "Остановка…" : "Отменить загрузку"}</button>` : ""}
@@ -8382,8 +8467,9 @@
       </section>
       <section class="card section-gap"><h2>Импорт логов устройств</h2>
         ${ui.workspaceStatus?.pendingLogFiles > 0 && !ui.logImportBusy ? `<p class="info-panel">Есть сохранённые результаты незавершённого импорта. Выберите ту же папку с логами и тот же режим перепроверки, чтобы продолжить.</p>` : ""}
-        <form class="form-grid" data-log-import-form><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required${ui.logImportBusy ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forceRescan" type="checkbox"${ui.logImportBusy ? " disabled" : ""}> Перепроверить ранее загруженные файлы целиком</label><button class="button primary" type="submit"${ui.logImportBusy ? " disabled" : ""}>${ui.workspaceStatus?.pendingLogFiles > 0 ? "Продолжить импорт логов" : "Импортировать папку логов"}</button></form>
-        ${ui.logImportProgress ? `<div class="log-import-progress"><p data-log-import-progress role="status">${escapeHtml(logImportProgressText(ui.logImportProgress))}</p><progress aria-label="Объём обработанных логов" data-log-import-meter max="100" value="${ui.logImportProgress.totalBytes ? Math.min(100, ui.logImportProgress.bytesRead / ui.logImportProgress.totalBytes * 100) : 0}"></progress><p data-log-import-speed>${escapeHtml(logImportSpeedText(ui.logImportProgress))}</p>${ui.logImportProgress.phase === "saving" ? "" : `<button class="button danger" type="button" data-cancel-log-import${ui.logImportCancelRequested ? " disabled" : ""}>${ui.logImportCancelRequested ? "Остановка…" : "Остановить импорт"}</button>`}</div>` : ""}
+        <form class="form-grid" data-log-import-form novalidate aria-busy="${ui.logImportBusy}"><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required${logBlock ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forceRescan" type="checkbox"${logBlock ? " disabled" : ""}> Перепроверить ранее загруженные файлы целиком</label><button class="button primary" type="submit" aria-describedby="log-import-feedback"${logBlock ? " disabled" : ""}>${ui.logImportBusy?"Импорт выполняется…":ui.workspaceStatus?.pendingLogFiles > 0 ? "Продолжить импорт логов" : "Импортировать папку логов"}</button></form>
+        <p id="log-import-feedback" data-log-import-feedback class="${logFeedback?.type==="error"?"error-panel":logFeedback?.type==="warning"?"warning-panel":"info-panel"}" role="status"${logFeedback?"":" hidden"}>${escapeHtml(logFeedback?.message||"")}</p>
+        ${ui.logImportProgress ? `<div class="log-import-progress"><p data-log-import-progress role="status">${escapeHtml(logImportProgressText(ui.logImportProgress))}</p><progress aria-label="Объём обработанных логов" data-log-import-meter max="100"${["preparing","summarizing","saving"].includes(ui.logImportProgress.phase)?"":` value="${ui.logImportProgress.totalBytes ? Math.min(99, ui.logImportProgress.bytesRead / ui.logImportProgress.totalBytes * 100) : 0}"`}></progress><p data-log-import-speed>${escapeHtml(logImportSpeedText(ui.logImportProgress))}</p>${ui.logImportProgress.phase === "saving" ? "" : `<button class="button danger" type="button" data-cancel-log-import${ui.logImportCancelRequested ? " disabled" : ""}>${ui.logImportCancelRequested ? "Остановка…" : "Остановить импорт"}</button>`}</div>` : ""}
         ${ui.logImportSummary ? `<div class="upload-outcome section-gap" role="status"><strong>Логи импортированы</strong><span>Файлов: ${ui.logImportSummary.files} · размер: ${escapeHtml(formatBytes(ui.logImportSummary.bytes))} · сопоставлено: ${ui.logImportSummary.matched} · проблемы: ${ui.logImportSummary.issues} · без повторного чтения: ${ui.logImportSummary.skippedFiles || 0}</span><span>${Object.entries(ui.logImportSummary.formats).map(([kind, count]) => `${escapeHtml(kind)}: ${count}`).join(" · ")}</span>${ui.dbMode ? '<span>События сохранены в базе. Сводки доступны в модуле анализа перезагрузок.</span>' : `<span>Huawei TE: перезагрузок ${ui.teLogIndex.coverage?.confirmedReboots || 0} · отключений ${ui.teLogIndex.coverage?.powerOffs || 0} · запусков без причины ${ui.teLogIndex.coverage?.unknownStarts || 0}</span>`}</div>${ui.dbMode ? "" : `<div class="table-wrap section-gap"><table><thead><tr><th>Файл</th><th>Папка запуска</th><th>Тип</th><th>Размер</th><th>IP</th><th>Устройство SR</th><th>Сопоставление</th><th>Анализ</th></tr></thead><tbody>${ui.logImportRows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.path)}</td><td>${escapeHtml(row.runFolder || "—")}</td><td>${escapeHtml(row.format)}</td><td>${escapeHtml(formatBytes(row.size))}</td><td>${escapeHtml(row.ip || "—")}</td><td>${escapeHtml(row.deviceName || "—")}</td><td>${escapeHtml(row.matchStatus)}</td><td>${escapeHtml(row.analysisStatus || "—")}</td></tr>`).join("")}</tbody></table></div>${ui.logImportRows.length > 100 ? `<p class="muted">Показаны первые 100 файлов из ${ui.logImportRows.length}; итоги рассчитаны по всей папке.</p>` : ""}`}` : ""}
       </section>
       `;
@@ -8623,6 +8709,7 @@
   }
 
   async function handleClick(event) {
+    if(event.target.closest("[data-dismiss-operation]")){ui.lastOperation=null;refreshOperationStrip();return;}
     if(ui.dbMode && event.target.closest("[data-db-sources]")) {ui.dbSourcesVisible=!ui.dbSourcesVisible;render();return;}
     if(ui.dbMode && event.target.closest("[data-db-context-retry]")) {
       ui.dbOperationalError=false;
@@ -9020,6 +9107,10 @@
     }
 
     if (event.target.closest("[data-download-device-settings-audit]")) {
+      if(ui.exportActivity)return;
+      ui.exportActivity={label:"Экспорт фактических настроек",detail:"Получение последних опросов"};refreshOperationStrip();
+      try {
+      await cooperativeBrowserYield();
       const targetList=managementTargetListSession;
       let auditState=state;
       if(ui.dbMode) {
@@ -9033,7 +9124,7 @@
           }
           if(revision!==dbViews.revision)throw new Error("workspace_revision_conflict");
           auditState={...state,pollingResults};
-        }catch{setMessage("Не удалось получить последние факты из базы. Прежние данные не изменены.","error");render();return;}
+        }catch{throw new Error("audit_facts_unavailable");}
       }
       const file = buildDeviceSettingsAuditXlsx(targetList, auditState);
       if (!file.ok || !downloadBlob(file.bytes, `device-settings-audit-${nowIso().slice(0, 10)}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
@@ -9041,6 +9132,9 @@
       } else {
         setMessage(`Таблица скачана: строк ${file.total}, с подтверждёнными фактами ${file.withFacts}.`, "success");
       }
+      ui.lastOperation={message:ui.message.text,type:ui.message.type==="error"?"error":"info"};
+      }catch{ui.lastOperation={message:"Экспорт фактических настроек не завершён. Прежние данные не изменены.",type:"error"};setMessage(ui.lastOperation.message,"error");}
+      finally{ui.exportActivity=null;refreshOperationStrip();}
       render();
       return;
     }
@@ -9309,7 +9403,7 @@
     const srImportForm = event.target.closest("[data-sr-import-form]");
     if (srImportForm) {
       event.preventDefault();
-      if (ui.logImportBusy || ui.inventoryBusy || ui.workspaceSaveStatus === "restoring") return;
+      if (ui.logImportBusy || ui.inventoryBusy || ui.workspaceSaveStatus === "restoring") {setMessage("Дождитесь завершения текущего импорта и сохранения. Ход операции показан над рабочей областью.","warning");render();return;}
       await handleSrImport(srImportForm);
       return;
     }
@@ -9317,18 +9411,25 @@
     const logImportForm = event.target.closest("[data-log-import-form]");
     if (logImportForm) {
       event.preventDefault();
-      if (ui.logImportBusy || ui.inventoryBusy) return;
-      if (launchMode.kind === "local" && ui.workspaceStatus?.status !== "ready") {
-        setMessage("Сначала войдите и подключите рабочую папку, чтобы логи не потерялись при закрытии браузера.", "error"); render(); return;
+      const blocked=logImportBlockReason(ui,launchMode.kind,dbViews?.revision);
+      if(blocked){setLogImportFeedback(blocked,"warning");return;}
+      let files,forceRescan;
+      try {
+        const recoveryFile=POLLING_RECOVERY?.FILE||"polling-recovery.json";
+        files=Array.from(logImportForm.querySelector('[name="logFiles"]')?.files||[]).filter((file)=>file.name!==recoveryFile&&!["Thumbs.db",".DS_Store"].includes(file.name));
+        forceRescan=new FormData(logImportForm).get("forceRescan")==="on";
+      }catch{
+        setLogImportFeedback("Не удалось получить выбранные файлы. Выберите папку повторно; прежние данные базы не изменены.","error");return;
       }
-      const files = [...(logImportForm.querySelector('[name="logFiles"]')?.files || [])].filter((file) => file.name !== POLLING_RECOVERY.FILE && !["Thumbs.db", ".DS_Store"].includes(file.name));
-      if (!files.length) { setMessage("Выберите общую папку логов.", "error"); render(); return; }
+      if(!files.length){setLogImportFeedback("Выберите общую папку логов.","warning");return;}
       ui.logImportBusy = true;
       ui.logImportCancelRequested = false;
+      ui.logImportFeedback=null;
       const totalBytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
-      ui.logImportProgress = { phase: "classifying", processed: 0, total: files.length, bytesRead: 0, totalBytes };
-      render();
+      ui.logImportProgress = { phase: "preparing", processed: 0, total: files.length, bytesRead: 0, totalBytes };
       try {
+        render();
+        await cooperativeBrowserYield();
         let nativeToken = null;
         let databaseExisting = null;
         if(ui.dbMode) {
@@ -9342,7 +9443,7 @@
           existing: databaseExisting || (ui.logFileRegistry.length ? { rows: ui.logImportRows, summary: ui.logImportSummary,
             indexes: { te: ui.teLogIndex, huawei310: ui.huawei310LogIndex,
               huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex }, registry: ui.logFileRegistry } : null),
-          forceRescan: new FormData(logImportForm).get("forceRescan") === "on",
+          forceRescan,
           checkpoint: currentLogCheckpointStore(),
           ...(ui.dbMode ? {
             onStart: async ({fullRecheck})=>{nativeToken=await dbImportBegin(fullRecheck?"logs-replace":"logs");},
@@ -9379,15 +9480,21 @@
           }} catch { /* Published analytics is safe; unused checkpoints can be cleaned on a repeat. */ }
         }
         else workspaceSaved = ui.workspaceStatus?.status !== "ready" || await queueWorkspaceSave();
-        setMessage(workspaceSaved ? "Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ", восстановлено после остановки: " + imported.recoveredFiles + ". Исходные файлы не изменены."
-          : "Логи импортированы, но рабочую базу сохранить не удалось. До закрытия вкладки повторите сохранение.", workspaceSaved ? "success" : "warning");
+        const outcome=workspaceSaved ? "Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ", восстановлено после остановки: " + imported.recoveredFiles + ". Исходные файлы не изменены."
+          : "Логи импортированы, но рабочую базу сохранить не удалось. До закрытия вкладки повторите сохранение.";
+        setMessage(outcome,workspaceSaved?"success":"warning");
+        setLogImportFeedback(outcome,workspaceSaved?"info":"warning");
       } catch (error) {
         if (error?.safeCode) ui.workspaceSaveError = workspaceErrorLabel(error.safeCode);
-        setMessage(error?.message === "log_full_reimport_required" ? "Один из прежних файлов или выгрузка SR изменились. Для точной перепроверки выберите полную папку всех ранее импортированных логов; прежняя аналитика сохранена."
+        const message=error?.message === "log_full_reimport_required" ? "Один из прежних файлов или выгрузка SR изменились. Для точной перепроверки выберите полную папку всех ранее импортированных логов; прежняя аналитика сохранена."
           : error?.message === "log_recheck_incomplete" ? "Полная перепроверка одного из прежних логов не завершилась. Старая аналитика сохранена без потери доказательств."
           : ui.logImportCancelRequested || error?.message === "log_import_cancelled"
           ? "Импорт логов остановлен. Прежняя аналитика сохранена; подтверждённые промежуточные результаты можно использовать при продолжении."
-          : "Импорт логов не завершён. Прежняя аналитика и записанные контрольные точки не удалены.", ui.logImportCancelRequested ? "warning" : "error");
+          : ui.logImportProgress?.phase==="preparing" ? "Не удалось начать импорт: не получены прежние результаты из рабочей базы. Прежние данные не удалены."
+          : "Импорт логов не завершён. Прежняя аналитика и записанные контрольные точки не удалены.";
+        const safeCode=typeof error?.safeCode==="string"&&/^[a-z0-9_]{3,80}$/.test(error.safeCode)?error.safeCode:null;
+        setMessage(message,ui.logImportCancelRequested?"warning":"error");
+        setLogImportFeedback(message+(safeCode?" Код: "+safeCode+".":""),ui.logImportCancelRequested?"warning":"error");
       } finally {
         activeLogScanClient = null;
         ui.logImportBusy = false;
@@ -9401,7 +9508,7 @@
     const pollingImportForm = event.target.closest("[data-polling-import-form]");
     if (pollingImportForm) {
       event.preventDefault();
-      if (ui.logImportBusy || ui.inventoryBusy || ui.workspaceSaveStatus === "restoring") return;
+      if (ui.logImportBusy || ui.inventoryBusy || ui.workspaceSaveStatus === "restoring") {setMessage("Дождитесь завершения текущего импорта и сохранения. Ход операции показан над рабочей областью.","warning");render();return;}
       await handlePollingImport(pollingImportForm);
       return;
     }
@@ -9746,6 +9853,7 @@
       setMessage("Сначала войдите и подключите рабочую папку для сохранения SR.", "error"); render(); return;
     }
     ui.inventoryBusy = true;
+    ui.inventoryImportKind="sr";
     ui.srImportResults = [];
     ui.srProgress = { stage: "Чтение выгрузки SR", processed: 0, total: 0, accepted: 0, rejected: 0 };
     render();
@@ -9754,6 +9862,10 @@
       const result = await importSrWorkbook(state, { filename: file.name, arrayBuffer: await readFileArrayBuffer(file), actorId: currentUser()?.id || "system", onProgress(progress) { ui.srProgress = progress; render(); } });
       if (result.ok && result.outcome !== "duplicate") {
         state = result.state;
+        if(ui.workspaceStatus?.status==="ready"){
+          ui.srProgress={...ui.srProgress,stage:"Запись SR в рабочую базу",status:"saving"};
+          render();await cooperativeBrowserYield();
+        }
         if(ui.dbMode) await saveDatabaseImport("sr",["inventoryDevices","locations","srImports","inventoryIssues"]);
         else if (ui.workspaceStatus?.status === "ready") workspaceSaved = await queueWorkspaceSave();
         pollingImportContextCache = null;
@@ -9764,17 +9876,23 @@
       setMessage(result.ok ? workspaceSaved ? launchMode.kind === "local" ? "Выгрузка SR обработана и сохранена." : "Выгрузка SR обработана в текущем сеансе."
         : "Выгрузка SR обработана, но рабочая база не сохранена."
         : "Выгрузка SR не импортирована.", result.ok ? workspaceSaved ? "success" : "warning" : "error");
+      ui.srProgress={...ui.srProgress,status:result.ok&&workspaceSaved?"completed":"failed",stage:result.ok&&workspaceSaved?launchMode.kind==="local"?"SR обработана и сохранена":"SR обработана в текущем сеансе":"Импорт SR не завершён"};
+      ui.lastOperation={message:ui.srProgress.stage,type:result.ok&&workspaceSaved?"info":"error"};
     } catch (error) {
       if(ui.dbMode)ui.dbOperationalRevision=null;
       ui.srImportResults.push({ name: file.name, ok: false, label: "failed", detail: `Не удалось обработать файл ${file.name}. Проверьте структуру XLSX и обязательные столбцы.` });
       setMessage(`Не удалось загрузить выгрузку SR ${file.name}. Прежние данные сохранены; проверьте файл и повторите попытку.`, "error");
+      ui.srProgress={...ui.srProgress,status:"failed",stage:"Ошибка импорта SR"};
+      ui.lastOperation={message:"Импорт SR не завершён. Прежняя база не изменена.",type:"error"};
     }
     ui.inventoryBusy = false;
+    ui.inventoryImportKind=null;
     render();
   }
 
   async function handlePollingImport(form) {
     const selectedFiles = Array.from(form.elements.pollingFiles?.files || []);
+    const fullRecheck = new FormData(form).get("forcePollingRescan") === "on";
     if (launchMode.kind === "local" && ui.workspaceStatus?.status !== "ready") {
       setMessage("Сначала войдите и подключите рабочую папку для сохранения JSON-опросов.", "error"); render(); return;
     }
@@ -9782,6 +9900,7 @@
       setMessage("Выберите главную папку с результатами опросов.", "error"); render(); return;
     }
     ui.inventoryBusy = true;
+    ui.inventoryImportKind="json";
     ui.pollingCancelRequested = false;
     ui.pollingImportResults = [];
     ui.pollingImportSummary = null;
@@ -9791,7 +9910,6 @@
     try {
       const descriptors = selectedFiles.map((file) => ({ name: file.name, relativePath: file.webkitRelativePath || file.name,
         lastModified: file.lastModified, size: file.size, sourceFile: file }));
-      const fullRecheck = new FormData(form).get("forcePollingRescan") === "on";
       const selected = await selectNewPollingFiles(descriptors, fullRecheck ? [] : state.pollingResults, async (descriptor) => {
         const prefix = new Uint8Array(await descriptor.sourceFile.slice(0, 2048).arrayBuffer());
         const hash = await sha256Bytes(prefix);
@@ -9816,7 +9934,8 @@
         context: pollingImportContextCache,
         readText: (descriptor) => readFileText(descriptor.sourceFile),
         shouldCancel: () => ui.pollingCancelRequested,
-        onProgress: (progress) => updatePollingProgress(progress, progress.status !== "running"),
+        onProgress: (progress) => updatePollingProgress(ui.dbMode&&progress.status==="completed"
+          ?{...progress,stage:"Публикация JSON-опросов в рабочей базе",status:"saving"}:progress, progress.status !== "running"),
         ...(nativeToken ? {
           seedBatch:async(metadata)=>{
             const {seeds}=await dbRequest("neighbors-batch",{token:nativeToken,results:metadata});
@@ -9844,7 +9963,9 @@
       if (!result.ok) {
         ui.pollingImportSummary = { title: "Импорт не завершён", folders: 0, files: 0, succeeded: 0, duplicates: 0, errors: result.rejected?.length || 0, ignored: result.ignored?.length || 0 };
         setMessage(result.errors.join("; "), "error");
+        ui.lastOperation={message:"Импорт JSON не завершён. Проверьте структуру выбранной папки.",type:"error"};
         ui.inventoryBusy = false;
+        ui.inventoryImportKind=null;
         ui.pollingCancelRequested = false;
         pollingImportContextCache = result.context;
         if (pollingProgressRenderTimer) clearTimeout(pollingProgressRenderTimer);
@@ -9855,6 +9976,7 @@
       state = result.state;
       if(nativeToken) await dbImportFinish(nativeToken);
       else if (ui.workspaceStatus?.status === "ready") workspaceSaved = await queueWorkspaceSave();
+      ui.pollingProgress={...ui.pollingProgress,status:result.cancelled?"cancelled":workspaceSaved?"completed":"failed",stage:result.cancelled?"Импорт остановлен":workspaceSaved?"JSON обработаны":"Сохранение не подтверждено"};
       pollingImportContextCache = result.context;
       ui.pollingImportSummary = { title: result.cancelled ? "Импорт остановлен" : result.outcome === "duplicate" ? "Новых опросов нет" : result.outcome === "partial" ? "Импорт завершён частично" : "Папка импортирована", folders: result.importedFolderCount,
         files: result.summary.processed + selected.skipped.length, succeeded: result.summary.succeeded,
@@ -9862,12 +9984,15 @@
       if (result.cancelled) setMessage("Загрузка остановлена пользователем.", "warning");
       else setMessage(workspaceSaved ? `Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.summary.processed + selected.skipped.length}; успешно: ${result.summary.succeeded}; без повторного чтения: ${selected.skipped.length}; дубликатов: ${result.summary.duplicates}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`
         : "JSON-опросы загружены, но рабочая база не сохранена. Повторите сохранение до закрытия вкладки.", result.outcome === "partial" || !workspaceSaved ? "warning" : "success");
+      ui.lastOperation={message:result.cancelled?"Импорт JSON остановлен. Обработанная часть "+(launchMode.kind==="local"?"сохранена в базе.":"остаётся в текущем сеансе."):workspaceSaved?launchMode.kind==="local"?"JSON-опросы обработаны и сохранены в базе.":"JSON-опросы обработаны в текущем сеансе.":"Сохранение JSON не подтверждено.",type:!workspaceSaved?"error":result.cancelled||result.outcome==="partial"?"warning":"info"};
     } catch (error) {
       if(ui.dbMode){state.pollingResults=[];state.deviceChanges=[];state.inventoryIssues=[];state.history=[];pollingImportContextCache=null;ui.dbOperationalRevision=null;}
       ui.pollingImportSummary = { title: "Импорт не завершён", folders: 0, files: 0, succeeded: 0, duplicates: 0, errors: 1, ignored: 0 };
       setMessage("Импорт результатов опросов не завершён. Прежние данные сохранены.", "error");
+      ui.lastOperation={message:"Импорт JSON не завершён. Прежняя база не изменена.",type:"error"};
     }
     ui.inventoryBusy = false;
+    ui.inventoryImportKind=null;
     ui.pollingCancelRequested = false;
     if (pollingProgressRenderTimer) clearTimeout(pollingProgressRenderTimer);
     pollingProgressRenderTimer = null;
@@ -9941,6 +10066,8 @@
   }
 
   async function handleChange(event) {
+    const dbFilterForm=event.target.closest("[data-db-filters]");
+    if(ui.dbMode&&dbFilterForm){dbViews.handleChange(event.target,dbFilterForm);return;}
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
     if (pollingPlanForm && event.target.name === "te20AnswerMode") {
       ui.pollingPlanSelection.te20AnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
@@ -10002,7 +10129,10 @@
         return;
       }
       let fileBuffer = null;
+      if(ui.managementTargetBusy)return;
+      ui.managementTargetBusy=true;refreshOperationStrip();
       try {
+        await cooperativeBrowserYield();
         fileBuffer = await readFileArrayBuffer(file);
         const parsed = await parseManagementTargetWorkbook({ arrayBuffer: fileBuffer });
         if (!parsed.ok) throw Object.assign(new Error("management_target_list_invalid"), { safeErrors: parsed.errors });
@@ -10015,6 +10145,7 @@
         const details = Array.isArray(error.safeErrors) ? error.safeErrors.join("; ") : "Проверьте структуру XLSX и уникальность IP-адресов.";
         setMessage(`Список устройств не принят. ${details} Прежний список сохранён.`, "error");
       } finally {
+        ui.managementTargetBusy=false;refreshOperationStrip();
         if (fileBuffer) new Uint8Array(fileBuffer).fill(0);
         event.target.value = "";
       }
@@ -10100,6 +10231,10 @@
   }
 
   function handleInput(event) {
+    const dbFilterForm=event.target.closest("[data-db-filters]");
+    if(ui.dbMode&&dbFilterForm&&event.target.tagName==="INPUT"&&event.target.type!=="checkbox"){
+      dbViews.handleChange(event.target,dbFilterForm);return;
+    }
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
     if (!pollingPlanForm) return;
     if (["intervalMinSeconds", "intervalMaxSeconds"].includes(event.target.name)) {

@@ -19,7 +19,13 @@ REQUIRED_FILES = (
     "styles.css",
     "vendor/xlsx.full.min.js",
     "runtime/credential-pool.js",
+    "runtime/polling-recovery.js",
     "runtime/huawei-te-log-events.js",
+    "runtime/huawei-310-log-events.js",
+    "runtime/huawei-300-log-events.js",
+    "runtime/log-scan-worker.js",
+    "runtime/log-scan-client.js",
+    "runtime/db-views.js",
     "runtime/sphere.js",
     "runtime/device-catalog.json",
 )
