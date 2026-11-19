@@ -25,6 +25,7 @@ from .polling import PollingError, normalize_ipv4, validate_plan_interval, valid
 from .polling_job import JobInputError, PollingJob, TERMINAL_STATUSES, create_polling_job
 from .redaction import PlanSecretError, assert_no_plan_secrets
 from .workspace import LEGACY_PAYLOAD_BYTES, MAX_PART_BYTES, WorkspaceError, WorkspaceStore, choose_workspace_directory, default_workspace_locator_path
+from .read_model import ReadModel
 
 
 HOST = "127.0.0.1"
@@ -45,6 +46,7 @@ PUBLIC_FILES = {
     "/runtime/huawei-300-log-events.js": ("runtime/huawei-300-log-events.js", "text/javascript; charset=utf-8"),
     "/runtime/log-scan-worker.js": ("runtime/log-scan-worker.js", "text/javascript; charset=utf-8"),
     "/runtime/log-scan-client.js": ("runtime/log-scan-client.js", "text/javascript; charset=utf-8"),
+    "/runtime/db-views.js": ("runtime/db-views.js", "text/javascript; charset=utf-8"),
     "/runtime/sphere.js": ("runtime/sphere.js", "text/javascript; charset=utf-8"),
 }
 JOB_ROUTE = re.compile(r"^/api/polling/jobs/([A-Za-z0-9_-]+)$")
@@ -569,7 +571,43 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         store = self.server.state.workspace_store
         if store is None:
             raise WorkspaceError("workspace_not_configured")
-        if path == "/api/workspace/status" and self.command == "GET":
+        if path == "/api/workspace/db" and self.command == "POST":
+            value = self._read_json(MAX_PART_BYTES + 4096)
+            workspace, action = value.get("workspace"), value.get("action")
+            if not isinstance(workspace, str) or not isinstance(action, str):
+                raise WorkspaceError("db_query_invalid")
+            model = ReadModel(store)
+            if action == "prepare":
+                result = model.prepare(workspace)
+            elif action == "bootstrap":
+                result = model.bootstrap(workspace)
+            elif action == "context":
+                result = model.context(workspace, value.get("revision"), value.get("label"), value.get("after", ""))
+            elif action == "view":
+                result = model.view(workspace, value.get("revision"), value.get("name"), value.get("filters", {}),
+                                    value.get("page", 0), value.get("size", 50))
+            elif action == "begin":
+                result = model.begin(workspace, value.get("revision"), value.get("mode"))
+            elif action == "batch":
+                result = model.batch(workspace, value.get("token"), value.get("label"), value.get("rows"))
+            elif action == "finish":
+                result = model.finish(workspace, value.get("token"), value.get("sourceSr"))
+            elif action == "files":
+                result = {"skip": model.files(workspace, value.get("files"))}
+            elif action == "latest":
+                result = model.latest(workspace,value.get("revision"),value.get("ips"))
+            elif action == "neighbors":
+                result = model.neighbors(workspace,value.get("token"),value.get("result"))
+            elif action == "neighbors-batch":
+                result = model.neighbor_batch(workspace,value.get("token"),value.get("results"))
+            elif action == "remove-pairs":
+                result = model.remove_pairs(workspace,value.get("token"),value.get("pairs"))
+            elif action == "clear":
+                result = model.clear_checkpoints(workspace,value.get("revision"),value.get("scope"),value.get("keys"))
+            else:
+                raise WorkspaceError("db_query_invalid")
+            self._json(HTTPStatus.OK, result)
+        elif path == "/api/workspace/status" and self.command == "GET":
             self._json(HTTPStatus.OK, store.status())
         elif path == "/api/workspace/snapshot" and self.command == "GET":
             self._json(HTTPStatus.OK, store.load())

@@ -2446,12 +2446,15 @@
     const rowsByPath = new Map(reuseExisting ? oldRowsByPath : []);
     const registryByPath = new Map(reuseExisting ? oldByPath : []);
     const currentDevices = new Map(currentState.inventoryDevices.filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
-    const accumulators = {
-      te: createHuaweiTeLogEventIndex(currentState),
-      huawei310: createHuawei310LogEventIndex(currentState),
-      huawei300Bar: createHuawei300LogEventIndex(currentState, "bar"),
-      huawei300Box: createHuawei300LogEventIndex(currentState, "box")
-    };
+    const sharedLogContext={devices:currentDevices,locations:new Map((currentState.locations||[]).map((item)=>[item.id,item]))};
+    const makeAccumulators = () => ({
+      te: createHuaweiTeLogEventIndex(currentState,sharedLogContext),
+      huawei310: createHuawei310LogEventIndex(currentState,sharedLogContext),
+      huawei300Bar: createHuawei300LogEventIndex(currentState, "bar",sharedLogContext),
+      huawei300Box: createHuawei300LogEventIndex(currentState, "box",sharedLogContext)
+    });
+    let accumulators = makeAccumulators();
+    if(settings.onStart) await settings.onStart({fullRecheck});
     const checkpoint = settings.checkpoint && currentSrDigest ? settings.checkpoint : null;
     let checkpointScope = null;
     const checkpointKeys = [];
@@ -2553,11 +2556,17 @@
         const entry = { row, scan };
         for (const accumulator of Object.values(accumulators)) accumulator.add(entry);
         rowsByPath.set(row.path, row);
-        registryByPath.set(row.path, { path: row.path, size: row.size, lastModified: row.sourceLastModified,
+        const registry = { path: row.path, size: row.size, lastModified: row.sourceLastModified,
           prefixSha256: row.prefixSha256, format: row.format, deviceId: row.deviceId,
           contentDigest: scan?.contentDigest || null, digestAlgorithm: scan?.digestAlgorithm || null,
           analysisStatus: row.analysisStatus, analysisDigest: scan?.ok
-            ? await sha256Text(JSON.stringify({ markers: scan.markers, bootGaps: scan.bootGaps || [] })) : null });
+            ? await sha256Text(JSON.stringify({ markers: scan.markers, bootGaps: scan.bootGaps || [] })) : null };
+        registryByPath.set(row.path, registry);
+        if(settings.onEntry) {
+          const indexes = Object.fromEntries(Object.entries(accumulators).map(([family, accumulator])=>[family,accumulator.finish()]));
+          await settings.onEntry({row,registry,indexes});
+          accumulators = makeAccumulators();
+        }
         processed += 1;
         completedBytes += Number(sourceFiles[index].size || 0);
         readingProgress();
@@ -2593,10 +2602,14 @@
   }
 
   const LOG_EVENT_SOURCE_SAMPLE_LIMIT = 16;
+  function logDeviceContext(candidateState) {
+    const inventory = candidateState?.inventoryDevices || [], locations = candidateState?.locations || [];
+    return {devices:new Map(inventory.filter((item)=>item.inCurrentSr!==false).map((item)=>[item.id,item])),
+      locations:new Map(locations.map((item)=>[item.id,item]))};
+  }
 
-  function createHuaweiTeLogEventIndex(currentState) {
-    const devices = new Map((currentState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
-    const locations = new Map((currentState?.locations || []).map((item) => [item.id, item]));
+  function createHuaweiTeLogEventIndex(currentState,context) {
+    const {devices,locations}=context||logDeviceContext(currentState);
     const events = new Map();
     const coverage = { files: 0, scannedFiles: 0, te20Files: 0, excludedFiles: 0, ambiguousFiles: 0, invalidFiles: 0, unknownStarts: 0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
     function add(entry) {
@@ -2665,9 +2678,8 @@
     return accumulator.finish();
   }
 
-  function createHuawei310LogEventIndex(currentState) {
-    const devices = new Map((currentState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
-    const locations = new Map((currentState?.locations || []).map((item) => [item.id, item]));
+  function createHuawei310LogEventIndex(currentState,context) {
+    const {devices,locations}=context||logDeviceContext(currentState);
     const events = new Map();
     const coverage = { files: 0, scannedFiles: 0, excludedFiles: 0, invalidFiles: 0, boxFiles: 0, confirmedReboots: 0, unknownStarts: 0, startsAfterShutdown: 0, powerOffs: 0, gapCandidates: 0 };
     function add(entry) {
@@ -2735,10 +2747,9 @@
     return accumulator.finish();
   }
 
-  function createHuawei300LogEventIndex(currentState, modelGroup = "bar") {
+  function createHuawei300LogEventIndex(currentState, modelGroup = "bar",context) {
     const allowedModels = modelGroup === "box" ? ["box300", "box600"] : ["bar300"];
-    const devices = new Map((currentState?.inventoryDevices || []).filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
-    const locations = new Map((currentState?.locations || []).map((item) => [item.id, item]));
+    const {devices,locations}=context||logDeviceContext(currentState);
     const events = new Map();
     const coverage = { files: 0, scannedFiles: 0, excludedFiles: 0, invalidFiles: 0, unknownStarts: 0, startsAfterShutdown: 0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
     function add(entry) {
@@ -3320,8 +3331,8 @@
       evidenceResultIds: ordered.map((item) => item.resultId),
       previousObservedAt: null,
       currentObservedAt: representative.observedAt,
-      occurredFrom: new Date(Math.min(...ordered.map((item) => item.bootFromMs))).toISOString(),
-      occurredTo: new Date(Math.max(...ordered.map((item) => item.bootToMs))).toISOString(),
+      occurredFrom: new Date(ordered.reduce((minimum, item) => Math.min(minimum, item.bootFromMs), Infinity)).toISOString(),
+      occurredTo: new Date(ordered.reduce((maximum, item) => Math.max(maximum, item.bootToMs), -Infinity)).toISOString(),
       estimatedAt: new Date(estimatedAtMs).toISOString(),
       observedAtSource: representative.observedAtSource,
       timeBasis: representative.timeBasis,
@@ -3385,9 +3396,10 @@
         const cluster = clusters[clusters.length - 1];
         if (cluster && Math.abs(observation.bootAtMs - cluster.referenceBootAtMs) <= REBOOT_BOOT_CLUSTER_TOLERANCE_MS) {
           cluster.observations.push(observation);
-          cluster.referenceBootAtMs = Math.round(cluster.observations.reduce((sum, item) => sum + item.bootAtMs, 0) / cluster.observations.length);
+          cluster.bootSum += observation.bootAtMs;
+          cluster.referenceBootAtMs = Math.round(cluster.bootSum / cluster.observations.length);
         } else {
-          clusters.push({ referenceBootAtMs: observation.bootAtMs, observations: [observation] });
+          clusters.push({ referenceBootAtMs: observation.bootAtMs, bootSum: observation.bootAtMs, observations: [observation] });
         }
       }
       clusters.forEach((cluster) => events.push(rebootEventFromObservations(cluster.observations, device, location)));
@@ -4465,7 +4477,7 @@
       if (!changesByPair.has(key)) changesByPair.set(key, []);
       changesByPair.get(key).push(change);
     }
-    return { state: candidateState, currentInventoryByIp, historicalInventoryByIp, runByIdentity, duplicateKeys, historyByDevice, changesByPair, removedChangeIds: new Set() };
+    return { state: candidateState, currentInventoryByIp, historicalInventoryByIp,inventoryById:new Map(candidateState.inventoryDevices.map((row)=>[row.id,row])), runByIdentity, duplicateKeys, historyByDevice, changesByPair, removedChangeIds: new Set(), removedPairs:new Map() };
   }
 
   function defaultPollingReadConcurrency() {
@@ -4509,6 +4521,7 @@
   function removeIndexedPollingPair(context, deviceId, fromResult, toResult) {
     if (!fromResult || !toResult) return;
     const key = pollingPairKey(deviceId, fromResult.id, toResult.id);
+    context.removedPairs?.set(key,[deviceId,fromResult.id,toResult.id]);
     const existing = context.changesByPair.get(key) || [];
     existing.forEach((change) => context.removedChangeIds.add(change.id));
     context.changesByPair.delete(key);
@@ -4516,7 +4529,7 @@
 
   function addIndexedPollingPair(context, deviceId, fromResult, toResult, metrics) {
     if (!fromResult || !toResult) return;
-    const device = context.state.inventoryDevices.find((item) => item.id === deviceId);
+    const device = context.inventoryById?.get(deviceId)||context.state.inventoryDevices.find((item) => item.id === deviceId);
     const differences = diffAnalyzedParameters(device, fromResult.normalizedData, toResult.normalizedData);
     const changes = differences.map((difference) => ({
       id: createId("device-change"),
@@ -4594,7 +4607,7 @@
     metrics.stagesMs.normalization += monotonicNow() - normalizationStarted;
 
     const result = {
-      id: createId("polling-result"), runId: input.run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
+      id: input.indexedResultId || createId("polling-result"), runId: input.run.id, filename: input.name || "unknown.json", filenameIp: ipInfo.ip,
       sourceRelativePath: normalizePollingRelativePath(input.relativePath || input.name || "unknown.json"),
       deviceId: device?.id || null, capturedAt: timestamp.capturedAt, capturedAtSource: timestamp.source, sourceLastModified: timestamp.sourceLastModified, importedAt: input.importedAt || nowIso(),
       sourceFileSize: Number.isSafeInteger(input.size) ? input.size : null,
@@ -4610,6 +4623,17 @@
     };
     result.operationalStatus = parseError ? "processing_error" : !device ? "unmatched" : status.pollStatus;
 
+    if(input.seedHistory) {
+      const seed=await input.seedHistory(result);
+      if(seed.duplicate) {context.duplicateKeys.add(duplicateKey);return {outcome:"duplicate",errors:[]};}
+      if(result.deviceId) {
+        const history=context.historyByDevice.get(result.deviceId)||[];
+        const ids=new Set(history.map((row)=>row.id));
+        for(const row of seed.rows||[])if(!ids.has(row.id)){history.push(row);ids.add(row.id);}
+        history.sort(pollingResultOrder);
+        context.historyByDevice.set(result.deviceId,history);
+      }
+    }
     context.state.pollingResults.push(result);
     input.run.fileCount += 1;
     if (result.operationalStatus === "success") input.run.successCount += 1; else input.run.errorCount += 1;
@@ -4634,7 +4658,7 @@
       stagesMs: { discoveryAndGrouping: 0, reading: 0, hash: 0, parsing: 0, srMatching: 0, normalization: 0, changeDetection: 0, storage: 0, analytics: 0, uiOverhead: 0 }
     };
     metrics.stagesMs.discoveryAndGrouping = monotonicNow() - groupingStarted;
-    const context = input.context?.state === currentState ? input.context : createPollingImportContext(currentState);
+    let context = input.context?.state === currentState ? input.context : createPollingImportContext(currentState);
     const batchSize = Math.max(1, Number(input.batchSize) || DEFAULT_POLLING_IMPORT_BATCH_SIZE);
     const concurrency = Math.max(1, Math.min(MAX_POLLING_READ_CONCURRENCY, Number(input.concurrency) || defaultPollingReadConcurrency()));
     const readText = input.readText || (async (file) => {
@@ -4690,6 +4714,21 @@
         });
         metrics.stagesMs.reading += monotonicNow() - readingStarted;
         metrics.maxBatchRetainedTexts = Math.max(metrics.maxBatchRetainedTexts, prepared.filter((item) => item.text !== undefined).length);
+        if(input.seedBatch && prepared.some((item)=>item.text!==undefined)) {
+          if(!run){
+            run=ensureIndexedPollingRun(context,{...runGroup,actorId:input.actorId||"system",importedAt:input.importedAt,capturedAtSource:runGroup.capturedAtSource},runGroup.capturedAt);
+            if(run)summary.runs+=1;
+          }
+          const metadata=await mapWithBoundedConcurrency(prepared.filter((item)=>item.text!==undefined),6,async(item)=>{
+            item.descriptor={...item.descriptor,indexedResultId:createId("polling-result")};
+            const ip=parsePollingFilenameIp(item.descriptor.name).ip;
+            const candidates=ip?context.currentInventoryByIp.get(ip)||[]:[];
+            return {id:item.descriptor.indexedResultId,deviceId:candidates.length===1?candidates[0].id:null,
+              capturedAt:resolvePollingResultTimestamp({...item.descriptor,run}).capturedAt,runId:run.id,
+              filename:item.descriptor.name,rawSha256:await sha256Text(item.text),parseStatus:"parsed"};
+          });
+          await input.seedBatch(metadata);
+        }
         emitProgress("Обработка результатов", runGroup.folderName);
         for (const preparedFile of prepared) {
           if (preparedFile.readError) {
@@ -4708,6 +4747,7 @@
             ...preparedFile.descriptor,
             text: preparedFile.text,
             run,
+            seedHistory:input.seedHistory,
             importedAt: input.importedAt,
             actorId: input.actorId || "system"
           }, metrics);
@@ -4721,6 +4761,11 @@
         compactRemovedPollingChanges(context);
         metrics.batches += 1;
         emitProgress("Сохранение данных", runGroup.folderName);
+        if(input.onBatch) {
+          const compacted = await input.onBatch(context.state,context,run);
+          if (compacted) context = {...context,state:currentState,duplicateKeys:new Set(),historyByDevice:new Map(),
+            changesByPair:new Map(),removedChangeIds:new Set(),removedPairs:new Map()};
+        }
         await yieldControl();
         metrics.yields += 1;
       }
@@ -6553,6 +6598,14 @@
     workspaceSaveStatus: null,
     workspaceSaveError: null,
     workspaceSaveParts: 0,
+    dbMode: false,
+    dbPrepare: null,
+    dbOperationalRevision: null,
+    dbOperationLoading: false,
+    dbOperationalError: false,
+    dbSourcesVisible: false,
+    dbPendingWrite: null,
+    dbTargetCheck: false,
     pollingProgress: null,
     pollingCancelRequested: false,
     pollingPlanResult: null,
@@ -6583,6 +6636,21 @@
     helpTopicId: null
   };
   const rebootAnalyticsCache = createRebootAnalyticsCache();
+  const dbViews = global.MVP_DB_VIEWS?.createController?.({
+    request: dbRequest,
+    render,
+    update: updateDatabasePanel,
+    reload: async()=>{
+      try {
+        await activateDatabase();
+        if(!ui.inventoryBusy&&!ui.logImportBusy)ui.dbPendingWrite=null;
+        render();
+      }catch{setMessage("Не удалось обновить базу. Проверьте подключённую рабочую папку.","error");render();}
+    },
+    download: (bytes, name) => downloadBlob(bytes, name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    message: (message) => { setMessage(message, "error"); render(); },
+    formatStatus:formatPollStatus
+  });
 
   document.addEventListener("click", handleClick);
   document.addEventListener("submit", handleSubmit);
@@ -6613,7 +6681,7 @@
     const method = String(options.method || "GET").toUpperCase();
     const headers = { ...(options.headers || {}) };
     if (!["GET", "HEAD"].includes(method)) headers["X-MVP-CSRF"] = String(global.__MVP_CSRF__ || "");
-    const response = await global.fetch(pathname, { method, headers, body: options.body, credentials: "same-origin", cache: "no-store" });
+    const response = await global.fetch(pathname, { method, headers, body: options.body, signal:options.signal, credentials: "same-origin", cache: "no-store" });
     if (response.status === 204) return null;
     let payload = null;
     try { payload = await response.json(); } catch { payload = null; }
@@ -6624,6 +6692,155 @@
   function postWorkspace(action, data) {
     return runtimeRequest(`/api/workspace/${action}`, { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+  }
+
+  function dbRequest(action, data = {}, options = {}) {
+    return runtimeRequest("/api/workspace/db",{ method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({...data,action,workspace:ui.workspaceStatus?.workspaceId}),...options });
+  }
+
+  function updateDatabasePanel() {
+    const panel=app.querySelector?.("[data-db-panel]");
+    if(!panel || typeof document.createElement!=="function")return false;
+    let descriptor=MODULE_CATALOG.find((item)=>item.route===ui.route);
+    if(ui.route==="upload" && ui.dbSourcesVisible)descriptor={route:"log-sources",renderer:"logs",title:"Метаданные импортированных логов",compact:true};
+    else if(!descriptor || !["dashboard","reboots","project-versions","firmware-versions","connection-errors","equipment","inventory"].includes(descriptor.renderer))return false;
+    const template=document.createElement("template");
+    template.innerHTML=dbViews.render({...descriptor,category:INVENTORY_ROUTE[descriptor.route]?.category});
+    const next=template.content.querySelector("[data-db-panel]");
+    if(!next)return false;
+    panel.replaceWith(next);
+    return true;
+  }
+
+  async function activateDatabase() {
+    dbViews.deactivate();
+    ui.dbPrepare = { processed: 0, total: 0 };
+    render();
+    try {
+      for (;;) {
+        const progress = await dbRequest("prepare");
+        ui.dbPrepare = progress;
+        if (progress.ready) break;
+        if(!["reference","poll-sr-comparison"].includes(ui.route))render();
+        await cooperativeBrowserYield();
+      }
+      const info = await dbRequest("bootstrap");
+      const fresh = createDemoState();
+      if (info.settings && Object.keys(info.settings).length) fresh.settings = { ...fresh.settings, ...info.settings };
+      state = fresh;
+      ui.teLogIndex = { events: [], coverage: null };
+      ui.huawei310LogIndex = { events: [], coverage: null };
+      ui.huawei300BarLogIndex = { events: [], coverage: null };
+      ui.huawei300BoxLogIndex = { events: [], coverage: null };
+      ui.logImportRows = []; ui.logFileRegistry = [];
+      ui.dbMode = true; ui.dbOperationalRevision = null; ui.dbOperationalError=false;
+      ui.dbPrepare = null; ui.workspaceSaveStatus = "restored";
+      dbViews.setRevision(info);
+      ui.workspaceStatus.dataRevision=info.revision;
+      rebootAnalyticsCache.clear();
+      render();
+    } catch (error) {
+      ui.dbPrepare = null;
+      ui.workspaceSaveError = "Подготовка данных базы не завершена. Прежние данные не удалены; повторите подключение.";
+      throw error;
+    }
+  }
+
+  async function loadOperationalContext() {
+    if (!ui.dbMode || ui.dbOperationLoading || ui.dbOperationalRevision === dbViews.revision) return;
+    ui.dbOperationLoading = true;
+    ui.dbOperationalError = false;
+    const revision = dbViews.revision;
+    try {
+      const next = createDemoState();
+      next.settings = { ...next.settings, ...state.settings };
+      for (const label of ["inventoryDevices", "locations", "srImports", "pollingRuns"]) {
+        next[label] = [];
+        let after = "";
+        do {
+          const page = await dbRequest("context", { revision, label, after });
+          next[label].push(...page.rows);
+          after = page.next;
+        } while (after);
+      }
+      next.srImports.sort((a,b)=>String(a.importedAt||"").localeCompare(String(b.importedAt||"")));
+      if (revision !== dbViews.revision) return;
+      state = next;
+      ui.dbOperationalRevision = revision;
+    } catch {
+      ui.dbOperationalError = true;
+      setMessage("Не удалось получить актуальные цели из базы. План опроса не будет запущен с неполными данными.", "error");
+    } finally { ui.dbOperationLoading = false; render(); }
+  }
+
+  async function dbContextRows(label) {
+    const revision = dbViews.revision, rows=[];
+    let after="";
+    do {
+      const page=await dbRequest("context",{revision,label,after});
+      rows.push(...page.rows); after=page.next;
+    }while(after);
+    return rows;
+  }
+
+  async function dbImportBegin(mode) {
+    const token=(await dbRequest("begin", { revision: dbViews.revision, mode })).token;
+    ui.dbPendingWrite={token,mode};
+    return token;
+  }
+
+  async function dbSendRows(token, label, rows) {
+    let batch = [], bytes = 0;
+    const flush = async () => { if(batch.length) await dbRequest("batch", {token,label,rows:batch}); batch=[];bytes=0; };
+    for (const row of rows || []) {
+      const safe = JSON.parse(JSON.stringify(row, safeWorkspaceField));
+      const length = measureTextBytes(JSON.stringify(safe));
+      if(batch.length && (batch.length>=500 || bytes+length>1024*1024)) await flush();
+      batch.push(safe); bytes+=length;
+    }
+    await flush();
+  }
+
+  async function dbImportFinish(token) {
+    const result = await dbRequest("finish", { token, sourceSr: state.srImports.at(-1)?.rawSha256 || null });
+    const info = await dbRequest("bootstrap");
+    dbViews.setRevision(info);
+    ui.dbOperationalRevision = null;
+    ui.workspaceStatus.dataRevision=info.revision;
+    ui.dbPendingWrite=null;
+    ui.workspaceSaveStatus = "saved";
+    ui.workspaceSaveError = null;
+    return result;
+  }
+
+  async function saveDatabaseImport(mode, labels) {
+    const token = await dbImportBegin(mode);
+    for(const label of labels) await dbSendRows(token,label,state[label]);
+    await dbImportFinish(token);
+  }
+
+  function databaseTargetsReady() {
+    return !ui.dbMode || (ui.workspaceStatus?.status==="ready" && ui.dbOperationalRevision===dbViews.revision
+      && !ui.dbOperationLoading && !ui.dbPendingWrite && !ui.inventoryBusy && !ui.logImportBusy && !ui.dbPrepare);
+  }
+
+  async function confirmDatabaseTargetsCurrent() {
+    if(!ui.dbMode)return true;
+    if(ui.dbTargetCheck)return false;
+    ui.dbTargetCheck=true;
+    try{
+      const info=await dbRequest("bootstrap");
+      if(info.revision!==dbViews.revision){
+        dbViews.setRevision(info);ui.workspaceStatus.dataRevision=info.revision;ui.dbOperationalRevision=null;
+        setMessage("Данные базы изменились. Проверьте обновлённые цели и повторите запуск плана.","warning");render();return false;
+      }
+      return databaseTargetsReady();
+    }catch(error){
+      if(error?.safeCode==="db_preparation_required"){try{await activateDatabase();}catch{/* Existing database is untouched. */}}
+      ui.dbOperationalRevision=null;
+      setMessage("Актуальность целей не подтверждена. Проверьте рабочую базу и повторите запуск после загрузки контекста.","warning");render();return false;
+    }finally{ui.dbTargetCheck=false;}
   }
 
   function currentLogCheckpointStore() {
@@ -6668,11 +6885,13 @@
 
   async function restoreWorkspaceAfterLogin() {
     if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true) return;
+    if(!dbViews){ui.workspaceSaveStatus="error";ui.workspaceSaveError="Требуется новый запуск Python runtime после обновления файлов. Прежняя база не изменена.";render();return;}
     try {
       const status = await runtimeRequest("/api/workspace/status");
       ui.workspaceStatus = status;
       workspacePartDigests = new Set();
       ui.workspaceSaveStatus = null;
+      if (status.status === "ready" && dbViews) { await activateDatabase(); return; }
       if (status.status !== "ready" || !status.hasSnapshot) { render(); return; }
       ui.workspaceSaveStatus = "restoring";
       render();
@@ -6713,6 +6932,8 @@
   }
 
   function queueWorkspaceSave() {
+    if(ui.dbPrepare || ui.workspaceSaveStatus==="restoring" || (dbViews && launchMode.kind==="local" && ui.workspaceStatus?.status==="ready" && !ui.dbMode))return Promise.resolve(false);
+    if (ui.dbMode) return Promise.resolve(!ui.dbPendingWrite); // Never replace the DB with lightweight browser state.
     if (launchMode.kind !== "local" || ui.adminAccess?.adminUnlocked !== true || ui.workspaceStatus?.status !== "ready") return Promise.resolve(false);
     workspaceSaveRequested = true;
     if (workspaceSaveInFlight) return workspaceSaveInFlight;
@@ -6962,7 +7183,7 @@
             await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/result/${encodeURIComponent(pending.resultId)}/ack`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ saved }) });
           }
         }
-        render();
+        if(ui.route==="upload")render();
         if (["completed", "cancelled", "failed"].includes(status.status)) {
           recovery.manifest.status = status.status === "completed" ? (recovery.manifest.saveFailures.length ? "completed_with_errors" : "completed") : "interrupted";
           await writePollingRecovery(runDirectory, recovery.manifest);
@@ -7089,7 +7310,16 @@
       app.innerHTML = renderLogin();
       return;
     }
-    app.innerHTML = renderShell(user);
+    try { app.innerHTML = renderShell(user); }
+    catch {
+      // A failed view must not leave navigation stuck on the previous module.
+      const previous = ui.route;
+      ui.route = "upload";
+      try { app.innerHTML = renderShell(user); }
+      catch { app.innerHTML = '<main><h1>Не удалось отобразить раздел</h1><p>Данные в базе не удалены.</p></main>'; }
+      ui.route = previous;
+      setMessage("Раздел не удалось отобразить. Данные базы не изменены; можно открыть другой модуль.", "error");
+    }
     global.MVP_SPHERE_BRAND?.mount(app);
   }
 
@@ -7199,9 +7429,27 @@
 
   function renderRoute(user) {
     const descriptor = MODULE_CATALOG.find((item) => item.route === ui.route) || MODULE_CATALOG.find((item) => item.route === "dashboard");
+    if(launchMode.kind==="local" && !dbViews)return '<header class="page-header"><h1>Нужно обновить локальный runtime</h1></header><section class="card warning-panel"><p>Файлы интерфейса обновлены, но локальный процесс не поддерживает новый DB-first экран. Прежняя база не изменена.</p><p>Сначала дождитесь сохранения текущей работы и завершения опросов в старой вкладке. Затем запустите инструмент заново через launcher, а не только обновлением страницы браузера.</p></section>';
+    if(dbViews && launchMode.kind==="local" && ui.adminAccess?.adminUnlocked!==true && !["upload","reference","settings"].includes(descriptor.renderer)) {
+      return '<section class="db-section db-empty"><h1>Данные рабочей базы защищены</h1><p>Войдите в локальный доступ в модуле загрузки. После входа сохранённая база подключится автоматически.</p><button class="button primary" type="button" data-route="upload">Войти и подключить базу</button></section>';
+    }
+    if (ui.dbPrepare && !["reference","planned"].includes(descriptor.renderer)) return `<header class="page-header"><h1>Подготовка базы</h1></header><section class="card db-preparation" role="status"><h2>Создаём быстрые индексы</h2><p>Исходные файлы не перечитываются. После этого рабочие экраны будут получать страницы и сводки прямо из SQLite. Справочник доступен уже сейчас.</p><progress max="${Math.max(1,ui.dbPrepare.total)}" value="${ui.dbPrepare.processed}"></progress><p>${ui.dbPrepare.processed} из ${ui.dbPrepare.total || "…"} порций. Если браузер закроется, подготовку можно продолжить.</p></section>`;
+    if (ui.dbMode && ["dashboard","reboots","project-versions","firmware-versions","connection-errors","equipment","inventory"].includes(descriptor.renderer)) {
+      return dbViews.render({ ...descriptor, category: INVENTORY_ROUTE[descriptor.route]?.category });
+    }
+    if(ui.dbMode && !(descriptor.renderer==="upload"&&ui.dbSourcesVisible))dbViews.deactivate();
+    if (ui.dbMode && descriptor.renderer==="upload" && ui.dbOperationalRevision!==dbViews.revision) {
+      if(!ui.dbOperationLoading && !ui.dbOperationalError) void loadOperationalContext();
+      return ui.dbOperationalError ? '<section class="card error-panel"><h2>Не удалось получить актуальную SR</h2><p>Запуск с неполным набором целей заблокирован.</p><div class="button-row"><button type="button" class="button secondary" data-db-context-retry>Повторить</button><button type="button" class="button secondary" data-workspace-choose>Подключить рабочую папку</button></div></section>'
+        : '<header class="page-header"><h1>Загрузка данных и опрос устройств</h1></header><section class="card" role="status"><h2>Получаем актуальные цели из базы…</h2><p>История JSON и события не загружаются. Сетевые запросы к устройствам не выполняются.</p></section>';
+    }
     if (descriptor.renderer === "reference") return renderReference();
+    if (descriptor.renderer === "settings" && ui.dbMode) {
+      const counts=dbViews.bootstrap?.counts || {};
+      return `<header class="page-header"><h1>Локальное хранилище</h1></header><section class="db-section"><h2>Рабочая база SQLite</h2><p class="mono break-word">${escapeHtml(ui.workspaceStatus?.path)}</p><p>Интерфейс получает сводки и страницы. Полная история SR, JSON и событий не восстанавливается в память вкладки.</p><p>Устройств в истории: ${counts.inventoryDevices||0} · JSON: ${counts.pollingResults||0} · логов: ${counts.logRows||0}</p><p class="muted">Оригиналы логов и пароли не копируются. Ранее сохранённые порции остаются в этой же папке.</p></section>`;
+    }
     if (descriptor.renderer === "settings") return renderSettings(user);
-    if (descriptor.renderer === "upload") return renderUpload();
+    if (descriptor.renderer === "upload") return renderUpload() + (ui.dbMode ? `<section class="db-section section-gap"><div class="section-heading"><h2>Источники в базе</h2><button type="button" class="button secondary" data-db-sources>${ui.dbSourcesVisible?"Скрыть":"Показать логи"} · ${dbViews.bootstrap?.counts?.logRows||0}</button></div>${ui.dbSourcesVisible?dbViews.render({route:"log-sources",renderer:"logs",title:"Метаданные импортированных логов",compact:true}):""}</section>` : "");
     if (descriptor.renderer === "reboots") return renderReboots();
     if (descriptor.renderer === "project-versions") return renderVersionModule("project");
     if (descriptor.renderer === "firmware-versions") return renderVersionModule("firmware");
@@ -8070,7 +8318,7 @@
       <header class="page-header"><div><h1>${escapeHtml(MODULE_CATALOG.find((item) => item.route === "upload").title)}</h1></div></header>
       ${launchMode.kind === "local" ? `<section class="card section-gap workspace-status"><div class="section-heading"><h2>Рабочая база</h2><span class="badge ${ui.workspaceStatus?.status === "ready" ? "success" : "warning"}">${ui.workspaceStatus?.status === "ready" ? "Подключена" : "Не подключена"}</span></div>
         <p class="muted">Завершённые SR, JSON-опросы и аналитика логов сохраняются в выбранной локальной папке и восстанавливаются после входа. Исходные логи и пароли в базу не копируются. База не шифруется: ограничьте доступ к папке средствами Windows.</p>
-        ${ui.workspaceStatus?.status === "ready" ? `<p>Папка: <span class="mono break-word">${escapeHtml(ui.workspaceStatus.path)}</span> · ревизия ${ui.workspaceStatus.revision}</p>` : ui.workspaceStatus?.status === "error" ? `<p class="warning-panel">Рабочая база недоступна или повреждена. Прежние файлы не удалены.</p>` : ""}
+        ${ui.workspaceStatus?.status === "ready" ? `<p>Папка: <span class="mono break-word">${escapeHtml(ui.workspaceStatus.path)}</span> · ревизия ${escapeHtml(ui.workspaceStatus.dataRevision||ui.workspaceStatus.revision)}</p>` : ui.workspaceStatus?.status === "error" ? `<p class="warning-panel">Рабочая база недоступна или повреждена. Прежние файлы не удалены.</p>` : ""}
         ${ui.workspaceSaveStatus === "saving" ? `<p data-workspace-save-progress role="status">Сохранение рабочей базы… порций: ${ui.workspaceSaveParts || 0}</p>` : ui.workspaceSaveStatus === "restoring" ? `<p role="status">Восстановление рабочей базы порциями…</p>` : ui.workspaceSaveStatus === "saved" ? `<p role="status">Изменения сохранены.</p>` : ui.workspaceSaveStatus === "restored" ? `<p role="status">Данные восстановлены после входа.</p>` : ""}
         ${ui.workspaceSaveError ? `<p class="warning-panel" role="alert">${escapeHtml(ui.workspaceSaveError)}</p>` : ""}
         ${adminLocked ? `<p>Войдите в локальный доступ, чтобы подключить рабочую папку.</p>` : `<form class="form-grid" data-workspace-select-form><div class="field"><label>Путь к рабочей папке<input name="workspacePath" type="text" value="${escapeHtml(ui.workspaceStatus?.path || "")}" placeholder="C:\\AI\\MVP_SPHERE_SR_Data" required></label></div><div class="button-row"><button class="button secondary" type="button" data-workspace-choose>Обзор…</button><button class="button secondary" type="submit">Подключить папку</button></div></form>`}${ui.workspaceStatus?.status === "ready" ? `<button class="button secondary section-gap" type="button" data-workspace-save-now>Сохранить сейчас</button>` : ""}</section>` : ""}
@@ -8126,7 +8374,7 @@
           <fieldset class="polling-mode-selector section-gap"><legend>NTP Huawei TE20 (один IP)</legend><div class="filter-grid"><div class="field"><label>Синхронизация NTP<select name="te20NtpEnabled"><option value=""${!ui.pollingPlanSelection.te20NtpEnabled ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20NtpEnabled === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20NtpEnabled === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Режим адреса NTP<select name="te20NtpMode"><option value=""${!ui.pollingPlanSelection.te20NtpMode ? " selected" : ""}>Без изменений</option><option value="manual"${ui.pollingPlanSelection.te20NtpMode === "manual" ? " selected" : ""}>Вручную</option><option value="automatic"${ui.pollingPlanSelection.te20NtpMode === "automatic" ? " selected" : ""}>Авто</option></select></label></div><div class="field"><label>Имя сервера NTP<select name="te20NtpServerMode"><option value=""${!ui.pollingPlanSelection.te20NtpServerMode ? " selected" : ""}>Без изменений</option><option value="set"${ui.pollingPlanSelection.te20NtpServerMode === "set" ? " selected" : ""}>Ввести значение</option></select></label><input name="te20NtpServerValue" aria-label="Новое имя сервера NTP" autocomplete="off" maxlength="41" placeholder="Имя или IP сервера" value="${escapeHtml(ui.pollingPlanSelection.te20NtpServerValue || "")}"${ui.pollingPlanSelection.te20NtpServerMode === "set" ? "" : " disabled"}></div></div></fieldset>
           <fieldset class="polling-mode-selector section-gap"><legend>Управление питанием Huawei TE20 (один IP)</legend><div class="filter-grid"><div class="field"><label>Shut Down/Restart<select name="te20ShutdownRestart"><option value=""${!ui.pollingPlanSelection.te20ShutdownRestart ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20ShutdownRestart === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20ShutdownRestart === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Переход в спящий режим<select name="te20SleepMinutes"><option value=""${ui.pollingPlanSelection.te20SleepMinutes === "" ? " selected" : ""}>Без изменений</option>${TE20_SLEEP_VALUES.map((minutes) => `<option value="${minutes}"${String(ui.pollingPlanSelection.te20SleepMinutes) === String(minutes) ? " selected" : ""}>${minutes === 0 ? "Никогда" : `${minutes} мин`}</option>`).join("")}</select></label></div><div class="field"><label>Плановый перезапуск<select name="te20ScheduledRestart"><option value=""${!ui.pollingPlanSelection.te20ScheduledRestart ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20ScheduledRestart === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20ScheduledRestart === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Время перезапуска, ЧЧ:ММ<input name="te20RestartTime" type="time" aria-label="Время планового перезапуска" value="${escapeHtml(ui.pollingPlanSelection.te20RestartTime || "")}"></label></div></div></fieldset>
           <div class="warning-panel polling-zero-warning" data-zero-interval-warning role="alert"${zeroInterval ? "" : " hidden"}><strong>Опрос без интервалов</strong><p>При диапазоне 0–0 между опросами устройств не будет пауз. Следующий опрос начнётся сразу после сохранения результата предыдущего устройства.</p><label><input type="checkbox" name="confirmNoInterval" data-confirm-zero-interval${zeroInterval && ui.zeroIntervalAcknowledged ? " checked" : ""}> Подтверждаю запуск опроса без интервалов</label></div>
-          <button class="button primary" type="submit" data-start-automatic-polling${pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor)) ? "" : " disabled"}>Сформировать и запустить опрос</button>
+          <button class="button primary" type="submit" data-start-automatic-polling${databaseTargetsReady() && pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor)) ? "" : " disabled"}>Сформировать и запустить опрос</button>
         </form>
         <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div><div><dt>Закрытие портов доступно</dt><dd data-polling-count="management-eligible">${projection.managementEligibleDevices.length}</dd></div><div><dt>Закрытие портов будет пропущено</dt><dd data-polling-count="management-skipped">${projection.managementSkippedDevices.length}</dd></div></dl>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
@@ -8136,7 +8384,7 @@
         ${ui.workspaceStatus?.pendingLogFiles > 0 && !ui.logImportBusy ? `<p class="info-panel">Есть сохранённые результаты незавершённого импорта. Выберите ту же папку с логами и тот же режим перепроверки, чтобы продолжить.</p>` : ""}
         <form class="form-grid" data-log-import-form><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required${ui.logImportBusy ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forceRescan" type="checkbox"${ui.logImportBusy ? " disabled" : ""}> Перепроверить ранее загруженные файлы целиком</label><button class="button primary" type="submit"${ui.logImportBusy ? " disabled" : ""}>${ui.workspaceStatus?.pendingLogFiles > 0 ? "Продолжить импорт логов" : "Импортировать папку логов"}</button></form>
         ${ui.logImportProgress ? `<div class="log-import-progress"><p data-log-import-progress role="status">${escapeHtml(logImportProgressText(ui.logImportProgress))}</p><progress aria-label="Объём обработанных логов" data-log-import-meter max="100" value="${ui.logImportProgress.totalBytes ? Math.min(100, ui.logImportProgress.bytesRead / ui.logImportProgress.totalBytes * 100) : 0}"></progress><p data-log-import-speed>${escapeHtml(logImportSpeedText(ui.logImportProgress))}</p>${ui.logImportProgress.phase === "saving" ? "" : `<button class="button danger" type="button" data-cancel-log-import${ui.logImportCancelRequested ? " disabled" : ""}>${ui.logImportCancelRequested ? "Остановка…" : "Остановить импорт"}</button>`}</div>` : ""}
-        ${ui.logImportSummary ? `<div class="upload-outcome section-gap" role="status"><strong>Логи импортированы</strong><span>Файлов: ${ui.logImportSummary.files} · размер: ${escapeHtml(formatBytes(ui.logImportSummary.bytes))} · сопоставлено: ${ui.logImportSummary.matched} · проблемы: ${ui.logImportSummary.issues} · без повторного чтения: ${ui.logImportSummary.skippedFiles || 0}</span><span>${Object.entries(ui.logImportSummary.formats).map(([kind, count]) => `${escapeHtml(kind)}: ${count}`).join(" · ")}</span><span>Huawei TE: перезагрузок ${ui.teLogIndex.coverage?.confirmedReboots || 0} · отключений ${ui.teLogIndex.coverage?.powerOffs || 0} · запусков без причины ${ui.teLogIndex.coverage?.unknownStarts || 0}</span></div><div class="table-wrap section-gap"><table><thead><tr><th>Файл</th><th>Папка запуска</th><th>Тип</th><th>Размер</th><th>IP</th><th>Устройство SR</th><th>Сопоставление</th><th>Анализ</th></tr></thead><tbody>${ui.logImportRows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.path)}</td><td>${escapeHtml(row.runFolder || "—")}</td><td>${escapeHtml(row.format)}</td><td>${escapeHtml(formatBytes(row.size))}</td><td>${escapeHtml(row.ip || "—")}</td><td>${escapeHtml(row.deviceName || "—")}</td><td>${escapeHtml(row.matchStatus)}</td><td>${escapeHtml(row.analysisStatus || "—")}</td></tr>`).join("")}</tbody></table></div>${ui.logImportRows.length > 100 ? `<p class="muted">Показаны первые 100 файлов из ${ui.logImportRows.length}; итоги рассчитаны по всей папке.</p>` : ""}` : ""}
+        ${ui.logImportSummary ? `<div class="upload-outcome section-gap" role="status"><strong>Логи импортированы</strong><span>Файлов: ${ui.logImportSummary.files} · размер: ${escapeHtml(formatBytes(ui.logImportSummary.bytes))} · сопоставлено: ${ui.logImportSummary.matched} · проблемы: ${ui.logImportSummary.issues} · без повторного чтения: ${ui.logImportSummary.skippedFiles || 0}</span><span>${Object.entries(ui.logImportSummary.formats).map(([kind, count]) => `${escapeHtml(kind)}: ${count}`).join(" · ")}</span>${ui.dbMode ? '<span>События сохранены в базе. Сводки доступны в модуле анализа перезагрузок.</span>' : `<span>Huawei TE: перезагрузок ${ui.teLogIndex.coverage?.confirmedReboots || 0} · отключений ${ui.teLogIndex.coverage?.powerOffs || 0} · запусков без причины ${ui.teLogIndex.coverage?.unknownStarts || 0}</span>`}</div>${ui.dbMode ? "" : `<div class="table-wrap section-gap"><table><thead><tr><th>Файл</th><th>Папка запуска</th><th>Тип</th><th>Размер</th><th>IP</th><th>Устройство SR</th><th>Сопоставление</th><th>Анализ</th></tr></thead><tbody>${ui.logImportRows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.path)}</td><td>${escapeHtml(row.runFolder || "—")}</td><td>${escapeHtml(row.format)}</td><td>${escapeHtml(formatBytes(row.size))}</td><td>${escapeHtml(row.ip || "—")}</td><td>${escapeHtml(row.deviceName || "—")}</td><td>${escapeHtml(row.matchStatus)}</td><td>${escapeHtml(row.analysisStatus || "—")}</td></tr>`).join("")}</tbody></table></div>${ui.logImportRows.length > 100 ? `<p class="muted">Показаны первые 100 файлов из ${ui.logImportRows.length}; итоги рассчитаны по всей папке.</p>` : ""}`}` : ""}
       </section>
       `;
   }
@@ -8375,6 +8623,13 @@
   }
 
   async function handleClick(event) {
+    if(ui.dbMode && event.target.closest("[data-db-sources]")) {ui.dbSourcesVisible=!ui.dbSourcesVisible;render();return;}
+    if(ui.dbMode && event.target.closest("[data-db-context-retry]")) {
+      ui.dbOperationalError=false;
+      try{await activateDatabase();await loadOperationalContext();}catch{setMessage("Не удалось подтвердить рабочую базу. Проверьте выбранную папку.","error");render();}
+      return;
+    }
+    if (ui.dbMode && dbViews.handleClick(event.target)) return;
     if (event.target.closest("[data-admin-lock]")) {
       try {
         await runtimeRequest("/api/admin/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
@@ -8438,7 +8693,7 @@
         const selected = await runtimeRequest("/api/workspace/choose", { method: "POST",
           headers: { "Content-Type": "application/json" }, body: "{}" });
         ui.workspaceStatus = selected;
-        if (selected.hasSnapshot) await restoreWorkspaceAfterLogin(); else await queueWorkspaceSave();
+        if (dbViews || selected.hasSnapshot) await restoreWorkspaceAfterLogin(); else await queueWorkspaceSave();
         setMessage("Рабочая папка подключена.", "success");
       } catch (error) {
         if (error?.safeCode !== "workspace_selection_cancelled")
@@ -8531,6 +8786,8 @@
       return;
     }
     if (event.target.closest("[data-resume-automatic-polling]")) {
+      if(!databaseTargetsReady()){setMessage("Дождитесь завершения импорта и подтверждения актуальной SR в базе перед продолжением опроса.","warning");render();return;}
+      if(!await confirmDatabaseTargetsCurrent())return;
       try { await resumeAutomaticPolling(); }
       catch (error) {
         setMessage(({ recovery_unavailable: "Незавершённый опрос не найден в выбранной папке.", recovery_source_required: "Перед продолжением повторно загрузите исходную выгрузку SR или тот же отдельный список закрытия портов: IP, модель и производитель должны совпасть с журналом.", recovery_nothing_to_poll: "Повторный опрос не требуется. Для устройств с неизвестным исходом задачи управления проверьте состояние вручную." })[error.safeCode] || automaticPollingErrorMessage(error.safeCode || "local_runtime_error"), "warning");
@@ -8763,7 +9020,22 @@
     }
 
     if (event.target.closest("[data-download-device-settings-audit]")) {
-      const file = buildDeviceSettingsAuditXlsx(managementTargetListSession, state);
+      const targetList=managementTargetListSession;
+      let auditState=state;
+      if(ui.dbMode) {
+        try {
+          const revision=dbViews.revision;
+          const ips=[...new Set((targetList?.devices||[]).map((device)=>device.ipNormalized).filter(Boolean))];
+          const pollingResults=[];
+          for(let offset=0;offset<ips.length;offset+=50) {
+            const data=await dbRequest("latest",{revision,ips:ips.slice(offset,offset+50)});
+            pollingResults.push(...data.rows);
+          }
+          if(revision!==dbViews.revision)throw new Error("workspace_revision_conflict");
+          auditState={...state,pollingResults};
+        }catch{setMessage("Не удалось получить последние факты из базы. Прежние данные не изменены.","error");render();return;}
+      }
+      const file = buildDeviceSettingsAuditXlsx(targetList, auditState);
       if (!file.ok || !downloadBlob(file.bytes, `device-settings-audit-${nowIso().slice(0, 10)}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
         setMessage(file.errors?.[0] || "Не удалось скачать таблицу фактических настроек.", "error");
       } else {
@@ -8944,6 +9216,8 @@
   }
 
   async function handleSubmit(event) {
+    const dbForm = event.target.closest("[data-db-filters]");
+    if (ui.dbMode && dbForm) { event.preventDefault(); dbViews.handleSubmit(dbForm); return; }
     const adminForm = event.target.closest("[data-admin-access-form]");
     if (adminForm) {
       event.preventDefault();
@@ -8982,7 +9256,7 @@
         const selected = await runtimeRequest("/api/workspace/select", { method: "POST",
           headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
         ui.workspaceStatus = selected;
-        if (selected.hasSnapshot) await restoreWorkspaceAfterLogin();
+        if (dbViews || selected.hasSnapshot) await restoreWorkspaceAfterLogin();
         else await queueWorkspaceSave();
         setMessage("Рабочая папка подключена. Завершённые данные будут сохраняться локально.", "success");
       } catch (error) {
@@ -9035,7 +9309,7 @@
     const srImportForm = event.target.closest("[data-sr-import-form]");
     if (srImportForm) {
       event.preventDefault();
-      if (ui.logImportBusy || ui.workspaceSaveStatus === "restoring") return;
+      if (ui.logImportBusy || ui.inventoryBusy || ui.workspaceSaveStatus === "restoring") return;
       await handleSrImport(srImportForm);
       return;
     }
@@ -9043,7 +9317,7 @@
     const logImportForm = event.target.closest("[data-log-import-form]");
     if (logImportForm) {
       event.preventDefault();
-      if (ui.logImportBusy) return;
+      if (ui.logImportBusy || ui.inventoryBusy) return;
       if (launchMode.kind === "local" && ui.workspaceStatus?.status !== "ready") {
         setMessage("Сначала войдите и подключите рабочую папку, чтобы логи не потерялись при закрытии браузера.", "error"); render(); return;
       }
@@ -9055,15 +9329,29 @@
       ui.logImportProgress = { phase: "classifying", processed: 0, total: files.length, bytesRead: 0, totalBytes };
       render();
       try {
+        let nativeToken = null;
+        let databaseExisting = null;
+        if(ui.dbMode) {
+          const [rows,registry] = await Promise.all([dbContextRows("logRows"),dbContextRows("logRegistry")]);
+          if(registry.length) databaseExisting={rows,registry,indexes:{te:{events:[],sourceSrSha256:dbViews.bootstrap?.logSourceSha||null}}};
+        }
         const imported = await prepareDeviceLogImport(files, state, {
           shouldCancel: () => ui.logImportCancelRequested,
           onClient: (client) => { activeLogScanClient = client; if (ui.logImportCancelRequested) client.cancel(); },
           onProgress: (progress) => updateLogImportProgress(progress),
-          existing: ui.logFileRegistry.length ? { rows: ui.logImportRows, summary: ui.logImportSummary,
+          existing: databaseExisting || (ui.logFileRegistry.length ? { rows: ui.logImportRows, summary: ui.logImportSummary,
             indexes: { te: ui.teLogIndex, huawei310: ui.huawei310LogIndex,
-              huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex }, registry: ui.logFileRegistry } : null,
+              huawei300Bar: ui.huawei300BarLogIndex, huawei300Box: ui.huawei300BoxLogIndex }, registry: ui.logFileRegistry } : null),
           forceRescan: new FormData(logImportForm).get("forceRescan") === "on",
-          checkpoint: currentLogCheckpointStore()
+          checkpoint: currentLogCheckpointStore(),
+          ...(ui.dbMode ? {
+            onStart: async ({fullRecheck})=>{nativeToken=await dbImportBegin(fullRecheck?"logs-replace":"logs");},
+            onEntry: async ({row,registry,indexes})=>{
+              await dbSendRows(nativeToken,"logRows",[row]);
+              await dbSendRows(nativeToken,"logRegistry",[registry]);
+              for(const [family,index] of Object.entries(indexes)) await dbSendRows(nativeToken,"events:"+family,index.events);
+            }
+          } : {})
         });
         if (ui.logImportCancelRequested) throw new Error("log_import_cancelled");
         ui.teLogIndex = imported.indexes.te;
@@ -9079,7 +9367,18 @@
           render();
           await cooperativeBrowserYield();
         }
-        const workspaceSaved = ui.workspaceStatus?.status !== "ready" || await queueWorkspaceSave();
+        let workspaceSaved;
+        if(ui.dbMode) {
+          await dbImportFinish(nativeToken); workspaceSaved=true;
+          try { if(imported.checkpoint) {
+            for(let offset=0;offset<imported.checkpoint.keys.length;offset+=512) {
+              const cleared=await dbRequest("clear",{revision:dbViews.revision,scope:imported.checkpoint.scope,keys:imported.checkpoint.keys.slice(offset,offset+512)});
+              ui.workspaceStatus.pendingLogFiles=cleared.pending;
+            }
+            ui.logCompletedCheckpoint=null;
+          }} catch { /* Published analytics is safe; unused checkpoints can be cleaned on a repeat. */ }
+        }
+        else workspaceSaved = ui.workspaceStatus?.status !== "ready" || await queueWorkspaceSave();
         setMessage(workspaceSaved ? "Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ", восстановлено после остановки: " + imported.recoveredFiles + ". Исходные файлы не изменены."
           : "Логи импортированы, но рабочую базу сохранить не удалось. До закрытия вкладки повторите сохранение.", workspaceSaved ? "success" : "warning");
       } catch (error) {
@@ -9102,7 +9401,7 @@
     const pollingImportForm = event.target.closest("[data-polling-import-form]");
     if (pollingImportForm) {
       event.preventDefault();
-      if (ui.logImportBusy || ui.workspaceSaveStatus === "restoring") return;
+      if (ui.logImportBusy || ui.inventoryBusy || ui.workspaceSaveStatus === "restoring") return;
       await handlePollingImport(pollingImportForm);
       return;
     }
@@ -9136,6 +9435,8 @@
     if (pollingPlanForm) {
       event.preventDefault();
       if (launchMode.kind === "local" && ui.adminAccess?.adminUnlocked !== true) { setMessage("Сначала войдите в план опроса.", "error"); render(); return; }
+      if(!databaseTargetsReady()){setMessage("План временно заблокирован: импорт ещё не опубликован или актуальные цели не загружены из базы.","warning");render();return;}
+      if(!await confirmDatabaseTargetsCurrent())return;
       const formData = new FormData(pollingPlanForm);
       ui.pollingPlanSelection.mode = formData.get("pollingMode") === POLLING_SELECTION_MODE_SINGLE_IP ? POLLING_SELECTION_MODE_SINGLE_IP : POLLING_SELECTION_MODE_FILTERS;
       if (ui.pollingPlanSelection.mode === POLLING_SELECTION_MODE_SINGLE_IP) ui.pollingPlanSelection.ipAddress = String(formData.get("ipAddress") || "");
@@ -9453,7 +9754,8 @@
       const result = await importSrWorkbook(state, { filename: file.name, arrayBuffer: await readFileArrayBuffer(file), actorId: currentUser()?.id || "system", onProgress(progress) { ui.srProgress = progress; render(); } });
       if (result.ok && result.outcome !== "duplicate") {
         state = result.state;
-        if (ui.workspaceStatus?.status === "ready") workspaceSaved = await queueWorkspaceSave();
+        if(ui.dbMode) await saveDatabaseImport("sr",["inventoryDevices","locations","srImports","inventoryIssues"]);
+        else if (ui.workspaceStatus?.status === "ready") workspaceSaved = await queueWorkspaceSave();
         pollingImportContextCache = null;
         ui.pollingPlanSelection = { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: ui.pollingPlanSelection.scheduledAt || "", intervalMinSeconds: ui.pollingPlanSelection.intervalMinSeconds ?? "0", intervalMaxSeconds: ui.pollingPlanSelection.intervalMaxSeconds ?? "0", allowInsecureTls: ui.pollingPlanSelection.allowInsecureTls === true, disableInsecureManagementServices: false };
         ui.pollingPlanResult = null;
@@ -9463,6 +9765,7 @@
         : "Выгрузка SR обработана, но рабочая база не сохранена."
         : "Выгрузка SR не импортирована.", result.ok ? workspaceSaved ? "success" : "warning" : "error");
     } catch (error) {
+      if(ui.dbMode)ui.dbOperationalRevision=null;
       ui.srImportResults.push({ name: file.name, ok: false, label: "failed", detail: `Не удалось обработать файл ${file.name}. Проверьте структуру XLSX и обязательные столбцы.` });
       setMessage(`Не удалось загрузить выгрузку SR ${file.name}. Прежние данные сохранены; проверьте файл и повторите попытку.`, "error");
     }
@@ -9495,13 +9798,47 @@
         prefix.fill(0);
         return hash;
       });
+      if(ui.dbMode && !fullRecheck) {
+        const pending=[];
+        for(let offset=0;offset<selected.pending.length;offset+=256) {
+          const batch=selected.pending.slice(offset,offset+256);
+          const {skip}=await dbRequest("files",{files:batch.map((file)=>({path:normalizePollingRelativePath(file.relativePath),size:file.size,mtime:file.lastModified,prefix:file.sourcePrefixSha256}))});
+          batch.forEach((file,index)=>{if(skip[index]) selected.skipped.push(file);else pending.push(file);});
+        }
+        selected.pending=pending;
+      }
+      const nativeToken=ui.dbMode ? await dbImportBegin("json") : null;
+      let neighborSeeds=new Map();
+      if(nativeToken) {state.pollingRuns=await dbContextRows("pollingRuns");pollingImportContextCache=null;}
       const result = selected.pending.length ? await processPollingImportBatches(state, {
         actorId: currentUser()?.id || "system",
         files: selected.pending,
         context: pollingImportContextCache,
         readText: (descriptor) => readFileText(descriptor.sourceFile),
         shouldCancel: () => ui.pollingCancelRequested,
-        onProgress: (progress) => updatePollingProgress(progress, progress.status !== "running")
+        onProgress: (progress) => updatePollingProgress(progress, progress.status !== "running"),
+        ...(nativeToken ? {
+          seedBatch:async(metadata)=>{
+            const {seeds}=await dbRequest("neighbors-batch",{token:nativeToken,results:metadata});
+            const expected=new Map(metadata.map((row)=>[row.id,row]));
+            neighborSeeds=new Map(seeds.map((seed)=>[seed.id,{...seed,expected:expected.get(seed.id)}]));
+          },
+          seedHistory:async(result)=>{
+            const seed=neighborSeeds.get(result.id);
+            if(seed && seed.expected.rawSha256===result.rawSha256 && (seed.duplicate ||
+                seed.expected.deviceId===result.deviceId && seed.expected.capturedAt===result.capturedAt))return seed;
+            return dbRequest("neighbors",{token:nativeToken,result:Object.fromEntries(
+              ["id","deviceId","capturedAt","runId","filename","rawSha256","parseStatus"].map((key)=>[key,result[key]]))});
+          },
+          onBatch:async (batchState,context,run)=>{
+          const pairs=[...(context.removedPairs?.values()||[])];
+          for(let offset=0;offset<pairs.length;offset+=500)await dbRequest("remove-pairs",{token:nativeToken,pairs:pairs.slice(offset,offset+500)});
+          for(const label of ["pollingResults","deviceChanges","inventoryIssues","history"]) await dbSendRows(nativeToken,label,batchState[label]);
+          if(run)await dbSendRows(nativeToken,"pollingRuns",[run]);
+          neighborSeeds.clear();
+          batchState.pollingResults=[];batchState.deviceChanges=[];batchState.inventoryIssues=[];batchState.history=[];
+          return true;
+        }} : {})
       }) : { ok: true, cancelled: false, outcome: "duplicate", state, context: pollingImportContextCache,
         importedFolderCount: 0, summary: { processed: 0, succeeded: 0, duplicates: 0 }, errorCount: 0, ignored: [] };
       if (!result.ok) {
@@ -9516,7 +9853,8 @@
         return;
       }
       state = result.state;
-      if (ui.workspaceStatus?.status === "ready") workspaceSaved = await queueWorkspaceSave();
+      if(nativeToken) await dbImportFinish(nativeToken);
+      else if (ui.workspaceStatus?.status === "ready") workspaceSaved = await queueWorkspaceSave();
       pollingImportContextCache = result.context;
       ui.pollingImportSummary = { title: result.cancelled ? "Импорт остановлен" : result.outcome === "duplicate" ? "Новых опросов нет" : result.outcome === "partial" ? "Импорт завершён частично" : "Папка импортирована", folders: result.importedFolderCount,
         files: result.summary.processed + selected.skipped.length, succeeded: result.summary.succeeded,
@@ -9525,6 +9863,7 @@
       else setMessage(workspaceSaved ? `Обработано папок опросов: ${result.importedFolderCount}; JSON-файлов: ${result.summary.processed + selected.skipped.length}; успешно: ${result.summary.succeeded}; без повторного чтения: ${selected.skipped.length}; дубликатов: ${result.summary.duplicates}; ошибок: ${result.errorCount}; проигнорировано не-JSON: ${result.ignored.length}.`
         : "JSON-опросы загружены, но рабочая база не сохранена. Повторите сохранение до закрытия вкладки.", result.outcome === "partial" || !workspaceSaved ? "warning" : "success");
     } catch (error) {
+      if(ui.dbMode){state.pollingResults=[];state.deviceChanges=[];state.inventoryIssues=[];state.history=[];pollingImportContextCache=null;ui.dbOperationalRevision=null;}
       ui.pollingImportSummary = { title: "Импорт не завершён", folders: 0, files: 0, succeeded: 0, duplicates: 0, errors: 1, ignored: 0 };
       setMessage("Импорт результатов опросов не завершён. Прежние данные сохранены.", "error");
     }
@@ -9598,7 +9937,7 @@
     const checkbox = form.querySelector("[data-confirm-zero-interval]");
     if (checkbox) checkbox.checked = required && ui.zeroIntervalAcknowledged;
     const startButton = form.querySelector("[data-start-automatic-polling]");
-    if (startButton) startButton.disabled = !pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor));
+    if (startButton) startButton.disabled = !databaseTargetsReady() || !pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor));
   }
 
   async function handleChange(event) {

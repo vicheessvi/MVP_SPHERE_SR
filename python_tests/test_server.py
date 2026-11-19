@@ -161,6 +161,42 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"], "workspace_selection_changed")
 
+    def test_db_first_api_is_admin_csrf_gated_and_blocks_outdated_replacement(self) -> None:
+        from python_tests.test_read_model import fixture
+        selected=Path(self.harness.admin_dir.name)/"db-first"
+        selected.mkdir()
+        store=WorkspaceStore(Path(self.harness.admin_dir.name)/"db-first-location.json",self.harness.server.state.project_root)
+        self.harness.server.state.workspace_store=store
+        workspace=store.select(selected)["workspaceId"]
+        store.commit(0,fixture())
+        cookie,csrf=self.harness.session(unlock=False)
+        headers=self._mutation_headers(cookie,csrf,**{"Content-Type":"application/json"})
+        def call(action,**values):
+            return self.harness.request("POST","/api/workspace/db",headers=headers,body=json.dumps({"workspace":workspace,"action":action,**values}))
+        status,_,body=call("prepare")
+        self.assertEqual(status,403)
+        self.harness.request("POST","/api/admin/setup",headers=headers,body=json.dumps({"username":"synthetic-admin","password":"SYNTHETIC-ADMIN-PASSWORD-123"}))
+        status,_,body=call("prepare")
+        self.assertEqual(status,200,body)
+        self.assertTrue(json.loads(body)["ready"])
+        status,_,body=call("bootstrap")
+        self.assertNotIn("state",json.loads(body))
+        revision=json.loads(body)["revision"]
+        status,_,body=call("view",revision=revision,name="summary",filters={})
+        self.assertEqual(status,200,body)
+        self.assertNotIn("payload",body.decode())
+        status,_,body=call("view",revision=revision,name="events",filters={},size=1000)
+        self.assertEqual(status,400)
+        status,_,_=self.harness.request("POST","/api/workspace/db",headers={"Cookie":cookie},body=json.dumps({"workspace":workspace,"action":"prepare"}))
+        self.assertEqual(status,403)
+        status,_,body=call("begin",revision=revision,mode="json")
+        token=json.loads(body)["token"]
+        status,_,body=call("finish",token=token)
+        self.assertEqual(status,200,body)
+        status,_,body=self.harness.request("POST","/api/workspace/commit",headers=headers,body=json.dumps({"baseRevision":1,"payload":fixture()}))
+        self.assertEqual(status,400)
+        self.assertEqual(json.loads(body)["error"],"workspace_db_first_required")
+
     def test_local_worker_assets_are_served_with_same_origin_policy(self) -> None:
         cookie, _csrf = self.harness.session(unlock=False)
         for path in ("/runtime/log-scan-worker.js", "/runtime/log-scan-client.js"):

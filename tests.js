@@ -1891,6 +1891,43 @@
     assertEqual(late.metrics.diffPairs, 2);
   });
 
+  test("DB-first соседний контекст сохраняет изменения между партиями и при поздней вставке", async () => {
+    const files=scalablePollingFiles(4,{devices:1});
+    const initial=await api.processPollingImportBatches(scalablePollingState(1),{files:[files[0],files[2]],yieldControl:async()=>{}});
+    for(const batchSize of [1,32]) {
+      const stored=new Map(initial.state.pollingResults.map((row)=>[row.id,api.deepClone(row)]));
+      let changes=api.deepClone(initial.state.deviceChanges);
+      const state=scalablePollingState(1);
+      state.pollingRuns=api.deepClone(initial.state.pollingRuns);
+      let maximum=0;
+      let batchMetadata=new Map();
+      const ordered=(a,b)=>Date.parse(a.capturedAt)-Date.parse(b.capturedAt)||a.id.localeCompare(b.id);
+      await api.processPollingImportBatches(state,{files:[files[1],files[3]],batchSize,yieldControl:async()=>{},
+        async seedBatch(metadata){batchMetadata=new Map(metadata.map((row)=>[row.id,row]));},
+        async seedHistory(result) {
+          assertEqual(batchMetadata.get(result.id)?.rawSha256,result.rawSha256);
+          assertEqual(batchMetadata.get(result.id)?.capturedAt,result.capturedAt);
+          const all=[...stored.values()].filter((row)=>row.deviceId===result.deviceId&&row.parseStatus==="parsed").sort(ordered);
+          const before=all.filter((row)=>ordered(row,result)<0).at(-1);
+          const after=all.find((row)=>ordered(row,result)>0);
+          return {duplicate:false,rows:[before,after].filter(Boolean)};
+        },
+        async onBatch(current,context) {
+          maximum=Math.max(maximum,current.pollingResults.length);
+          for(const [,from,to] of context.removedPairs.values())changes=changes.filter((row)=>row.fromPollingResultId!==from||row.toPollingResultId!==to);
+          changes.push(...current.deviceChanges);
+          for(const row of current.pollingResults)stored.set(row.id,api.deepClone(row));
+          current.pollingResults=[];current.deviceChanges=[];current.inventoryIssues=[];current.history=[];
+          return true;
+        }});
+      assert(maximum<=batchSize);
+      assert(!changes.some((row)=>row.oldValue==="0.0"&&row.newValue==="2.0"));
+      assert(changes.some((row)=>row.oldValue==="0.0"&&row.newValue==="1.0"));
+      assert(changes.some((row)=>row.oldValue==="1.0"&&row.newValue==="2.0"));
+      assert(changes.some((row)=>row.oldValue==="2.0"&&row.newValue==="3.0"));
+    }
+  });
+
   test("Одинаковое и отсутствующее время результата обрабатывается детерминированно без folder fallback", async () => {
     const state = scalablePollingState(1);
     const sameTime = Date.UTC(2026, 6, 1, 9, 0, 0);
@@ -3439,6 +3476,23 @@
     assertEqual(oldIndex.events[0].id, "old-event");
   });
 
+  test("DB-first поток логов отдаёт индексы по файлу, не накапливая все события в UI", async () => {
+    const state=api.createDemoState();
+    state.srImports=[{rawSha256:"a".repeat(64)}];
+    state.inventoryDevices=[{id:"te",category:"vcs",manufacturerRaw:"Huawei",modelRaw:"TE40",ipNormalized:"192.0.2.40"}];
+    const files=["10","11","12"].map((hour)=>{
+      const file=new Blob([`<?xml version='1.0'?><LogModule>\n[Debug][Main] 2026-01-01 ${hour}:00:00 LOG_MOD_MC 10 Synthetic System start\n</LogModule>`]);
+      file.name="192.0.2.40.xml";file.webkitRelativePath=`run-${hour}/192.0.2.40.xml`;file.lastModified=Number(hour);return file;
+    });
+    let count=0;
+    const result=await api.prepareDeviceLogImport(files,state,{
+      scanClient:{scan:(file)=>teLogEvents.scanFile(file,{model:"te40"})},
+      onEntry:async({indexes})=>{assertEqual(indexes.te.events.length,1);count+=indexes.te.events.length;}});
+    assertEqual(count,3);
+    assertEqual(result.indexes.te.events.length,0);
+    assertEqual(result.rows.length,3);
+  });
+
   test("Дозагрузка логов пропускает прежние файлы и добавляет только новые события", async () => {
     const state = api.createDemoState();
     state.srImports = [{ rawSha256: "a".repeat(64), status: "processed" }];
@@ -3807,6 +3861,89 @@
     assert(source.includes("workspaceParts(state"));
     assert(source.includes("transfer/finish"));
     assert(source.includes("data-log-import-speed"));
+  });
+
+  if (typeof require === "function") test("DB-first открывает миллион событий через bounded запросы, не скачивая snapshot", async () => {
+    const vm=require("vm"), fs=require("fs"), path=require("path");
+    const handlers={}, calls=[];
+    const appNode={innerHTML:"",querySelector(){return null;}};
+    const counts={inventoryDevices:5000,pollingResults:25000,logRows:5000,"events:te":1000000};
+    const context={module:{exports:{}},require,TextEncoder,TextDecoder,Blob,URL,AbortController,setTimeout,clearTimeout,
+      location:{protocol:"http:"},__MVP_SECURE_RUNTIME__:true,__MVP_CSRF__:"synthetic-csrf",
+      MVP_PRODUCT_CATALOG:api.PRODUCT_CATALOG,MVP_DB_VIEWS:require("./runtime/db-views.js"),
+      document:{getElementById:()=>appNode,addEventListener:(name,handler)=>{handlers[name]=handler;}},
+      async fetch(url,options={}){
+        calls.push(url);
+        let body={};
+        if(url==="/api/session")body={adminConfigured:true,adminUnlocked:true};
+        else if(url==="/api/workspace/status")body={status:"ready",workspaceId:"a".repeat(32),revision:1,partCount:1000,hasSnapshot:true};
+        else if(url==="/api/workspace/db"){
+          const data=JSON.parse(options.body);calls.push(data.action+":"+(data.name||""));
+          if(data.action==="prepare")body={ready:true,processed:1000,total:1000,revision:"1:0"};
+          else if(data.action==="bootstrap")body={revision:"1:0",counts,settings:{}};
+          else if(data.name==="dashboard")body={revision:"1:0",counts,categories:[],devices:5000};
+          else if(data.name==="summary")body={groups:[{kind:"confirmed_reboot",events:1000000,devices:100}],denominator:5000};
+          else if(data.name==="accounted")body={counts:{denominator:5000,reboots:100,confirmed:0,suspected:0}};
+          else if(data.name==="heatmap")body={cells:[]};
+          else if(data.name==="tops")body={devices:[],locations:[],dates:[],hours:[]};
+          else body={rows:[],hasNext:false};
+        }else throw new Error("Unexpected request "+url);
+        return {ok:true,status:200,json:async()=>body};
+      }};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname,"app.js"),"utf8"),context);
+    await new Promise((resolve)=>setTimeout(resolve,80));
+    assert(appNode.innerHTML.includes("db-workspace"),"Ожидался рабочий DB-first экран");
+    const target={dataset:{route:"reboots"},closest(selector){return selector==="[data-route]"?this:null;}};
+    await handlers.click({target});
+    assert(appNode.innerHTML.includes("Анализ перезагрузок устройств"));
+    await new Promise((resolve)=>setTimeout(resolve,80));
+    assert(appNode.innerHTML.includes("db-heatmap"));
+    assert(calls.includes("view:summary"));
+    assert(!calls.some((item)=>item.includes("/snapshot")||item.includes("/part/")));
+  });
+
+  if (typeof require === "function") test("DB-first Excel выгружает все страницы, сохраняя строки без формул", async () => {
+    const db=require("./runtime/db-views.js");
+    let downloaded=null, requests=0;
+    const controller=db.createController({render(){},download(bytes){downloaded=bytes;},
+      async request(action,data){
+        requests+=1;
+        return {rows:Array.from({length:data.page===0?100:50},(_,index)=>({name:index===0?"=2+2":"Synthetic",
+          ip:"192.0.2.40",mac:"02:00:00:00:00:40",locationName:"Synthetic",address:"Synthetic",reboots:1,confirmed:0,suspected:0})),
+          hasNext:data.page===0};
+      }});
+    controller.setRevision({revision:"1:0"});
+    controller.render({route:"reboots",title:"Анализ",renderer:"reboots"});
+    const button={dataset:{dbExport:"reboot"}};
+    controller.handleClick({closest:()=>button});
+    for(let wait=0;!downloaded&&wait<30;wait++)await new Promise((resolve)=>setTimeout(resolve,10));
+    assert(downloaded,"Экспорт должен завершиться");
+    const book=global.XLSX.read(downloaded,{type:"array"}), sheet=book.Sheets[book.SheetNames[0]];
+    assertEqual(global.XLSX.utils.sheet_to_json(sheet,{header:1}).length,151);
+    assertEqual(sheet.A2.t,"s");assert(!sheet.A2.f);
+    assert(requests>=2);
+  });
+
+  if (typeof require === "function") test("Старый ответ DB-first после Повторить не удаляет новый запрос", async () => {
+    const db=require("./runtime/db-views.js"), waves=[];
+    let controller, renderCount=0;
+    const descriptor={route:"reboots",title:"Анализ",renderer:"reboots"};
+    const render=()=>{renderCount+=1;controller.render(descriptor);};
+    controller=db.createController({render,request:(_action,data)=>new Promise((resolve)=>waves.push({name:data.name,resolve}))});
+    controller.setRevision({revision:"1:0"});
+    controller.render(descriptor);
+    await new Promise((resolve)=>setTimeout(resolve,10));
+    assertEqual(waves.length,5);
+    controller.handleClick({closest:()=>({dataset:{dbRetry:""}})});
+    await new Promise((resolve)=>setTimeout(resolve,10));
+    assertEqual(waves.length,10);
+    const reply=(name)=>name==="summary"?{groups:[],denominator:0}:name==="accounted"?{counts:{denominator:0}}:name==="heatmap"?{cells:[]}:name==="tops"?{devices:[],locations:[],addresses:[],dates:[],hours:[]}:{rows:[],hasNext:false};
+    waves.slice(0,5).forEach(({name,resolve})=>resolve(reply(name)));
+    await new Promise((resolve)=>setTimeout(resolve,10));
+    waves.slice(5).forEach(({name,resolve})=>resolve(reply(name)));
+    await new Promise((resolve)=>setTimeout(resolve,10));
+    assertEqual(waves.length,10,"Старый finally не должен вызывать третью волну запросов");
+    assert(renderCount<20);
   });
 
   test("Поток лога пишется в выбранную папку без JSON/base64", async () => {

@@ -158,6 +158,13 @@ class WorkspaceStore:
             raise WorkspaceError("workspace_not_configured")
         return selected / DATABASE_NAME
 
+    @staticmethod
+    def _reject_outdated_writer(connection: sqlite3.Connection) -> None:
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE name='rm_control' AND type='table'").fetchone():
+            row = connection.execute("SELECT native FROM rm_control WHERE id=1").fetchone()
+            if row and row[0]:
+                raise WorkspaceError("workspace_db_first_required")
+
     def _existing_database(self) -> Path:
         path = self.database_path()
         if not path.parent.is_dir() or not path.is_file() or path.is_symlink():
@@ -197,10 +204,14 @@ class WorkspaceStore:
                 part_count = connection.execute("SELECT count(*) FROM workspace_part_links WHERE revision=?", (revision,)).fetchone()[0]
                 pending = connection.execute("SELECT count(*) FROM workspace_log_checkpoints").fetchone()[0]
                 workspace = connection.execute("SELECT workspace_id FROM workspace_transfer WHERE id=1").fetchone()[0]
+                native=None
+                if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rm_control'").fetchone():
+                    native=connection.execute("SELECT source_revision,data_revision,native,ready FROM rm_control WHERE id=1").fetchone()
                 if revision and not (legacy or part_count):
                     raise WorkspaceError("workspace_corrupt")
                 return {"status": "ready", "revision": revision, "path": str(selected), "workspaceId": workspace,
-                        "hasSnapshot": bool(legacy or part_count), "partCount": part_count,
+                        "hasSnapshot": bool(legacy or part_count or native and native[2] and native[3]), "partCount": part_count,
+                        **({"dbFirst":True,"dataRevision":f"{native[0]}:{native[1]}"} if native and native[2] else {}),
                         "pendingLogFiles": pending, "updatedAt": updated_at}
         except sqlite3.Error as error:
             raise WorkspaceError("workspace_corrupt") from error
@@ -250,6 +261,7 @@ class WorkspaceStore:
         upload = uuid.uuid4().hex
         with closing(self._parts_connection(workspace)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._reject_outdated_writer(connection)
             self._check_revision(connection, revision)
             connection.execute("DELETE FROM workspace_part_links WHERE revision=-1")
             self._collect_unreferenced_parts(connection)
@@ -258,6 +270,7 @@ class WorkspaceStore:
 
     @staticmethod
     def _require_upload(connection: sqlite3.Connection, upload: str) -> tuple[int, int]:
+        WorkspaceStore._reject_outdated_writer(connection)
         row = connection.execute("SELECT upload,base_revision,next_part FROM workspace_transfer WHERE id=1").fetchone()
         if not _hex(upload, 32) or not row or upload != row[0]:
             raise WorkspaceError("workspace_revision_conflict")
@@ -329,6 +342,7 @@ class WorkspaceStore:
         if not _number(revision, 1) or not _number(position):
             raise WorkspaceError("workspace_part_invalid")
         with closing(self._parts_connection(workspace)) as connection:
+            self._reject_outdated_writer(connection)
             self._check_revision(connection, revision)
             row = connection.execute("SELECT data.body,data.digest FROM workspace_part_links AS links JOIN workspace_part_data AS data USING(digest) WHERE revision=? AND position=?", (revision, position)).fetchone()
         if not row or not isinstance(row[0], bytes) or hashlib.sha256(row[0]).hexdigest() != row[1]:
@@ -453,6 +467,11 @@ class WorkspaceStore:
         return self.status()
 
     def load(self) -> dict[str, Any]:
+        try:
+            with closing(sqlite3.connect(self._existing_database())) as connection:
+                self._reject_outdated_writer(connection)
+        except sqlite3.Error as error:
+            raise WorkspaceError("workspace_corrupt") from error
         revision, payload, _digest, _updated_at = self._read_snapshot()
         if payload is None:
             if revision:
@@ -474,6 +493,7 @@ class WorkspaceStore:
         try:
             with closing(sqlite3.connect(path, timeout=10)) as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                self._reject_outdated_writer(connection)
                 row = connection.execute("SELECT revision,payload,digest FROM workspace_snapshot WHERE id=1").fetchone()
                 if row is None:
                     raise WorkspaceError("workspace_corrupt")
