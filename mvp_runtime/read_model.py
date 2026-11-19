@@ -27,6 +27,20 @@ COLS = ("label", "key", "device", "stamp", "kind", "category", "maker", "model",
         "validation", "source", "payload", "checksum")
 MARKS = ",".join("?" for _ in COLS)
 
+# A fresh workspace can have no planner statistics. Without the explicit index,
+# SQLite may rescan every pollingResult for each row of this correlated lookup.
+# Keep the predicates unchanged: contradictory observations are still excluded.
+JSON_BOOT_OBSERVATIONS_SQL = """SELECT r.key,r.device,r.gap,json_extract(r.payload,'$._dbBoot') observation
+    FROM rm_records r JOIN rm_records d ON d.label='inventoryDevices' AND d.key=r.device
+    WHERE r.label='pollingResults' AND r.kind='boot_observation'
+    AND coalesce(json_extract(d.payload,'$.inCurrentSr'),1)!=0
+    AND NOT EXISTS (SELECT 1 FROM rm_records conflicting INDEXED BY rm_idx_observation WHERE conflicting.label='pollingResults'
+        AND conflicting.device=r.device AND conflicting.kind='boot_observation'
+        AND json_extract(conflicting.payload,'$._dbBoot.observedAt')=json_extract(r.payload,'$._dbBoot.observedAt')
+        AND (json_extract(conflicting.payload,'$._dbBoot.signature')!=json_extract(r.payload,'$._dbBoot.signature')
+             OR conflicting.key<r.key))
+    ORDER BY r.device,r.gap,r.stamp,r.key"""
+
 
 def encode(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -327,20 +341,10 @@ class ReadModel:
                 "category":device.get("category"),"model":device.get("modelRaw"),"sourceCount":cluster["n"],
                 "evidenceResultIds":cluster["ids"],"sources":[],"basis":"date_minus_uptime"})
             cluster=None
-        query="""SELECT r.key,r.device,r.gap,json_extract(r.payload,'$._dbBoot') observation
-            FROM rm_records r JOIN rm_records d ON d.label='inventoryDevices' AND d.key=r.device
-            WHERE r.label='pollingResults' AND r.kind='boot_observation'
-            AND coalesce(json_extract(d.payload,'$.inCurrentSr'),1)!=0
-            AND NOT EXISTS (SELECT 1 FROM rm_records conflicting WHERE conflicting.label='pollingResults'
-                AND conflicting.device=r.device AND conflicting.kind='boot_observation'
-                AND json_extract(conflicting.payload,'$._dbBoot.observedAt')=json_extract(r.payload,'$._dbBoot.observedAt')
-                AND (json_extract(conflicting.payload,'$._dbBoot.signature')!=json_extract(r.payload,'$._dbBoot.signature')
-                     OR conflicting.key<r.key))
-            ORDER BY r.device,r.gap,r.stamp,r.key"""
         total=c.execute("SELECT count(*) FROM rm_records WHERE label='pollingResults' AND kind='boot_observation'").fetchone()[0] if on_progress else 0
         processed=0
         if on_progress:on_progress(0,total)
-        for row in c.execute(query):
+        for row in c.execute(JSON_BOOT_OBSERVATIONS_SQL):
             observation=json.loads(row["observation"])
             if cluster and (row["device"]!=current_device or abs(row["gap"]-math.floor(cluster["sum"]/cluster["n"]+.5))>5000):
                 flush()

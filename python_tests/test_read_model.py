@@ -146,6 +146,42 @@ class ReadModelTests(unittest.TestCase):
         with closing(self.model.connect(self.workspace)) as c:
             self.assertEqual(c.execute("SELECT count(*) FROM rm_staging WHERE batch=?",(token,)).fetchone()[0],1)
 
+    def test_json_rebuild_uses_narrow_index_without_analyze_and_preserves_conflicts(self):
+        from mvp_runtime.read_model import JSON_BOOT_OBSERVATIONS_SQL
+        def poll(key,minute,digest="b",device="te"):
+            return {"id":key,"deviceId":device,"parseStatus":"parsed","matchStatus":"matched","pollStatus":"success",
+                    "capturedAt":f"2026-02-01T10:{minute:02}:00Z","rawSha256":digest*64,
+                    "normalizedData":{"webBlocks":{"Device Status":{"Uptime Seconds":100}}}}
+        with closing(self.model.connect(self.workspace)) as c,c:
+            self.model.put(c,"pollingResults",[poll("equal-a",1),poll("equal-b",1),poll("conflict-a",2),poll("conflict-b",2,"c"),poll("unique",3),poll("unmatched",4,device="absent")])
+            details=[row["detail"] for row in c.execute("EXPLAIN QUERY PLAN "+JSON_BOOT_OBSERVATIONS_SQL)]
+            self.assertTrue(any("conflicting USING INDEX rm_idx_observation" in detail and "device=?" in detail and "<expr>=?" in detail for detail in details),details)
+            original=JSON_BOOT_OBSERVATIONS_SQL.replace(" INDEXED BY rm_idx_observation","")
+            expected=[tuple(row) for row in c.execute(original)]
+            result=[tuple(row) for row in c.execute(JSON_BOOT_OBSERVATIONS_SQL)]
+            self.assertEqual(result,expected)
+            self.assertEqual({row[0] for row in result},{"equal-a","unique"})
+
+    def test_interrupted_json_publish_reopens_and_reuses_saved_file_without_source_read(self):
+        token=self.model.begin(self.workspace,self.revision,"json")["token"]
+        row={**fixture()["state"]["pollingResults"][0],"id":"saved-stage","runId":"synthetic-run","filename":"192.0.2.40.json","rawSha256":"c"*64,
+             "sourceRelativePath":"synthetic/2026-02-01_10-00-00/192.0.2.40.json","sourceFileSize":4096,"sourceFileLastModified":1234,"sourcePrefixSha256":"d"*64}
+        self.model.batch(self.workspace,token,"pollingResults",[row])
+        self.model.batch(self.workspace,token,"pollingRuns",[{"id":"synthetic-run","capturedAt":"2026-02-01T10:00:00Z"}])
+        def interrupt(value):
+            if value["stage"]=="records":raise RuntimeError("synthetic interrupted publication")
+        with self.assertRaises(RuntimeError):self.model.finish(self.workspace,token,on_progress=interrupt)
+        reopened=ReadModel(WorkspaceStore(self.store.locator_path,self.store.project_root))
+        self.assertEqual(reopened.bootstrap(self.workspace)["revision"],self.revision)
+        self.assertEqual(reopened.begin(self.workspace,self.revision,"json")["token"],token)
+        descriptor={"path":row["sourceRelativePath"],"size":4096,"mtime":1234,"prefix":"d"*64}
+        self.assertEqual(reopened.files(self.workspace,[descriptor]),[True])
+        self.assertIn("synthetic-run",[r["id"] for r in reopened.context(self.workspace,self.revision,"pollingRuns")["rows"]])
+        reopened.finish(self.workspace,token,on_progress=lambda _:None)
+        self.assertEqual(reopened.files(self.workspace,[descriptor]),[True])
+        with closing(reopened.connect(self.workspace)) as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM rm_records WHERE label='pollingResults' AND key='saved-stage'").fetchone()[0],1)
+
     def test_big_event_page_has_bounded_response_and_complete_aggregates(self):
         with closing(self.model.connect(self.workspace)) as c, c:
             self.model.put(c, "events:te", [{"id": f"bulk-{i}", "deviceId": "te", "ip": "192.0.2.40",
