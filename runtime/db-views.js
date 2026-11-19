@@ -56,12 +56,34 @@
           else state.filters=normalizeFilters(state.filters,entry.data);
           facetCache.set(facetKey(current,state.draftFilters||state.filters),entry);
         }
-        if(!options.updateFilters?.(filters(state,current.renderer==="reboots",current.renderer==="inventory",entry)))options.render();
+        let updated=false;
+        try{updated=options.updateFilters?.(filters(state,current.renderer==="reboots",current.renderer==="inventory",entry))===true;}catch{/* Keep a successful database response even if partial DOM update fails. */}
+        if(!updated)options.render();
       };
       const timer=entry.controller?setTimeout(()=>entry.controller.abort(),options.facetTimeoutMs||10000):null;
-      entry.promise=options.request("view",{revision,name:"facets",page:0,size:50,filters:{...values,scopeCategory:descriptor.category||""}},{signal:entry.controller?.signal})
-        .then((data)=>{entry.data=data;notify();return data;})
-        .catch(()=>{entry.error="Не удалось загрузить списки. Поиск и период остаются доступны.";notify();return null;})
+      const metadataFilters=Object.fromEntries(["current","vip","search","accounted",...dimensions].filter(name=>values[name]!==undefined).map(name=>[name,values[name]]));
+      entry.promise=options.request("view",{revision,name:"facets",page:0,size:50,filters:{...metadataFilters,scopeCategory:descriptor.category||""}},{signal:entry.controller?.signal})
+        .then((data)=>{
+          if(!data||!["domains","categories","manufacturers","models","locations","addresses"].every(name=>Array.isArray(data[name])))throw Object.assign(new Error("metadata_response_invalid"),{safeCode:"metadata_response_invalid"});
+          entry.data=data;return data;
+        })
+        .catch((error)=>{
+          const reasons={db_query_timeout:"Сервер не успел подготовить списки",db_query_failed:"Ошибка чтения списков из БД",db_filter_invalid:"Не приняты условия списков",db_query_invalid:"Не принят запрос списков",
+            workspace_revision_conflict:"База обновилась — получите актуальную версию",db_preparation_required:"Не завершена подготовка БД",admin_login_required:"Требуется вход в инструмент",
+            local_session_required:"Локальный сеанс завершён — войдите снова",csrf_or_origin_rejected:"Проверка локального сеанса отклонила запрос",workspace_not_configured:"Рабочая БД не подключена",
+            workspace_selection_changed:"Изменилось подключение к БД",workspace_id_invalid:"Не подтверждён идентификатор БД",workspace_missing:"Папка БД недоступна",workspace_corrupt:"Ошибка целостности БД",
+            workspace_locator_invalid:"Не удалось прочитать путь рабочей БД",workspace_write_failed:"Исполнитель не смог обработать запрос БД",
+            not_found:"Исполнитель не поддерживает запрос списков",local_runtime_error:"Исполнитель не вернул ожидаемый ответ",metadata_response_invalid:"Неполный ответ списков от исполнителя"};
+          const code=error?.name==="AbortError"?"metadata_timeout":Object.prototype.hasOwnProperty.call(reasons,error?.safeCode)?error.safeCode:"metadata_read_failed";
+          entry.code=code;entry.conflict=["workspace_revision_conflict","db_preparation_required"].includes(code);
+          const http=Number.isInteger(error?.status)&&error.status>=100&&error.status<=599?" · HTTP "+error.status:"";
+          entry.error=(code==="metadata_timeout"?"Превышено время ожидания списков":reasons[code]||"Не удалось загрузить списки")+". Код: "+code+http+". Поиск и период остаются доступны.";
+          return null;
+        })
+        .then((data)=>{
+          try{notify();}catch{entry.code="metadata_ui_update_failed";entry.error="Списки прочитаны, но поля не обновились. Код: metadata_ui_update_failed. Откройте модуль повторно.";}
+          return data;
+        })
         .finally(()=>{if(timer)clearTimeout(timer);});
       return entry;
     }
@@ -297,7 +319,7 @@
       const button = target.closest("[data-db-kind],[data-db-cell],[data-db-page],[data-db-reset],[data-db-retry],[data-db-device],[data-db-clear-device],[data-db-clear-cell],[data-db-site],[data-db-export],[data-db-duration],[data-db-dimension],[data-db-clear-slice],[data-db-facets-retry]");
       if (!button || !activeDescriptor) return false;
       const state = stateFor(activeDescriptor.route), d = button.dataset;
-      if("dbFacetsRetry" in d){facetCache.delete(facetKey(activeDescriptor,state.draftFilters||state.filters));options.render();return true;}
+      if("dbFacetsRetry" in d){const key=facetKey(activeDescriptor,state.draftFilters||state.filters);if(facetCache.get(key)?.conflict&&options.reload){void options.reload();return true;}facetCache.delete(key);options.render();return true;}
       if("dbRetry" in d && cache.get(activeKey)?.conflict && options.reload){void options.reload();return true;}
       if (d.dbExport) { void exportRows(d.dbExport, state); return true; }
       if (d.dbKind) { state.kind=d.dbKind; state.table="events";delete state.filters.durationBucket; delete state.filters.day; delete state.filters.hour;

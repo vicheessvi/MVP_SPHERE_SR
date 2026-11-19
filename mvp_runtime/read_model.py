@@ -914,23 +914,29 @@ class ReadModel:
             base["category"]=scope
         selected={}
         result={}
+        # Read/parse potentially large SR payload once, then cascade over small scalar rows.
+        sql,args=self.cte(c,base)
+        c.execute("DROP TABLE IF EXISTS temp.rm_filter_scope")
+        c.execute("CREATE TEMP TABLE rm_filter_scope AS "+sql+""" SELECT domain,category,maker,model,loc,location_name,location_address,
+            coalesce(nullif(json_extract(payload,'$.manufacturerRaw'),''),maker) manufacturer_label FROM devices""",args)
+        conditions=[];values=[]
         chain=[("domain","domains","domain"),("category","categories","category"),("manufacturer","manufacturers","maker"),
                ("model","models","model"),("locationId","locations","loc"),("address","addresses","location_address")]
         for field_name,list_name,column in chain:
-            sql,args=self.cte(c,base)
+            where=" AND ".join([f"coalesce({column},'')!=''",*conditions])
             if field_name=="locationId":
-                rows=[dict(row) for row in c.execute(sql+""" SELECT loc value,min(coalesce(location_name,'')) label,
-                    min(coalesce(location_address,'')) address FROM devices WHERE loc!='' GROUP BY loc ORDER BY label,loc""",args)]
+                query="SELECT loc value,min(coalesce(location_name,'')) label,min(coalesce(location_address,'')) address FROM rm_filter_scope WHERE "+where+" GROUP BY loc ORDER BY label,loc"
             elif field_name=="manufacturer":
-                rows=[dict(row) for row in c.execute(sql+""" SELECT maker value,min(coalesce(nullif(json_extract(payload,'$.manufacturerRaw'),''),maker)) label
-                    FROM devices WHERE maker!='' GROUP BY maker ORDER BY label""",args)]
+                query="SELECT maker value,min(manufacturer_label) label FROM rm_filter_scope WHERE "+where+" GROUP BY maker ORDER BY label"
             else:
-                rows=[dict(row) for row in c.execute(sql+f" SELECT norm({column}) value,min({column}) label FROM devices WHERE coalesce({column},'')!='' GROUP BY norm({column}) ORDER BY label",args)]
+                query=f"SELECT norm({column}) value,min({column}) label FROM rm_filter_scope WHERE "+where+f" GROUP BY norm({column}) ORDER BY label"
+            rows=[dict(row) for row in c.execute(query,values)]
             result[list_name]=rows
             chosen=scope if field_name=="category" and scope else filters.get(field_name)
             match=next((row for row in rows if norm(row["value"])==norm(chosen)),None) if chosen else None
             if match:
-                selected[field_name]=match["value"];base[field_name]=match["value"]
+                selected[field_name]=match["value"]
+                conditions.append(f"norm({column})=?");values.append(norm(match["value"]))
             elif field_name=="category" and scope:
-                selected[field_name]=scope;base[field_name]=scope
+                selected[field_name]=scope
         return {**result,"selected":selected}

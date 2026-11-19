@@ -4036,6 +4036,29 @@
     assert(!/<button type="submit"[^>]*disabled/.test(html));
   });
 
+  if(typeof require==="function")test("Запрос списков содержит только SR metadata и показывает безопасный код отказа",async()=>{
+    const db=require("./runtime/db-views.js");let requestBody;
+    const descriptor={route:"reboots",title:"События",renderer:"reboots"};
+    const controller=db.createController({render(){},update(){return true},request:(_a,q)=>{
+      if(q.name==="facets"){requestBody=q;return Promise.reject(Object.assign(new Error("sensitive-untrusted-message"),{safeCode:"db_query_timeout"}));}
+      return Promise.resolve(q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false});
+    }});
+    controller.setRevision({revision:"1:0"});Object.assign(controller.stateFor("reboots").filters,{period:"custom",dateFrom:"2026-01-01",dateTo:"2026-12-31",source:"json",day:3,hour:7});
+    controller.render(descriptor);await new Promise(resolve=>setTimeout(resolve,10));
+    assert(!("period" in requestBody.filters));assert(!("source" in requestBody.filters));assert(!("day" in requestBody.filters));
+    const html=controller.render(descriptor);assert(html.includes("db_query_timeout"));assert(!html.includes("sensitive-untrusted-message"));
+  });
+
+  if(typeof require==="function")test("Ошибка частичного обновления не превращает прочитанные списки в ошибку БД",async()=>{
+    const db=require("./runtime/db-views.js");let renders=0;
+    const descriptor={route:"reboots",title:"События",renderer:"reboots"};
+    const controller=db.createController({render(){renders++},update(){return true},updateFilters(){throw new Error("synthetic DOM error")},
+      request:(_a,q)=>Promise.resolve(q.name==="facets"?{domains:[{value:"known",label:"Known"}],categories:[],manufacturers:[],models:[],locations:[],addresses:[],selected:{}}
+        :q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false})});
+    controller.setRevision({revision:"1:0"});controller.render(descriptor);await new Promise(resolve=>setTimeout(resolve,10));
+    const html=controller.render(descriptor);assert(renders>0);assert(html.includes('value="known"'));assert(!html.includes("metadata_read_failed"));
+  });
+
   test("Поток лога пишется в выбранную папку без JSON/base64", async () => {
     const originalFetch = global.fetch;
     const chunks = [new TextEncoder().encode("<?xml version='1.0'?>"), new TextEncoder().encode("<LogModule/>")];

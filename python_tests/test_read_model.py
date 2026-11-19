@@ -110,6 +110,20 @@ class ReadModelTests(unittest.TestCase):
             self.assertIsNotNone(c.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='rm_idx_event_scope'").fetchone())
             self.assertEqual(before,[tuple(row) for row in c.execute("SELECT label,key,checksum FROM rm_records ORDER BY label,key")])
 
+    def test_facets_read_large_sr_payload_only_once_and_use_compact_temporary_scope(self):
+        with closing(self.model.connect(self.workspace)) as c,c:
+            self.model.put(c,"inventoryDevices",[{"id":"large-sr","nameRaw":"Synthetic","manufacturerRaw":"Huawei","category":"vcs",
+                "modelRaw":"TE40","domain":"Synthetic","inCurrentSr":True,"rawRow":{"description":"x"*65536}}])
+            statements=[];c.set_trace_callback(statements.append)
+            result=self.model.filter_options(c,{})
+            c.set_trace_callback(None)
+            source_passes=[sql for sql in statements if "FROM rm_records d" in sql]
+            self.assertEqual(len(source_passes),1,"Шесть списков не должны перечитывать большие SR payload шестью проходами")
+            columns={row["name"] for row in c.execute("PRAGMA temp.table_info(rm_filter_scope)")}
+            self.assertNotIn("payload",columns);self.assertNotIn("rawRow",columns)
+            self.assertIn("domain",columns);self.assertIn("manufacturer_label",columns)
+            self.assertIn("synthetic",{row["value"] for row in result["domains"]})
+
     def test_inventory_versions_and_errors_are_paged_and_newest_failed_site_is_empty(self):
         result = self.view("inventory", {"deviceId": "te"})
         self.assertEqual(result["rows"][0]["status"], "authorization_error")

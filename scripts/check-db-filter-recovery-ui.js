@@ -31,6 +31,7 @@ const {server,chromium}=require("./check-db-workspace-ui.js");
     process.env.SPHERE_TEST_FAIL_FACETS="1";
     await page.locator('[data-db-filters] [name="manufacturer"]').selectOption("huawei");
     await page.waitForSelector('[data-db-facets-retry]:visible');
+    if(!(await page.locator('.db-filter-state').textContent()).includes("db_query_timeout"))throw new Error("Metadata failure lacks safe diagnostic code");
     if(await page.getByRole("button",{name:"Применить",exact:true}).isDisabled())throw new Error("Metadata error blocked Apply");
     await page.locator('[data-db-filters] [name="period"]').selectOption("7d");
     await page.getByRole("button",{name:"Применить",exact:true}).click();

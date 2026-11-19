@@ -6768,7 +6768,7 @@
       view:"Расчёт выборки и сводок",begin:"Подготовка записи в БД",batch:"Запись порции в БД",finish:"Подтверждение записи в БД",
       files:"Проверка ранее загруженных JSON",latest:"Получение последних фактов", "neighbors-batch":"Подготовка сравнений JSON"};
     return runtimeRequest("/api/workspace/db",{ method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({...data,action,workspace:ui.workspaceStatus?.workspaceId}),operationLabel:labels[action]||"Операция рабочей базы",...options });
+      body:JSON.stringify({...data,action,workspace:ui.workspaceStatus?.workspaceId}),operationLabel:action==="view"&&data.name==="facets"?"Загрузка списков фильтров SR":labels[action]||"Операция рабочей базы",...options });
   }
 
   function updateDatabasePanel() {

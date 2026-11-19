@@ -25,3 +25,5 @@ Python stdlib SQLite строит индексируемый read model в то�
 ## Filter availability and compact analytics reads
 
 `filter-availability.md`: metadata shared cache уведомляет текущего consumer, отдельно обновляет select, не блокирует Apply периода/поиска. До двух аналитических запросов одновременно. Совместимый covering `rm_idx_event_scope` добавляется к существующей БД при prepare, без source reimport или data revision. SR-first lookup и page-keys-before-payload ограничивают чтение больших доказательств текущей страницей. Предел времени запросов и правила аналитики не ослабляются.
+
+Списки используют один source pass SR в временную компактную таблицу соединения, затем группируются по прежнему каскаду без повторного чтения payload. Ошибки metadata показывают безопасный код/HTTP status, клиент не отправляет событийные условия в запрос списков. Ошибка отрисовки обрабатывается отдельно от чтения; постоянная схема/revision не меняются.
