@@ -164,15 +164,19 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, body: bytes | str = b"", content_type: str = "application/json; charset=utf-8", extra_headers: dict[str, str] | None = None) -> None:
         payload = body.encode("utf-8") if isinstance(body, str) else body
-        self.send_response(status)
-        self._security_headers()
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        for key, value in (extra_headers or {}).items():
-            self.send_header(key, value)
-        self.end_headers()
-        if self.command != "HEAD" and payload:
-            self.wfile.write(payload)
+        try:
+            self.send_response(status)
+            self._security_headers()
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            if self.command != "HEAD" and payload:
+                self.wfile.write(payload)
+        except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+            # A cancelled browser read is not a failed DB operation; do not send a second 500.
+            self.close_connection=True
 
     def _json(self, status: int, value: dict[str, Any]) -> None:
         self._send(status, json.dumps(value, ensure_ascii=False, separators=(",", ":")))

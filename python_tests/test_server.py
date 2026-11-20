@@ -66,6 +66,24 @@ class ServerHarness:
 
 
 class ServerTests(unittest.TestCase):
+    def test_closed_browser_connection_does_not_turn_into_a_second_error_response(self) -> None:
+        from mvp_runtime.server import LocalRuntimeHandler
+        for error_type in (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+            for where in ("headers","body"):
+                with self.subTest(error=error_type.__name__,where=where):
+                    handler=object.__new__(LocalRuntimeHandler)
+                    handler.command="POST";handler.close_connection=False
+                    handler.send_response=lambda _status:None
+                    handler._security_headers=lambda:None
+                    handler.send_header=lambda _name,_value:None
+                    def closed(*_args):raise error_type("synthetic disconnected browser")
+                    handler.end_headers=closed if where=="headers" else lambda:None
+                    class Writer:
+                        write=closed
+                    handler.wfile=Writer()
+                    handler._send(200,b"synthetic")
+                    self.assertTrue(handler.close_connection)
+
     def test_workspace_routes_require_admin_and_commit_atomically(self) -> None:
         selected = Path(self.harness.admin_dir.name) / "selected-workspace"
         selected.mkdir()

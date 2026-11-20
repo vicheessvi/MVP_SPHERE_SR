@@ -4033,6 +4033,7 @@
     await new Promise(resolve=>setTimeout(resolve,40));
     const html=controller.render(descriptor);
     assert(renders>0);assert(html.includes("Списки недоступны"));assert(html.includes("Поиск и период остаются доступны"));
+    assert(html.includes("metadata_timeout"));assert(!html.includes("metadata_cancelled"));
     assert(!/<button type="submit"[^>]*disabled/.test(html));
   });
 
@@ -4057,6 +4058,34 @@
         :q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false})});
     controller.setRevision({revision:"1:0"});controller.render(descriptor);await new Promise(resolve=>setTimeout(resolve,10));
     const html=controller.render(descriptor);assert(renders>0);assert(html.includes('value="known"'));assert(!html.includes("metadata_read_failed"));
+  });
+
+  if(typeof require==="function")test("Поздний ответ отменённого запроса той же revision не отключает уже полученные списки",async()=>{
+    const db=require("./runtime/db-views.js");
+    for(const late of ["abort","server_error","success"]){
+      const pending=[];let last="";
+      const descriptor={route:"reboots",title:"События",renderer:"reboots"};
+      const response=value=>({domains:[{value,label:value}],categories:[],manufacturers:[],models:[],locations:[],addresses:[],selected:{}});
+      const controller=db.createController({render(){},update(){return true},updateFilters(html){last=html;return true;},
+        request:(_a,q)=>q.name==="facets"?new Promise((resolve,reject)=>pending.push({resolve,reject})):Promise.resolve(q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false})});
+      controller.setRevision({revision:"1:0"});controller.render(descriptor);
+      controller.setRevision({revision:"1:0"});controller.render(descriptor);
+      pending[1].resolve(response("current"));await new Promise(resolve=>setTimeout(resolve,10));
+      assert(last.includes('value="current"'));
+      if(late==="success")pending[0].resolve(response("obsolete"));
+      else pending[0].reject(late==="abort"?Object.assign(new Error("synthetic abort"),{name:"AbortError"}):Object.assign(new Error("synthetic error"),{safeCode:"db_query_timeout"}));
+      await new Promise(resolve=>setTimeout(resolve,10));
+      assert(last.includes('value="current"'),"Старый ответ не должен затереть актуальные поля: "+late);
+      assert(!last.includes("metadata_timeout"));assert(!last.includes('value="obsolete"'));
+    }
+  });
+
+  if(typeof require==="function")test("Отмена без срабатывания deadline не называется metadata_timeout",async()=>{
+    const db=require("./runtime/db-views.js"),descriptor={route:"reboots",title:"События",renderer:"reboots"};
+    const controller=db.createController({render(){},update(){return true},request:(_a,q)=>q.name==="facets"?Promise.reject(Object.assign(new Error("synthetic cancellation"),{name:"AbortError"}))
+      :Promise.resolve(q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false})});
+    controller.setRevision({revision:"1:0"});controller.render(descriptor);await new Promise(resolve=>setTimeout(resolve,10));
+    const html=controller.render(descriptor);assert(html.includes("metadata_cancelled"));assert(!html.includes("metadata_timeout"));
   });
 
   test("Поток лога пишется в выбранную папку без JSON/base64", async () => {
