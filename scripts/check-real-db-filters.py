@@ -19,6 +19,7 @@ from mvp_runtime.read_model import ReadModel
 
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--baseline",action="store_true",help="Reproduce with the previous client from development Git history")
+parser.add_argument("--offhours",action="store_true",help="Check VCS out-of-hours UI and Excel against real SQL")
 args=parser.parse_args()
 
 with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
@@ -29,12 +30,27 @@ with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
     token=model.begin(workspace,model.bootstrap(workspace)["revision"],"sr")["token"]
     for first in range(0,5000,500):
         model.batch(workspace,token,"inventoryDevices",[{"id":f"synthetic-{i}","nameRaw":f"Synthetic terminal {i}","category":"vcs",
-            "manufacturerRaw":"Huawei" if i%2==0 else "Polycom","modelRaw":"TE40" if i%2==0 else "RealPresence Group 310",
+            "manufacturerRaw":"Huawei" if args.offhours or i%2==0 else "Polycom","modelRaw":"TE40" if args.offhours or i%2==0 else "RealPresence Group 310",
+            "ipNormalized":f"198.18.{i//250}.{1+i%250}",
             "domain":f"Domain-{i%10}","locationId":f"loc-{i%100}","inCurrentSr":True,"equipmentOverallStatus":"Учёт",
             "rawRow":{"description":"x"*512}} for i in range(first,first+500)])
     model.batch(workspace,token,"locations",[{"id":f"loc-{i}","name":f"Synthetic room {i}","address":f"Synthetic address {i%10}"} for i in range(100)])
     model.batch(workspace,token,"srImports",[{"id":"synthetic-sr","rawSha256":"a"*64}])
     model.finish(workspace,token)
+    if args.offhours:
+        token=model.begin(workspace,model.bootstrap(workspace)["revision"],"logs")["token"]
+        for first in range(0,5000,500):
+            events=[]
+            for i in range(first,first+500):
+                if i%5==4:continue
+                event={"id":f"event-{i}","deviceId":f"synthetic-{i}","ip":f"198.18.{i//250}.{1+i%250}",
+                       "kind":"confirmed_reboot" if i%5==0 else "unknown_start" if i%5==3 else "power_off",
+                       "deviceLocalTime":"2026-11-02 18:00:00"}
+                if i%5==3:event["silenceGap"]={"seconds":7200}
+                events.append(event)
+                if i%5==2:events.append({**event,"id":event["id"]+"-second","deviceLocalTime":"2026-11-04 12:00:00"})
+            model.batch(workspace,token,"events:te",events)
+        model.finish(workspace,token,"a"*64)
     def fingerprint():
         with closing(model.connect(workspace)) as c:
             return hashlib.sha256(json.dumps([tuple(r) for r in c.execute("SELECT label,key,checksum FROM rm_records ORDER BY label,key")]).encode()).hexdigest()
@@ -63,7 +79,7 @@ with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
         assert status==200,"Synthetic admin setup failed"
         config={"url":url,"cookie":cookie}
         if args.baseline:config["clientScript"]=subprocess.check_output(["git","show","9219d15:runtime/db-views.js"],cwd=ROOT,encoding="utf-8")
-        result=subprocess.run(["node",str(ROOT/"scripts/check-real-db-filters.js")],input=json.dumps(config),
+        result=subprocess.run(["node",str(ROOT/("scripts/check-offhours-ui.js" if args.offhours else "scripts/check-real-db-filters.js"))],input=json.dumps(config),
                               cwd=ROOT,text=True,encoding="utf-8",capture_output=True,timeout=90)
         if result.returncode:
             print(result.stderr or "Real browser test failed",file=sys.stderr)

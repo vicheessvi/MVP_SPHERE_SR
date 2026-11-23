@@ -319,6 +319,34 @@ class ReadModelTests(unittest.TestCase):
         self.assertEqual(rows[0]["domain"],"A")
         self.assertEqual(rows[0]["vip"],1)
 
+    def test_accounted_exports_have_disjoint_metrics_and_exclude_unknown_and_other_sr_status(self):
+        with closing(self.model.connect(self.workspace)) as c,c:
+            base=fixture()["state"]["inventoryDevices"][0]
+            self.model.put(c,"inventoryDevices",[{**base,"id":key,"nameRaw":key,"ipNormalized":ip} for key,ip in
+                (("reboot-only","192.0.2.44"),("power-only","192.0.2.45"),("unknown-only","192.0.2.46"))])
+            self.model.put(c,"events:te",[
+                {"id":key,"deviceId":device,"ip":ip,"kind":kind,"deviceLocalTime":"2026-01-05 10:00:00"} for key,device,ip,kind in
+                (("ro","reboot-only","192.0.2.44","confirmed_reboot"),("po","power-only","192.0.2.45","power_off"),
+                 ("uo","unknown-only","192.0.2.46","unknown_start"),("not-accounted-reboot","bar","192.0.2.41","confirmed_reboot"),
+                 ("not-accounted-power","bar","192.0.2.41","power_off"))])
+            self.model.put(c,"events:json",[{"id":"calculated-only","deviceId":"unknown-only","kind":"confirmed_reboot","deviceLocalTime":"2026-01-06 10:00:00","basis":"date_minus_uptime"}])
+        reboot=self.view("export-devices",{"kind":"confirmed_reboot","accounted":False})["rows"]
+        power=self.view("export-devices",{"kind":"power_off","accounted":False})["rows"]
+        self.assertEqual({row["device"] for row in reboot},{"te","reboot-only"})
+        self.assertEqual({row["device"] for row in power},{"te","power-only"})
+        self.assertEqual({row["device"] for row in self.view("export-devices",{"kind":"confirmed_reboot","source":"json"})["rows"]},{"te","reboot-only"})
+        mixed=next(row for row in power if row["device"]=="te")
+        self.assertEqual((mixed["confirmed"],mixed["suspected"]),(1,1))
+        self.assertEqual(mixed["firstPower"],"2026-01-02 10:00:00")
+        self.assertEqual(mixed["firstSuspected"],"2026-01-03 10:00:00")
+        for row in reboot:
+            self.assertIn("reboots",row);self.assertIn("firstReboot",row)
+            self.assertTrue({"confirmed","suspected","firstPower","lastPower","firstSuspected","lastSuspected"}.isdisjoint(row))
+        for row in power:
+            self.assertIn("confirmed",row);self.assertIn("suspected",row)
+            self.assertTrue({"reboots","firstReboot","lastReboot"}.isdisjoint(row))
+        with self.assertRaises(WorkspaceError):self.view("export-devices",{"kind":"unknown_start"})
+
     def test_evidence_count_grows_beyond_visible_samples_without_duplicate_increment(self):
         for first,last in ((0,25),(24,26)):
             token=self.model.begin(self.workspace,self.revision,"logs")["token"]

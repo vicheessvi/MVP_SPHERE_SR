@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from .workspace import WorkspaceError, _hex, _inspect_safe
+from .rf_calendar import CALENDAR_SOURCE, CALENDAR_VERSION, day_kind, period_bounds
 
 VERSION = 1
 LABELS = {"users", "projects", "snapshots", "assets", "matchDecisions", "changeSets", "baselineAssignments",
@@ -183,6 +184,7 @@ def record(label: str, value: dict) -> tuple:
 
 class ReadModel:
     _cache = OrderedDict()
+    _offhours_cache = OrderedDict()
     _cache_lock = threading.Lock()
     def __init__(self, store):
         self.store = store
@@ -704,7 +706,12 @@ class ReadModel:
         args = values + [silence * 60] + labels
         period = filters.get("period", "all")
         today = datetime.now()
-        timed_bound="CASE WHEN e.label='events:json' AND json_extract(e.payload,'$.timeBasis')!='device_local_unknown_timezone' THEN ? ELSE ? END"
+        # Logs have device-local stamps only. Avoid touching every large event payload
+        # for an unreachable JSON branch; JSON/all retain the exact time-basis rule.
+        timed_bound="?" if source=="logs" else "CASE WHEN e.label='events:json' AND json_extract(e.payload,'$.timeBasis')!='device_local_unknown_timezone' THEN ? ELSE ? END"
+        def bound_args(at):
+            local=at.strftime("%Y-%m-%d %H:%M:%S")
+            return [local] if source=="logs" else [at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),local]
         if period == "custom":
             try:
                 start = datetime.strptime(filters["dateFrom"], "%Y-%m-%d")
@@ -714,13 +721,11 @@ class ReadModel:
             except (ValueError, TypeError, KeyError):
                 raise WorkspaceError("db_filter_invalid") from None
             event_where += [f"e.stamp>={timed_bound}", f"e.stamp<{timed_bound}"]
-            args += [start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),start.strftime("%Y-%m-%d %H:%M:%S"),
-                     end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),end.strftime("%Y-%m-%d %H:%M:%S")]
+            args += bound_args(start)+bound_args(end)
         elif period in ("today", "7d", "30d"):
             start = today.replace(hour=0, minute=0, second=0, microsecond=0) if period == "today" else today - timedelta(days=int(period[:-1]))
             event_where += [f"e.stamp>={timed_bound}",f"e.stamp<={timed_bound}"]
-            args += [start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),start.strftime("%Y-%m-%d %H:%M:%S"),
-                     today.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),today.strftime("%Y-%m-%d %H:%M:%S")]
+            args += bound_args(start)+bound_args(today)
         elif period != "all":
             raise WorkspaceError("db_filter_invalid")
         if filters.get("date"):
@@ -742,7 +747,7 @@ class ReadModel:
             c.execute("BEGIN")
             if self.revision(c) != revision:
                 raise WorkspaceError("workspace_revision_conflict")
-            clock=int(time.time()//60) if filters.get("period") in ("today","7d","30d") else 0
+            clock=int(time.time()//60) if name=="offhours" or filters.get("period") in ("today","7d","30d") else 0
             cache_key = encode([str(self.store.database_path().resolve()),workspace,revision,name,filters,page,size,clock])
             with self._cache_lock:
                 cached = self._cache.get(cache_key)
@@ -766,11 +771,114 @@ class ReadModel:
         found = c.execute(sql + " LIMIT ? OFFSET ?", [*args, size + 1, page * size]).fetchall()
         return {"rows": [dict(row) for row in found[:size]], "hasNext": len(found) > size}
 
+    def offhours(self, c, filters, page, size):
+        """Count observed actions, never infer an always-on device from missing logs."""
+        start,end=period_bounds(filters)
+        selected=filters.get("offhoursGroup") or "all"
+        time_kind=filters.get("offhoursTime") or "all"
+        metric=filters.get("offhoursMetric") or "all"
+        groups=("none","once","repeated","suspected","unknown")
+        if selected not in (*groups,"all") or time_kind not in ("all","night","weekend","holiday") or metric not in (
+                "all","confirmed_reboot","power_off","suspected_power_loss","unknown_start","start_after_shutdown"):
+            raise WorkspaceError("db_filter_invalid")
+        drill=[];drill_args=[]
+        for key,column,maximum in (("day","day",6),("hour","hour",23)):
+            if filters.get(key) is not None:
+                value=filters[key]
+                if isinstance(value,bool) or not re.fullmatch(r"\d{1,2}",str(value)) or not 0<=int(value)<=maximum:
+                    raise WorkspaceError("db_filter_invalid")
+                drill.append(f"s.{column}=?");drill_args.append(int(value))
+        cache_key=encode([str(self.store.database_path().resolve()),c.execute("SELECT workspace_id FROM workspace_transfer WHERE id=1").fetchone()[0],self.revision(c),
+            {key:value for key,value in filters.items() if key!="offhoursUntil"},start.isoformat(),end.isoformat()])
+        def page_result(result):
+            offset=page*size
+            return {**result,"rows":result["rows"][offset:offset+size],"hasNext":len(result["rows"])>offset+size}
+        with self._cache_lock:
+            cached=self._offhours_cache.get(cache_key)
+            if cached is not None:
+                self._offhours_cache.move_to_end(cache_key)
+                return page_result(cached)
+        # All evidence for this period establishes only observed coverage, not a complete journal.
+        scoped={**filters,"source":"logs","accounted":True,"current":"yes","period":"custom",
+                "dateFrom":start.strftime("%Y-%m-%d"),"dateTo":(end-timedelta(microseconds=1)).strftime("%Y-%m-%d")}
+        scoped.pop("date",None)
+        sql,args=self.cte(c,scoped,True)
+        c.execute("CREATE TEMP TABLE rm_offhours_calendar(day TEXT PRIMARY KEY,kind TEXT NOT NULL) WITHOUT ROWID")
+        calendar=[];day=start.date()
+        while day<=(end-timedelta(microseconds=1)).date():
+            calendar.append((day.isoformat(),day_kind(day)));day+=timedelta(days=1)
+        c.executemany("INSERT INTO rm_offhours_calendar VALUES(?,?)",calendar)
+        c.execute("CREATE TEMP TABLE rm_offhours_events AS "+sql+""" SELECT e.device,e.stamp,e.event_kind,
+            ((cast(strftime('%w',e.stamp) AS INTEGER)+6)%7) day,cast(substr(e.stamp,12,2) AS INTEGER) hour,
+            CASE WHEN cal.kind!='workday' THEN cal.kind
+                 WHEN substr(e.stamp,12,8)<'07:00:00' OR substr(e.stamp,12,8)>='18:00:00' THEN 'night'
+                 ELSE 'workday' END time_kind FROM events e JOIN rm_offhours_calendar cal ON cal.day=substr(e.stamp,1,10)
+            WHERE e.stamp>=? AND e.stamp<?""",args+[start.strftime("%Y-%m-%d %H:%M:%S"),end.strftime("%Y-%m-%d %H:%M:%S")])
+        c.execute("CREATE INDEX rm_offhours_event_device ON rm_offhours_events(device,time_kind,day,hour,event_kind,stamp)")
+        active="time_kind!='workday'" if time_kind=="all" else "time_kind=?"
+        active_args=[] if time_kind=="all" else [time_kind]
+        # A narrow temporary scalar projection, not copies of log/source payloads.
+        device_sql,device_args=self.cte(c,{**scoped,"period":"all"})
+        c.execute("CREATE TEMP TABLE rm_offhours_devices AS "+device_sql+""", counts AS (
+            SELECT device,count(*) observedEvents,min(stamp) firstObserved,max(stamp) lastObserved FROM rm_offhours_events GROUP BY device),
+            outside AS (SELECT device,sum(event_kind='power_off') confirmed,sum(event_kind='suspected_power_loss') suspected,
+                sum(event_kind='confirmed_reboot') reboots,count(*) offhoursEvents,
+                min(CASE WHEN event_kind='power_off' THEN stamp END) firstPower,
+                max(CASE WHEN event_kind='power_off' THEN stamp END) lastPower
+                FROM rm_offhours_events WHERE """+active+""" GROUP BY device)
+            SELECT d.key device,d.name,d.model,d.ip,d.domain,d.is_vip vip,d.location_name locationName,d.location_address address,
+                coalesce(json_extract(d.payload,'$.macNormalized'),json_extract(d.payload,'$.macRaw'),'') mac,
+                coalesce(a.observedEvents,0) observedEvents,a.firstObserved,a.lastObserved,
+                coalesce(o.confirmed,0) confirmed,coalesce(o.suspected,0) suspected,coalesce(o.reboots,0) reboots,
+                coalesce(o.offhoursEvents,0) offhoursEvents,o.firstPower,o.lastPower,
+                CASE WHEN coalesce(a.observedEvents,0)=0 THEN 'unknown' WHEN o.confirmed=1 THEN 'once'
+                    WHEN o.confirmed>1 THEN 'repeated' WHEN o.suspected>0 THEN 'suspected' ELSE 'none' END cohort
+            FROM devices d LEFT JOIN counts a ON a.device=d.key LEFT JOIN outside o ON o.device=d.key""",device_args+active_args)
+        c.execute("CREATE UNIQUE INDEX rm_offhours_device ON rm_offhours_devices(device)")
+        where="1=1" if selected=="all" else "d.cohort=?"
+        where_args=[] if selected=="all" else [selected]
+        event_where="s.time_kind!='workday'" if time_kind=="all" else "s.time_kind=?"
+        event_args=[] if time_kind=="all" else [time_kind]
+        if metric!="all":event_where+=" AND s.event_kind=?";event_args.append(metric)
+        detail_where=where;detail_args=list(where_args)
+        if drill:
+            detail_where+=" AND EXISTS(SELECT 1 FROM rm_offhours_events s WHERE s.device=d.device AND "+event_where+" AND "+" AND ".join(drill)+")"
+            detail_args+=event_args+drill_args
+        row_query="SELECT d.* FROM rm_offhours_devices d WHERE "+detail_where+" ORDER BY CASE d.cohort WHEN 'none' THEN 0 WHEN 'once' THEN 1 WHEN 'suspected' THEN 2 WHEN 'repeated' THEN 3 ELSE 4 END,d.reboots DESC,d.name,d.device"
+        result={"denominator":c.execute("SELECT count(*) FROM rm_offhours_devices").fetchone()[0],
+            "groups":[{"group":kind,"devices":c.execute("SELECT count(*) FROM rm_offhours_devices WHERE cohort=?",(kind,)).fetchone()[0]} for kind in groups],
+            "matchedDevices":c.execute("SELECT count(*) FROM rm_offhours_devices d WHERE "+detail_where,detail_args).fetchone()[0],
+            "cells":[dict(row) for row in c.execute("""SELECT s.day,s.hour,count(*) events,count(DISTINCT s.device) devices
+                FROM rm_offhours_events s JOIN rm_offhours_devices d ON d.device=s.device WHERE """+where+" AND "+event_where+" GROUP BY s.day,s.hour",where_args+event_args)],
+            "tops":[dict(row) for row in c.execute("SELECT d.device,d.name,d.reboots,d.confirmed,d.suspected FROM rm_offhours_devices d WHERE "+detail_where+
+                " AND d.reboots>0 ORDER BY d.reboots DESC,d.name,d.device LIMIT 5",detail_args)],
+            "period":{"from":start.strftime("%Y-%m-%d %H:%M:%S"),"toExclusive":end.strftime("%Y-%m-%d %H:%M:%S")},
+            "calendarVersion":CALENDAR_VERSION,"calendarSource":CALENDAR_SOURCE}
+        # Only compact per-device SQL totals, never event history. Two <=8 MiB caches
+        # make export pages reuse the same fixed-period calculation. This is an
+        # optimization budget, not a limit on the database or the exported selection.
+        compact=[];budget=len(encode(result).encode("utf-8"))
+        for row in c.execute(row_query,detail_args):
+            item=dict(row);budget+=len(encode(item).encode("utf-8"))
+            if budget>8*1024*1024:break
+            compact.append(item)
+        else:
+            result["rows"]=compact
+            with self._cache_lock:
+                self._offhours_cache[cache_key]=result
+                while len(self._offhours_cache)>2:self._offhours_cache.popitem(last=False)
+            return page_result(result)
+        return {**result,**self.rows(c,row_query,detail_args,page,size)}
+
     def _view(self, c, name, filters, page, size):
+        if name=="offhours":
+            return self.offhours(c,filters,page,size)
         if name=="facets":
             return self.filter_options(c,filters)
         if name in {"events", "summary", "heatmap", "duration", "duration-rows", "tops", "accounted", "event-devices", "export-devices"}:
-            sql, args = self.cte(c, {**filters,"source":"logs"} if name in ("accounted","duration","duration-rows","export-devices") else filters, True)
+            event_filters={**filters,"source":"logs"} if name in ("accounted","duration","duration-rows","export-devices") else filters
+            if name=="export-devices":event_filters={**event_filters,"accounted":True}
+            sql, args = self.cte(c,event_filters,True)
             kind = filters.get("kind") or "confirmed_reboot"
             if kind not in {"confirmed_reboot", "power_off", "suspected_power_loss", "unknown_start", "start_after_shutdown"}:
                 raise WorkspaceError("db_filter_invalid")
@@ -819,6 +927,7 @@ class ReadModel:
                     location_address address,count(*) events,min(stamp) firstAt,max(stamp) lastAt
                     FROM events WHERE event_kind=? GROUP BY device ORDER BY events DESC,device""", args + [kind], page, size)
             if name == "export-devices":
+                if kind not in ("confirmed_reboot","power_off"):raise WorkspaceError("db_filter_invalid")
                 detail=[]
                 if filters.get("day") is not None:
                     detail.append("((cast(strftime('%w',stamp) AS INTEGER)+6)%7)=?");args.append(int(filters["day"]))
@@ -828,19 +937,21 @@ class ReadModel:
                 if detail:
                     sql+=", export_events AS (SELECT * FROM events WHERE "+" AND ".join(detail)+")"
                     source_table="export_events"
-                sql += """, per_device AS (SELECT device,sum(event_kind='confirmed_reboot') reboots,
-                    sum(event_kind='power_off') confirmed,sum(event_kind='suspected_power_loss') suspected,
-                    min(CASE WHEN event_kind='confirmed_reboot' THEN stamp END) firstReboot,
-                    max(CASE WHEN event_kind='confirmed_reboot' THEN stamp END) lastReboot,
-                    min(CASE WHEN event_kind='power_off' THEN stamp END) firstPower,
-                    max(CASE WHEN event_kind='power_off' THEN stamp END) lastPower,
-                    min(CASE WHEN event_kind='suspected_power_loss' THEN stamp END) firstSuspected,
-                    max(CASE WHEN event_kind='suspected_power_loss' THEN stamp END) lastSuspected
-                    FROM """+source_table+" GROUP BY device)"
-                eligible="p.reboots>0" if kind=="confirmed_reboot" else "(p.confirmed>0 OR p.suspected>0)"
+                if kind=="confirmed_reboot":
+                    sql+=""", per_device AS (SELECT device,count(*) reboots,min(stamp) firstReboot,max(stamp) lastReboot
+                        FROM """+source_table+" WHERE event_kind='confirmed_reboot' GROUP BY device)"
+                    order="p.reboots DESC,d.name,d.key"
+                else:
+                    sql+=""", per_device AS (SELECT device,sum(event_kind='power_off') confirmed,sum(event_kind='suspected_power_loss') suspected,
+                        min(CASE WHEN event_kind='power_off' THEN stamp END) firstPower,
+                        max(CASE WHEN event_kind='power_off' THEN stamp END) lastPower,
+                        min(CASE WHEN event_kind='suspected_power_loss' THEN stamp END) firstSuspected,
+                        max(CASE WHEN event_kind='suspected_power_loss' THEN stamp END) lastSuspected
+                        FROM """+source_table+" WHERE event_kind IN ('power_off','suspected_power_loss') GROUP BY device)"
+                    order="(p.confirmed+p.suspected) DESC,d.name,d.key"
                 return self.rows(c,sql+""" SELECT d.name,d.ip,coalesce(json_extract(d.payload,'$.macNormalized'),json_extract(d.payload,'$.macRaw'),'') mac,
                     d.model,d.domain,d.is_vip vip,d.location_name locationName,d.location_address address,p.*
-                    FROM per_device p JOIN devices d ON d.key=p.device WHERE """+eligible+" ORDER BY p.reboots DESC,p.confirmed DESC,p.suspected DESC,d.key",args,page,size)
+                    FROM per_device p JOIN devices d ON d.key=p.device ORDER BY """+order,args,page,size)
             if name in ("duration","duration-rows"):
                 sql += """, timeline AS (SELECT device,stamp,event_kind,gap, min(CASE WHEN event_kind IN ('confirmed_reboot','unknown_start','start_after_shutdown','suspected_power_loss') THEN stamp END)
                     OVER(PARTITION BY device ORDER BY julianday(stamp) RANGE BETWEEN 0.000000001 FOLLOWING AND UNBOUNDED FOLLOWING) nextStart FROM events),

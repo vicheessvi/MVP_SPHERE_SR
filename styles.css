@@ -461,6 +461,28 @@ meter {
 .db-cohort-numbers b { font-size:1.7rem;font-variant-numeric:tabular-nums;letter-spacing:-.04em;color:#255d76; }
 .db-cohort-numbers span { font-size:.72rem;line-height:1.5;color:#527185; }
 .db-cohort-rings {grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px}
+.db-offhours-intro {display:grid;grid-template-columns:1fr auto;gap:18px 32px;background:linear-gradient(115deg,#f4f7ff,#edf7f6);border-color:#d6e4ee}
+.db-offhours-intro h2 {font-size:1.55rem;letter-spacing:-.035em;margin:8px 0 12px}
+.db-offhours-intro p {color:#4d697d;line-height:1.6;font-size:.82rem}
+.db-offhours-intro p small {display:block;color:#728395}
+.db-offhours-rule {grid-column:1/-1;margin:0;border-top:1px solid #d6e4ee;padding-top:16px}
+.db-offhours-total {display:grid;align-content:center;text-align:right;gap:5px;min-width:125px}
+.db-offhours-total b {font-size:2.7rem;letter-spacing:-.07em;font-variant-numeric:tabular-nums;color:#2d5d83}
+.db-offhours-total span {font-size:.76rem;color:#5a7489}
+.db-offhours-rings {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.db-offhours-rings .db-ring-card {padding:18px 14px;gap:12px;min-width:0}
+.db-offhours-rings .db-ring {width:88px;height:88px;flex-basis:88px}
+.db-offhours-rings .db-ring-card[aria-pressed="true"] {border-color:#7598c3;box-shadow:0 0 0 2px #94b1d42b;background:#f9fbff}
+.db-offhours-rings .db-ring-card:focus-visible,.db-offhours-top button:focus-visible {outline:3px solid #4e74df;outline-offset:3px}
+.db-offhours-note {font-size:.8rem;line-height:1.65;color:#68583f;background:#fff9ed;border:1px solid #f0e3c9;border-radius:12px;padding:15px 18px;margin:0}
+.db-offhours-top {display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px}
+.db-offhours-top button {display:flex;align-items:center;justify-content:space-between;gap:15px;border:1px solid #dce6f1;border-radius:12px;background:#f5f8fd;color:#355878;padding:16px;text-align:left;cursor:pointer}
+.db-offhours-top button:hover {border-color:#94afd1;background:#eaf2fc}
+.db-offhours-top button b {font-size:1.3rem;font-variant-numeric:tabular-nums}
+.db-fixed-filter {display:flex;align-items:center;min-height:41px;padding:8px 10px;border:1px solid #e0e8ef;border-radius:9px;background:#f0f5f8;font-size:.8rem;color:#436477}
+.db-filter-offhours label:has([name="offhoursGroup"]),.db-filter-offhours label:has([name="offhoursTime"]),.db-filter-offhours label:has([name="offhoursMetric"]) {flex:1 1 280px;min-width:240px}
+@media(max-width:1100px){.db-offhours-rings{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.db-submodules{flex-wrap:wrap;width:100%}.db-submodules button{flex:1;min-width:180px}.db-offhours-intro{grid-template-columns:1fr}.db-offhours-total{text-align:left}.db-offhours-rings{grid-template-columns:1fr}}
 .db-duration {display:grid;grid-template-columns:1fr 2fr;gap:24px}.db-duration .db-ring {width:160px;height:160px;margin-top:20px}.db-duration-items {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;align-content:center}.db-duration-items button {display:flex;justify-content:space-between;gap:15px;padding:12px;border-radius:10px;border:1px solid #dee8ed;background:#f8fbfd;color:#46677b;cursor:pointer;text-align:left;font-size:.78rem}.db-duration-items button:hover {background:#e9f2f9}
 .db-event-menu { display:flex;gap:9px;overflow-x:auto;padding-bottom:3px; }
 .db-drill-chips {display:flex;flex-wrap:wrap;gap:7px;align-items:center}.db-drill-chips span {padding:6px 10px;background:#eaf2fa;color:#456e90;border-radius:8px;font-size:.73rem}.db-drill-chips button {border:0;background:transparent;color:#356c93;font-size:.75rem;cursor:pointer;padding:6px}

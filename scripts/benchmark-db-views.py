@@ -16,6 +16,7 @@ from mvp_runtime.workspace import WorkspaceStore
 parser = argparse.ArgumentParser()
 parser.add_argument("--events", type=int, default=1_000_000)
 parser.add_argument("--snapshot",action="store_true")
+parser.add_argument("--offhours",action="store_true",help="Measure the bounded two-month VCS cohort as well")
 args=parser.parse_args()
 count = args.events
 synthetic_ip=lambda index:f"10.249.{index//250}.{1+index%250}"
@@ -53,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="sphere-db-benchmark-") as folder:
     for first in range(0, count, 1000):
         events = [{"id": f"synthetic-{i:09}", "deviceId": f"te-{i%5000}", "ip": synthetic_ip(i%5000),
                    "kind": "power_off" if i%20==0 else "unknown_start" if i%5==0 else "confirmed_reboot",
-                   "deviceLocalTime": (datetime(2023,1,1)+timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"),
+                   "deviceLocalTime": ((datetime(2026,9,23)+timedelta(minutes=i%86400)) if args.offhours else (datetime(2023,1,1)+timedelta(minutes=i))).strftime("%Y-%m-%d %H:%M:%S"),
                    "silenceGap": {"seconds": 7200} if i%5==0 and i%20 else None}
                   for i in range(first,min(count,first+1000))]
         if args.snapshot:
@@ -90,3 +91,15 @@ with tempfile.TemporaryDirectory(prefix="sphere-db-benchmark-") as folder:
     for filters in ({"manufacturer":"huawei","model":"TE40"},{"deviceId":"te-0"}):
         start=time.monotonic();result=model.view(workspace,revision,"summary",filters)
         print(json.dumps({"filteredSummary":filters,"seconds":round(time.monotonic()-start,3),"groups":len(result["groups"])}),flush=True)
+    if args.offhours:
+        for group in ("all","none","once","suspected","unknown"):
+            start=time.monotonic()
+            result=model.view(workspace,revision,"offhours",{"period":"custom","dateFrom":"2026-09-23","dateTo":"2026-11-22","offhoursGroup":group},0,100)
+            size=len(encode(result).encode());assert size<256*1024;assert len(result["rows"])<=100
+            assert sum(row["devices"] for row in result["groups"])==5000
+            print(json.dumps({"view":"offhours","group":group,"seconds":round(time.monotonic()-start,3),"responseBytes":size,"matched":result["matchedDevices"]}),flush=True)
+            if group=="all":
+                start=time.monotonic()
+                next_page=model.view(workspace,revision,"offhours",{"period":"custom","dateFrom":"2026-09-23","dateTo":"2026-11-22","offhoursGroup":group,"offhoursUntil":result["period"]["toExclusive"]},1,100)
+                assert len(next_page["rows"])<=100
+                print(json.dumps({"view":"offhours-export-page2","seconds":round(time.monotonic()-start,3),"rows":len(next_page["rows"])}),flush=True)

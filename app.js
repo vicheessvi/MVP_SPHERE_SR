@@ -6703,6 +6703,7 @@
     render,
     update: updateDatabasePanel,
     updateFilters: updateDatabaseFilters,
+    sourceIdentity:()=>ui.adminAccess?.adminUnlocked===true&&ui.workspaceStatus?.status==="ready"?JSON.stringify([ui.workspaceStatus.workspaceId,ui.workspaceStatus.path]):null,
     reload: async()=>{
       try {
         await activateDatabase();

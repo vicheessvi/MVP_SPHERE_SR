@@ -2,6 +2,7 @@
   "use strict";
   const KIND_LABELS = { confirmed_reboot: "Перезагрузки", power_off: "Штатные выключения",
     suspected_power_loss: "Предполагаемые паузы", unknown_start: "Причина запуска неизвестна", start_after_shutdown: "Запуски после выключения" };
+  const OFFHOURS_LABELS={none:"Выключения не зафиксированы",once:"Одно штатное выключение",repeated:"Два и более штатных выключения",suspected:"Только предполагаемые паузы",unknown:"Недостаточно данных"};
   const CATEGORY_LABELS = { vcs: "Терминалы ВКС", controller: "Контроллеры", panel: "Панели", switch: "Коммутаторы",
     matrix_switch: "Матрицы", scaler: "Скалеры", audio_processor: "Аудиопроцессоры",other:"Не классифицировано" };
   const STATUS = { success: "Успешно", never: "Не опрашивалось", authorization_error: "Ошибка авторизации",
@@ -100,6 +101,7 @@
         filters: { ...state.filters, kind: state.kind, ...(state.deviceId ? { deviceId: state.deviceId } : {}) }, ...extra }, {signal:scope?.signal||controller?.signal});
     }
     function routeView(descriptor, state) {
+      if(descriptor.renderer==="reboots"&&state.offhours)return "offhours";
       if (descriptor.renderer === "reboots") return state.table || "events";
       if (descriptor.renderer === "inventory") return state.deviceId ? "polls" : state.site ? "site-name" : "inventory";
       if (descriptor.renderer === "equipment" || descriptor.renderer === "dashboard") return "dashboard";
@@ -118,7 +120,7 @@
           return;
         }
         const main = routeView(descriptor, state);
-        const names = descriptor.renderer === "reboots"
+        const names = state.offhours&&descriptor.renderer==="reboots" ? ["offhours"] : descriptor.renderer === "reboots"
           ? [main, "summary", "accounted", "heatmap", "tops", ...(state.kind === "power_off" ? ["duration"] : [])]
           : [main];
         const view = { loading: true };
@@ -130,6 +132,9 @@
           catch (error) { if(error?.name==="AbortError")return;
             view.conflict=view.conflict||["workspace_revision_conflict","db_preparation_required"].includes(error?.safeCode);
             view.error = view.conflict ? "База изменилась. Нажмите «Повторить», чтобы получить опубликованную версию."
+              : error?.safeCode==="calendar_year_unsupported" ? "Для выбранного года нет проверенного календаря РФ. Доступны 2024–2027 годы; выберите период в этом диапазоне."
+              : error?.safeCode==="offhours_period_invalid" ? "Начало периода должно быть раньше его окончания и текущего времени."
+              : error?.safeCode==="db_filter_invalid"&&state.offhours ? "Проверьте даты и условия нерабочего времени, затем нажмите «Применить»."
               : error?.safeCode==="db_query_timeout" ? "Расчёт не завершён по времени. Фильтры доступны: выберите период или нужные устройства и нажмите «Применить»."
               : "Не удалось получить данные. Можно повторить запрос, не перезапуская инструмент."; }
           if (generation === epoch && activeKey === key) publish();
@@ -158,23 +163,26 @@
     }
     function filters(state, events, inventory=false, facets={}) {
       const f = state.draftFilters||state.filters, data=facets.data;
-      const select=(name,items,fallback="")=>`<select name="${name}">${items.map(([value,label])=>`<option value="${value}"${(f[name]||fallback)===value?" selected":""}>${label}</option>`).join("")}</select>`;
+      const outside=events&&state.offhours;
+      const select=(name,items,fallback="")=>`<select name="${name}" title="${escape(items.find(([value])=>value===(f[name]||fallback))?.[1]||"")}">${items.map(([value,label])=>`<option value="${value}"${(f[name]||fallback)===value?" selected":""}>${label}</option>`).join("")}</select>`;
       const choices=(name,list,all)=>`<select name="${name}" data-db-cascade${data?"":" disabled"}><option value="">${data?all:facets.error?"Списки недоступны":"Загрузка значений…"}</option>${(data?.[list]||[]).map((row)=>`<option value="${escape(row.value)}"${String(f[name]||"")===String(row.value)?" selected":""}>${escape(name==="category"?(CATEGORY_LABELS[row.value]||row.label):name==="locationId"&&row.address?row.label+" — "+row.address:row.label)}</option>`).join("")}</select>`;
-      return `<form class="db-filter-bar" data-db-filters aria-busy="${Boolean(state.applyingFilters)}"><fieldset class="db-filter-fields"${state.applyingFilters?" disabled":""}>
+      return `<form class="db-filter-bar${outside?" db-filter-offhours":""}" data-db-filters aria-busy="${Boolean(state.applyingFilters)}"><fieldset class="db-filter-fields"${state.applyingFilters?" disabled":""}>
         <label class="db-search"><span>Поиск устройства</span><input name="search" type="search" value="${escape(f.search)}" placeholder="Название, модель или IP"></label>
         <label><span>Домен</span>${choices("domain","domains","Все домены")}</label>
         <div class="db-device-filters${inventory?" db-device-filters-two":""}">
-        ${inventory?"":`<label><span>Тип устройства</span>${choices("category","categories","Все типы")}</label>`}
+        ${inventory?"":outside?'<label><span>Тип устройства</span><input type="hidden" name="category" value="vcs"><span class="db-fixed-filter">Терминалы ВКС</span></label>':`<label><span>Тип устройства</span>${choices("category","categories","Все типы")}</label>`}
         <label><span>Производитель</span>${choices("manufacturer","manufacturers","Все производители")}</label>
         <label><span>Модель</span>${choices("model","models","Все модели")}</label>
         </div>
         <label><span>VIP</span><select name="vip"><option value="">Все</option><option value="yes"${f.vip === "yes" ? " selected" : ""}>VIP</option><option value="no"${f.vip === "no" ? " selected" : ""}>Не VIP</option></select></label>
-        ${events ? `<label><span>Источник событий</span><select name="source">${[["logs","Журналы ВКС"],["json","JSON: Date − Uptime"],["all","Все источники"]].map(([v,t])=>`<option value="${v}"${(f.source||"logs")===v?" selected":""}>${t}</option>`).join("")}</select></label>
-        <label><span>Период событий</span><select name="period">${[["all","Вся история"],["today","Сегодня"],["7d","7 дней"],["30d","30 дней"],["custom","По датам"]].map(([v,t])=>`<option value="${v}"${f.period===v?" selected":""}>${t}</option>`).join("")}</select></label>
+        ${events ? `${outside?'<label><span>Источник и статус SR</span><span class="db-fixed-filter">Журналы ВКС · Учёт</span></label>':`<label><span>Источник событий</span><select name="source">${[["logs","Журналы ВКС"],["json","JSON: Date − Uptime"],["all","Все источники"]].map(([v,t])=>`<option value="${v}"${(f.source||"logs")===v?" selected":""}>${t}</option>`).join("")}</select></label>`}
+        <label><span>Период событий</span><select name="period">${(outside?[["2m","Последние 2 месяца"],["today","Сегодня"],["7d","7 дней"],["30d","30 дней"],["custom","По датам"]]:[["all","Вся история"],["today","Сегодня"],["7d","7 дней"],["30d","30 дней"],["custom","По датам"]]).map(([v,t])=>`<option value="${v}"${f.period===v?" selected":""}>${t}</option>`).join("")}</select></label>
         <label><span>Дата от</span><input name="dateFrom" type="date" value="${escape(f.dateFrom)}"></label>
         <label><span>Дата до</span><input name="dateTo" type="date" value="${escape(f.dateTo)}"></label>
         <label><span>Пауза без логов, мин</span><input name="logSilenceMinutes" type="number" min="15" max="10080" value="${escape(f.logSilenceMinutes || "60")}"></label>
-        <label class="db-check"><input type="checkbox" name="accounted"${f.accounted ? " checked" : ""}>Только ВКС «Учёт»</label>` : ""}
+        ${outside?`<label><span>Нерабочее время</span>${select("offhoursTime",[["all","Всё нерабочее время"],["night","Рабочие дни: 18:00–07:00"],["weekend","Выходные, весь день"],["holiday","Праздники и переносы, весь день"]],"all")}</label>
+        <label><span>Группа устройств</span>${select("offhoursGroup",[["all","Все ВКС «Учёт»"],...Object.entries(OFFHOURS_LABELS)],"none")}</label>
+        <label><span>События на тепловой карте</span>${select("offhoursMetric",[["all","Все зарегистрированные"],...Object.entries(KIND_LABELS)],"all")}</label>`:`<label class="db-check"><input type="checkbox" name="accounted"${f.accounted ? " checked" : ""}>Только ВКС «Учёт»</label>`}` : ""}
         <button type="submit" class="button primary">Применить</button><button type="button" class="text-button" data-db-reset>Сбросить</button>
         <span class="db-filter-state" role="status">${facets.error?escape(facets.error):!data?"Обновляем доступные значения…":state.draftFilters?"Изменения фильтров ещё не применены":""}</span>
         <button type="button" class="text-button" data-db-facets-retry${facets.error?"":" hidden"}>Повторить загрузку списков</button>
@@ -208,11 +216,11 @@
       });
       return table(["Устройство", "Время терминала", "Событие", "Локация", "Адрес", "Достоверность", "Источники"], rows) + pager(state, data);
     }
-    function heatmap(data, state) {
+    function heatmap(data, state, outside=false) {
       if (!data) return skeleton();
       const cells = new Map((data.cells || []).filter((c) => c.day != null && c.hour != null).map((cell) => [`${cell.day}:${cell.hour}`, cell]));
       const maximum = Math.max(1, ...(data.cells || []).map((cell) => cell.devices));
-      return `<section class="db-section"><div class="db-section-title"><h2>Ритм событий</h2><span>Дни недели × часы · уникальные устройства</span></div><div class="power-heatmap-scroll"><div class="db-heatmap">
+      return `<section class="db-section"><div class="db-section-title"><h2>${outside?"Нерабочее время: карта событий":"Ритм событий"}</h2><span>Дни недели × часы · уникальные устройства</span></div>${outside?'<p class="muted">Показано время зарегистрированных событий выбранной группы. Пустая ячейка не доказывает выключение или непрерывную работу. Нажмите час для списка устройств.</p>':""}<div class="power-heatmap-scroll"><div class="db-heatmap">
       <span></span>${Array.from({length:24},(_,h)=>`<small>${h}</small>`).join("")}
       ${["Пн","Вт","Ср","Чт","Пт","Сб","Вс"].map((day, d) => `<small>${day}</small>${Array.from({length:24},(_,h)=> {
         const cell = cells.get(`${d}:${h}`); const count = cell?.devices || 0;
@@ -228,7 +236,8 @@
       const cohort = data.accounted?.counts;
       const unavailable=Boolean(data.error&&!data.loading);
       const power=["power_off","suspected_power_loss","start_after_shutdown"].includes(state.kind);
-      const tabs=`<nav class="db-submodules" aria-label="Раздел анализа"><button type="button" data-db-kind="confirmed_reboot" aria-pressed="${!power}">Анализ перезагрузок</button><button type="button" data-db-kind="power_off" aria-pressed="${power}">Анализ отключения питания</button></nav>`;
+      const tabs=`<nav class="db-submodules" aria-label="Раздел анализа"><button type="button" data-db-kind="confirmed_reboot" aria-pressed="${!state.offhours&&!power}">Анализ перезагрузок</button><button type="button" data-db-kind="power_off" aria-pressed="${!state.offhours&&power}">Анализ отключения питания</button><button type="button" data-db-offhours aria-pressed="${!!state.offhours}">ВКС «Учёт»: нерабочее время</button></nav>`;
+      if(state.offhours)return tabs+offhoursView(state,data.offhours,data.error&&!data.loading);
       const menu = Object.entries(KIND_LABELS).filter(([kind])=>power?["power_off","suspected_power_loss","start_after_shutdown"].includes(kind):["confirmed_reboot","unknown_start"].includes(kind)).map(([kind, label]) => `<button type="button" data-db-kind="${kind}" aria-pressed="${state.kind===kind}">${label}<b>${data.summary?number(groups.get(kind)?.events):unavailable?"—":"…"}</b></button>`).join("");
       const rebootLabel=state.filters.source==="json"?"С рассчитанным временем запуска":state.filters.source==="all"?"С событиями перезагрузки / запуска":"С подтверждённой перезагрузкой";
       const cards = data.summary ? `<div class="db-ring-grid">${ring(rebootLabel,groups.get("confirmed_reboot")?.devices,total,"#4e74df",'data-db-kind="confirmed_reboot"')}${ring("Со штатным выключением",groups.get("power_off")?.devices,total,"#13968f",'data-db-kind="power_off"')}${ring("С предполагаемой паузой",groups.get("suspected_power_loss")?.devices,total,"#ac6fbd",'data-db-kind="suspected_power_loss"')}</div>` : unavailable?'<p class="muted">Сводка не получена. Отсутствие ответа не означает отсутствие событий.</p>':skeleton();
@@ -241,6 +250,25 @@
         <p class="muted">Все итоги рассчитаны по базе. Ниже — текущая страница, а не весь журнал.${state.deviceId ? " Выбрано одно устройство." : ""}</p>
         ${state.deviceId ? '<button type="button" class="text-button" data-db-clear-device>Все устройства</button>' : ""}
         ${state.table!=="events" ? genericTable(data[state.table],state) : eventTable(state,data.events)}</section>`;
+    }
+    function offhoursView(state,data,failed) {
+      if(!data)return failed?'<section class="db-section"><h2>ВКС «Учёт»: нерабочее время</h2><p>Расчёт не получен. Исправьте условия или повторите запрос. Данные базы не изменены.</p></section>':skeleton();
+      const counts=new Map(data.groups.map(row=>[row.group,row.devices]));
+      const colors={none:"#d38a32",once:"#4576d9",repeated:"#22938a",suspected:"#a96bbb",unknown:"#8290a5"};
+      const selected=state.filters.offhoursGroup||"all";
+      const rings=`<div class="db-offhours-rings">${Object.entries(OFFHOURS_LABELS).map(([group,label])=>ring(label,counts.get(group),data.denominator,colors[group],`data-db-offhours-group="${group}" aria-pressed="${selected===group}"`)).join("")}</div>`;
+      const rows=(data.rows||[]).map(r=>[
+        `<button type="button" class="text-button" data-db-device="${escape(r.device)}">${escape(r.name)}</button><small>${escape(r.model)}</small>`,
+        ...[r.ip,r.mac,r.locationName,r.address,r.domain,OFFHOURS_LABELS[r.cohort],r.confirmed,r.suspected,r.reboots,r.firstPower||"—",r.lastPower||"—",r.observedEvents].map(escape)]);
+      return `<section class="db-section db-offhours-intro"><div><p class="eyebrow">Актуальная SR · статус оборудования «Учёт» · календарь РФ</p><h2>Выключения в нерабочее время</h2><p>${escape(data.period.from)} — ${escape(data.period.toExclusive)} <small>(окончание не включается)</small></p></div><div class="db-offhours-total"><b>${number(data.denominator)}</b><span>терминалов в фильтре</span></div>
+        <p class="db-offhours-rule">Пятидневка с переносами. Выходные и праздники — весь день, рабочие дни — 18:00–07:00. Время локальное для каждого терминала.</p></section>
+        ${rings}<p class="db-offhours-note">«Выключения не зафиксированы» — в периоде есть события, но нет штатных выключений или предполагаемых пауз в выбранное нерабочее время. Это не доказательство непрерывной работы. Полнота журнала неизвестна. Архивы Polycom без событийного разбора — «Недостаточно данных».</p>
+        ${heatmap(data,state,true)}
+        ${data.tops?.length?`<section class="db-section"><div class="db-section-title"><h2>TOP 5 по перезагрузкам в выбранной группе</h2><span>Только подтверждённые события в нерабочее время</span></div><div class="db-offhours-top">${data.tops.map(r=>`<button type="button" data-db-device="${escape(r.device)}"><span>${escape(r.name)}</span><b>${number(r.reboots)}</b></button>`).join("")}</div></section>`:""}
+        <section class="db-section"><div class="db-section-title"><div><h2>${escape(OFFHOURS_LABELS[selected]||"Все ВКС «Учёт»")}</h2><p>Устройств в списке: ${number(data.matchedDevices)}</p></div><button type="button" class="button secondary" data-db-export="offhours">Скачать выбранную группу XLSX</button></div>
+        <p class="muted">Счётчики — за весь выбранный период и вид нерабочего времени. Ровно одно выключение = одна подтверждённая штатная команда, без предположений. Нули не доказывают отсутствие выключений вне видимых записей.</p>
+        ${state.deviceId?'<button type="button" class="text-button" data-db-clear-device>Все устройства группы</button>':""}
+        ${table(["Устройство","IP","MAC","Локация","Адрес","Домен","Группа","Штатные выключения","Предполагаемые паузы","Перезагрузки","Первое выключение","Последнее выключение","Событий в периоде"],rows)}${pager(state,data)}</section>`;
     }
     function durationView(data) {
       const labels=["До 1 часа","1 час — сутки","Сутки — неделя","Неделя — месяц","1 — 3 месяца","3 — 6 месяцев","6 месяцев — год","Более года"];
@@ -284,7 +312,7 @@
       const state = stateFor(descriptor.route);
       if (descriptor.category) state.filters.category = descriptor.category;
       const facets=descriptor.compact?{}:ensureFacets(descriptor,state);
-      const clock=["today","7d","30d"].includes(state.filters.period)?Math.floor(Date.now()/60000):0;
+      const clock=state.offhours||["today","7d","30d"].includes(state.filters.period)?Math.floor(Date.now()/60000):0;
       const queryState={...state};delete queryState.draftFilters;delete queryState.applyingFilters;
       const key = JSON.stringify([revision,descriptor.route,queryState,clock]);
       if(activeKey!==key){controller?.abort();controller=typeof root.AbortController==="function"?new root.AbortController():null;generation+=1;}
@@ -305,7 +333,7 @@
         content = `<div class="db-stat-grid">${[["Оборудование",summary.devices],["JSON-опросы",summary.counts.pollingResults],["Логи",summary.counts.logRows],
           ["События ВКС",Object.entries(summary.counts).filter(([k])=>k.startsWith("events:")).reduce((n,[,v])=>n+v,0)]].map(([t,v])=>`<article><span>${t}</span><b>${number(v)}</b></article>`).join("")}</div><section class="db-section"><h2>Оборудование в актуальной SR</h2><div class="db-category-grid">${summary.categories.map((row)=>`<article><span>${escape(CATEGORY_LABELS[row.label] || row.label)}</span><strong>${number(row.devices)}</strong></article>`).join("")}</div></section>`;
       } else content = genericTable(data[routeView(descriptor,state)],state);
-      if(data.error&&!data.loading&&!data[routeView(descriptor,state)])content='<div class="db-empty"><h3>Запрос не подтверждён</h3><p>Данные не удалены. Повторите запрос или откройте другой раздел.</p></div>';
+      if(data.error&&!data.loading&&!data[routeView(descriptor,state)]&&!(descriptor.renderer==="reboots"&&state.offhours))content='<div class="db-empty"><h3>Запрос не подтверждён</h3><p>Данные не удалены. Повторите запрос или откройте другой раздел.</p></div>';
       return `<div class="db-workspace">${descriptor.compact ? `<h2>${escape(descriptor.title)}</h2>` : `<header class="db-hero page-header"><div><p class="eyebrow">Локальная аналитика · SQLite</p><h1>${escape(descriptor.title)}</h1><p>${escape(descriptor.summary||"Данные из выбранной локальной базы.")}</p></div><div class="db-live"><span></span>База подключена<small>Ревизия ${escape(revision)}</small></div></header>`}
         ${descriptor.compact ? "" : filters(state,descriptor.renderer==="reboots",descriptor.renderer==="inventory",facets)}
         <section data-db-panel>
@@ -318,12 +346,20 @@
     function refresh() { controller?.abort();controller=typeof root.AbortController==="function"?new root.AbortController():null;
       cache.delete(activeKey); pending.delete(activeKey); generation += 1; options.render(); }
     function handleClick(target) {
-      const button = target.closest("[data-db-kind],[data-db-cell],[data-db-page],[data-db-reset],[data-db-retry],[data-db-device],[data-db-clear-device],[data-db-clear-cell],[data-db-site],[data-db-export],[data-db-duration],[data-db-dimension],[data-db-clear-slice],[data-db-facets-retry]");
+      const button = target.closest("[data-db-kind],[data-db-cell],[data-db-page],[data-db-reset],[data-db-retry],[data-db-device],[data-db-clear-device],[data-db-clear-cell],[data-db-site],[data-db-export],[data-db-duration],[data-db-dimension],[data-db-clear-slice],[data-db-facets-retry],[data-db-offhours],[data-db-offhours-group]");
       if (!button || !activeDescriptor) return false;
       const state = stateFor(activeDescriptor.route), d = button.dataset;
       if("dbFacetsRetry" in d){const key=facetKey(activeDescriptor,state.draftFilters||state.filters),entry=facetCache.get(key);if(entry?.conflict&&options.reload){void options.reload();return true;}if(entry){entry.cancelled=true;entry.controller?.abort();}facetCache.delete(key);options.render();return true;}
       if("dbRetry" in d && cache.get(activeKey)?.conflict && options.reload){void options.reload();return true;}
       if (d.dbExport) { void exportRows(d.dbExport, state); return true; }
+      if("dbOffhours" in d && !state.offhours){
+        state.beforeOffhours={...state.filters};state.offhours=true;
+        state.filters={...(state.savedOffhours||state.filters),period:state.savedOffhours?.period||"2m",source:"logs",accounted:true,category:"vcs",offhoursGroup:state.savedOffhours?.offhoursGroup||"none"};
+        delete state.draftFilters;delete state.deviceId;
+        for(const key of ["date","day","hour","durationBucket"])delete state.filters[key];
+      }
+      if(d.dbOffhoursGroup){state.filters.offhoursGroup=d.dbOffhoursGroup;delete state.filters.day;delete state.filters.hour;delete state.deviceId;delete state.draftFilters;}
+      if(d.dbKind&&state.offhours){state.savedOffhours={...state.filters};state.filters={...(state.beforeOffhours||{period:"all",source:"logs"})};state.offhours=false;delete state.deviceId;delete state.draftFilters;}
       if (d.dbKind) { state.kind=d.dbKind; state.table="events";delete state.filters.durationBucket; delete state.filters.day; delete state.filters.hour;
         if(state.filters.source==="json"&&["power_off","suspected_power_loss","start_after_shutdown"].includes(state.kind))state.filters.source="logs"; }
       if(d.dbAccounted==="yes")state.filters.accounted=true;
@@ -338,7 +374,7 @@
       if ("dbClearDevice" in d) delete state.deviceId;
       if ("dbClearCell" in d) { delete state.filters.day; delete state.filters.hour; }
       if("dbClearSlice" in d){delete state.deviceId;delete state.deviceName;for(const key of ["date","day","hour","locationId","durationBucket"])delete state.filters[key];state.table="events";}
-      if ("dbReset" in d) { state.filters={period:"all",source:"logs"}; delete state.draftFilters;delete state.deviceId; }
+      if ("dbReset" in d) { state.filters=state.offhours?{period:"2m",source:"logs",category:"vcs",accounted:true,offhoursGroup:"none"}:{period:"all",source:"logs"}; delete state.draftFilters;delete state.deviceId; }
       if ("dbSite" in d) { state.site=!state.site; delete state.deviceId; }
       refresh(); return true;
     }
@@ -346,7 +382,8 @@
       if (!form.matches("[data-db-filters]") || !activeDescriptor) return false;
       const descriptor=activeDescriptor,state = stateFor(descriptor.route);
       const values={...(state.draftFilters||state.filters),...Object.fromEntries(new FormData(form))};
-      values.accounted=form.querySelector('[name="accounted"]')?.checked===true;
+      values.accounted=state.offhours||form.querySelector('[name="accounted"]')?.checked===true;
+      if(state.offhours){values.source="logs";values.category="vcs";values.current="yes";}
       const entry=facetCache.get(facetKey(descriptor,values));
       state.filters=entry?.data?normalizeFilters(values,entry.data):values;
       delete state.draftFilters;state.applyingFilters=false;
@@ -360,7 +397,8 @@
       const state=stateFor(activeDescriptor.route);
       if(state.applyingFilters)return true;
       const values={...(state.draftFilters||state.filters),...Object.fromEntries(new FormData(form))};
-      values.accounted=form.querySelector('[name="accounted"]')?.checked===true;
+      values.accounted=state.offhours||form.querySelector('[name="accounted"]')?.checked===true;
+      if(state.offhours){values.source="logs";values.category="vcs";values.current="yes";}
       const index=dimensions.indexOf(element.name);
       if(index>=0)for(const name of dimensions.slice(index+1))delete values[name];
       state.draftFilters=values;
@@ -380,35 +418,66 @@
     }
     async function exportRows(kind, state) {
       if (!root.XLSX) return;
-      const startRevision=revision, rows=[];
+      state={...state,filters:{...state.filters}};
+      const startRevision=revision,startSource=options.sourceIdentity?.(),rows=[];
+      let offhoursMeta=null;
+      const sourceChanged=()=>revision!==startRevision||options.sourceIdentity?.()!==startSource;
       options.activity?.({label:"Экспорт Excel",detail:"Получение всех строк выборки из БД"});
       try {
         for(let page=0;;page+=1) {
-          const name=kind==="site"?"site-name":"export-devices";
-          const data=await request(name,{...state,page},{size:100,filters:{...state.filters,...(state.deviceId?{deviceId:state.deviceId}:{}),accounted:kind!=="site",kind:kind==="power"?"power_off":"confirmed_reboot"}});
-          if (revision!==startRevision) throw new Error("changed");
+          if(sourceChanged())throw new Error("changed");
+          const name=kind==="offhours"?"offhours":kind==="site"?"site-name":"export-devices";
+          const data=await options.request("view",{revision:startRevision,name,page,size:100,filters:{...state.filters,...(state.deviceId?{deviceId:state.deviceId}:{}),accounted:kind!=="site",kind:kind==="power"?"power_off":"confirmed_reboot"}});
+          if(sourceChanged())throw new Error("changed");
+          if(kind==="offhours"&&!offhoursMeta){offhoursMeta=data;state.filters.offhoursUntil=data.period.toExclusive;}
           rows.push(...data.rows);
           options.activity?.({label:"Экспорт Excel",detail:"Получено строк: "+number(rows.length)});
           if(!data.hasNext)break;
         }
+        const commonHeaders=["Устройство","Модель","IP","MAC","Домен","VIP","Локация","Адрес"];
         const headers=kind==="site"?["Наименование устройства","Site name","IP","MAC","Адрес","Наименование локации","Домен"]
-          :["Устройство","Модель","IP","MAC","Домен","VIP","Локация","Адрес","Перезагрузки","Штатные выключения","Предполагаемые паузы","Первая перезагрузка","Последняя перезагрузка","Первое выключение","Последнее выключение","Первая пауза","Последняя пауза","Достоверность"];
-        const matrix=[headers,...rows.map((r)=>kind==="site"?[r.name,r.siteName,r.ip,parse(r.payload).macNormalized||parse(r.payload).macRaw||"",r.address,r.locationName,r.domain]
-          :[r.name,r.model||"",r.ip,r.mac,r.domain||"",r.vip?"Да":"Нет",r.locationName,r.address,r.reboots,r.confirmed,r.suspected,r.firstReboot||"",r.lastReboot||"",r.firstPower||"",r.lastPower||"",r.firstSuspected||"",r.lastSuspected||"",[r.reboots?"Перезагрузка: подтверждено логом":"",r.confirmed?"Штатное выключение: подтверждено":"",r.suspected?"Пауза: предположение":""].filter(Boolean).join("; ")])];
+          :kind==="offhours"?[...commonHeaders,"Статус SR","Группа","Штатные выключения","Предполагаемые паузы","Перезагрузки","Первое выключение","Последнее выключение","Событий за период","Первое наблюдение","Последнее наблюдение"]
+          :kind==="reboot"?[...commonHeaders,"Перезагрузки","Первое событие","Последнее событие","Основание","Статус SR"]
+          :[...commonHeaders,"Штатные выключения","Предполагаемые паузы","Первое штатное","Последнее штатное","Первая пауза","Последняя пауза","Достоверность","Статус SR"];
+        const common=r=>[r.name,r.model||"",r.ip,r.mac,r.domain||"",r.vip?"Да":"Нет",r.locationName,r.address];
+        const matrix=[headers,...rows.map(r=>kind==="site"?[r.name,r.siteName,r.ip,parse(r.payload).macNormalized||parse(r.payload).macRaw||"",r.address,r.locationName,r.domain]
+          :kind==="offhours"?[...common(r),"Учёт",OFFHOURS_LABELS[r.cohort]||"Недостаточно данных",r.confirmed,r.suspected,r.reboots,r.firstPower||"",r.lastPower||"",r.observedEvents,r.firstObserved||"",r.lastObserved||""]
+          :kind==="reboot"?[...common(r),r.reboots,r.firstReboot||"",r.lastReboot||"","Подтверждено логом","Учёт"]
+          :[...common(r),r.confirmed,r.suspected,r.firstPower||"",r.lastPower||"",r.firstSuspected||"",r.lastSuspected||"",[r.confirmed?"штатное выключение: подтверждено":"",r.suspected?"пауза: предположение":""].filter(Boolean).join("; "),"Учёт"])];
         const sheet=root.XLSX.utils.aoa_to_sheet(matrix);
         Object.keys(sheet).filter((key)=>!key.startsWith("!")).forEach((key)=>{if(typeof sheet[key].v==="string"){sheet[key].t="s";delete sheet[key].f;}});
         sheet["!autofilter"]={ref:sheet["!ref"]};
-        const book=root.XLSX.utils.book_new();root.XLSX.utils.book_append_sheet(book,sheet,"Данные");
+        if(kind!=="site")sheet["!cols"]=headers.map((_,index)=>({wch:kind==="offhours"?([32,24,18,20,22,8,30,36,12,40][index]||26):[32,24,18,20,22,8,30,36][index]||(index===headers.length-1?12:index===headers.length-2?(kind==="power"?70:32):26)}));
+        const book=root.XLSX.utils.book_new();root.XLSX.utils.book_append_sheet(book,sheet,kind==="offhours"?"Нерабочее время":kind==="site"?"Данные":kind==="reboot"?"Перезагрузки":"Питание");
+        if(kind==="offhours"){
+          const terms=[["Условие","Значение"],["Статус оборудования в актуальной SR","Учёт"],["Категория","Терминалы ВКС"],
+            ["Период от (включительно)",offhoursMeta.period.from],["Период до (не включая)",offhoursMeta.period.toExclusive],
+            ["Группа",OFFHOURS_LABELS[state.filters.offhoursGroup]||"Все ВКС «Учёт»"],
+            ["Нерабочее время",{all:"Всё нерабочее время",night:"Рабочие дни: 18:00–07:00",weekend:"Выходные, весь день",holiday:"Праздники и переносы, весь день"}[state.filters.offhoursTime||"all"]],
+            ["Календарь",offhoursMeta.calendarVersion],["Источник календаря",offhoursMeta.calendarSource],
+            ["Правило","Выходные и праздники целиком, рабочие дни 18:00–07:00. Локальное время терминала."],
+            ["Счётчики действий","Выключения, паузы и перезагрузки — в выбранное нерабочее время."],
+            ["Событий за период","Все валидные события периода, включая рабочее время."],
+            ["Доказательность","Отсутствие записи не доказывает непрерывную работу. Полнота журнала неизвестна."],
+            ["Паузы","Только предположение, не подтверждённое отключение питания."],
+            ["Наблюдения","Времена первого/последнего события, не границы полного журнала."],
+            ...Object.entries({domain:"Домен",manufacturer:"Производитель",model:"Модель",locationId:"ID локации",address:"Адрес",vip:"VIP",search:"Поиск",day:"День недели (0=пн)",hour:"Час",logSilenceMinutes:"Порог паузы, минут",offhoursMetric:"События карты"}).filter(([key])=>state.filters[key]!==undefined&&state.filters[key]!=="").map(([key,label])=>[label,String(state.filters[key])]),
+            ["Устройство",state.deviceId||"Все"],["Ревизия базы",startRevision]];
+          const notes=root.XLSX.utils.aoa_to_sheet(terms);notes["!cols"]=[{wch:42},{wch:115}];
+          Object.keys(notes).filter(key=>!key.startsWith("!")).forEach(key=>{if(typeof notes[key].v==="string"){notes[key].t="s";delete notes[key].f;}});
+          root.XLSX.utils.book_append_sheet(book,notes,"Условия");
+        }
         options.activity?.({label:"Экспорт Excel",detail:"Формирование файла XLSX"});
         await new Promise((resolve)=>setTimeout(resolve,0));
-        if(options.download(root.XLSX.write(book,{type:"array",bookType:"xlsx",compression:true}),`vcs-${kind}.xlsx`)===false)throw new Error("download_failed");
+        if(sourceChanged())throw new Error("changed");
+        if(options.download(root.XLSX.write(book,{type:"array",bookType:"xlsx",compression:true}),`vcs-${kind}${kind==="offhours"?"-"+(state.filters.offhoursGroup||"all"):""}.xlsx`)===false)throw new Error("download_failed");
         options.activity?.({completed:true,detail:"XLSX сформирован и передан браузеру · "+number(rows.length)+" строк"});
       }catch{options.message?.("Экспорт не завершён. Повторите после обновления раздела.");}
       finally{options.activity?.(null);}
     }
     return {setRevision,render,handleClick,handleSubmit,handleChange,refresh,stateFor,deactivate,get revision(){return revision;},get bootstrap(){return bootstrap;}};
   }
-  const api={createController,escape, KIND_LABELS};
+  const api={createController,escape, KIND_LABELS,OFFHOURS_LABELS};
   if(typeof module==="object"&&module.exports)module.exports=api;
   root.MVP_DB_VIEWS=api;
 })(typeof window!=="undefined"?window:globalThis);

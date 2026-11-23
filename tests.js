@@ -3779,6 +3779,9 @@
       assert(!sheet.A3, "Устройства без события не должны попадать в выгрузку");
       const table = global.XLSX.utils.sheet_to_json(sheet, { header: 1 });
       assert(table[0].includes(kind === "reboot" ? "Основание" : "Достоверность"));
+      assertEqual(table[0].includes("Перезагрузки"),kind==="reboot");
+      assertEqual(table[0].includes("Штатные выключения"),kind==="power");
+      assertEqual(table[0].includes("Предполагаемые паузы"),kind==="power");
       assert(String(table[1][kind === "reboot" ? 11 : 14]).includes(kind === "reboot" ? "Подтверждено" : "предположение"));
       assert(Object.values(sheet).some((cell) => cell?.t === "n" && cell.v === (kind === "reboot" ? 2 : 1)));
     }
@@ -3956,6 +3959,101 @@
     assertEqual(global.XLSX.utils.sheet_to_json(sheet,{header:1}).length,151);
     assertEqual(sheet.A2.t,"s");assert(!sheet.A2.f);
     assert(requests>=2);
+  });
+
+  if(typeof require==="function")test("DB-first XLSX разделяет показатели reboot/power и фиксирует фильтры на старте",async()=>{
+    const db=require("./runtime/db-views.js");
+    for(const kind of ["reboot","power"]){
+      let downloaded,filename,controller;const calls=[];
+      const row={name:"=2+2",model:"TE40",ip:"192.0.2.40",mac:"02:00:00:00:00:40",domain:"A",vip:true,locationName:"Synthetic room",address:"Synthetic address",
+        reboots:2,confirmed:3,suspected:4,firstReboot:"2026-01-01 10:00:00",lastReboot:"2026-01-02 10:00:00",firstPower:"2026-02-01 10:00:00",lastPower:"2026-02-02 10:00:00",firstSuspected:"2026-03-01 10:00:00",lastSuspected:"2026-03-02 10:00:00"};
+      controller=db.createController({render(){},update(){return true},download(bytes,name){downloaded=bytes;filename=name;return true;},request:async(_a,data)=>{
+        if(data.name!=="export-devices")return data.name==="facets"?{domains:[],categories:[],manufacturers:[],models:[],locations:[],addresses:[],selected:{}}:data.name==="summary"?{groups:[]}:data.name==="accounted"?{counts:{}}:data.name==="heatmap"?{cells:[]}:data.name==="tops"?{}:{rows:[],hasNext:false};
+        calls.push({...data.filters});if(data.page===0)controller.stateFor("reboots").filters.domain="changed-during-export";
+        return {rows:[row],hasNext:data.page===0};
+      }});
+      controller.setRevision({revision:"1:0"});controller.stateFor("reboots").filters.domain="selected-at-start";
+      controller.render({route:"reboots",title:"События",renderer:"reboots"});
+      controller.handleClick({closest:()=>({dataset:{dbExport:kind}})});
+      for(let n=0;!downloaded&&n<100;n++)await new Promise(resolve=>setTimeout(resolve,10));
+      assert(downloaded);assertEqual(filename,`vcs-${kind}.xlsx`);
+      const book=global.XLSX.read(downloaded,{type:"array"}),sheet=book.Sheets[book.SheetNames[0]],table=global.XLSX.utils.sheet_to_json(sheet,{header:1});
+      assertEqual(book.SheetNames[0],kind==="reboot"?"Перезагрузки":"Питание");
+      assertEqual(table.length,3);assertEqual(sheet.A2.t,"s");assert(!sheet.A2.f);assertEqual(sheet.I2.t,"n");
+      assertEqual(table[0].includes("Перезагрузки"),kind==="reboot");
+      assertEqual(table[0].includes("Штатные выключения"),kind==="power");
+      assertEqual(table[0].includes("Предполагаемые паузы"),kind==="power");
+      assertEqual(table[1][8],kind==="reboot"?2:3);
+      assert(calls.length===2&&calls.every(call=>call.domain==="selected-at-start"&&call.accounted===true));
+    }
+  });
+
+  if(typeof require==="function")test("ВКС Учёт: нерабочее время использует отдельный DB срез, пять групп и восстанавливает обычные фильтры",async()=>{
+    const db=require("./runtime/db-views.js"),calls=[];let controller,markup="";
+    const descriptor={route:"reboots",title:"События",renderer:"reboots"};
+    const outside={denominator:5,groups:Object.keys(db.OFFHOURS_LABELS).map(group=>({group,devices:1})),rows:[],cells:[],tops:[],matchedDevices:0,
+      period:{from:"2026-09-23 00:00:00",toExclusive:"2026-11-23 10:00:00"}};
+    const render=()=>{markup=controller.render(descriptor);};
+    controller=db.createController({render,request:async(_a,q)=>{calls.push(q);return q.name==="facets"?{domains:[],categories:[{value:"vcs",label:"Терминалы ВКС"}],manufacturers:[],models:[],locations:[],addresses:[],selected:{category:"vcs"}}
+      :q.name==="offhours"?outside:q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false};}});
+    controller.setRevision({revision:"1:0"});controller.stateFor("reboots").filters.period="7d";render();
+    controller.handleClick({closest:()=>({dataset:{dbOffhours:""}})});
+    await new Promise(resolve=>setTimeout(resolve,40));
+    const state=controller.stateFor("reboots");assert(state.offhours);assertEqual(state.filters.period,"2m");assert(state.filters.accounted);
+    assertEqual(state.filters.category,"vcs");assertEqual(state.filters.source,"logs");assertEqual(state.filters.offhoursGroup,"none");
+    assert(markup.includes("Одно штатное выключение"));assert(markup.includes("Недостаточно данных"));assert(markup.includes("не доказывает"));
+    assert(markup.includes('data-db-export="offhours"'));assertEqual((markup.match(/data-db-offhours-group=/g)||[]).length,5);
+    const from=calls.length;controller.handleClick({closest:()=>({dataset:{dbOffhoursGroup:"once"}})});
+    await new Promise(resolve=>setTimeout(resolve,30));assertEqual(state.filters.offhoursGroup,"once");
+    assert(calls.slice(from).filter(q=>q.name!=="facets").every(q=>q.name==="offhours"));
+    controller.handleClick({closest:()=>({dataset:{dbCell:"0:18"}})});
+    assertEqual(state.filters.day,0);assertEqual(state.filters.hour,18);
+    controller.handleClick({closest:()=>({dataset:{dbKind:"confirmed_reboot"}})});
+    assert(!state.offhours);assertEqual(state.filters.period,"7d");
+    controller.deactivate();
+  });
+
+  if(typeof require==="function")test("Ошибка календаря не скрывает навигацию по разделам и фильтры",async()=>{
+    const db=require("./runtime/db-views.js");let controller,markup="";const descriptor={route:"reboots",renderer:"reboots",title:"Анализ"};
+    controller=db.createController({render(){markup=controller.render(descriptor)},request:async(_a,q)=>{
+      if(q.name==="offhours")throw Object.assign(new Error("not-visible-private-data"),{safeCode:"calendar_year_unsupported"});
+      return {domains:[],categories:[],manufacturers:[],models:[],locations:[],addresses:[],selected:{}};
+    }});
+    controller.setRevision({revision:"1:0"});controller.stateFor("reboots").offhours=true;markup=controller.render(descriptor);
+    await new Promise(resolve=>setTimeout(resolve,30));assert(markup.includes("2024–2027"));assert(markup.includes('data-db-kind="confirmed_reboot"'));
+    assert(markup.includes("data-db-filters"));assert(!markup.includes("not-visible-private-data"));controller.deactivate();
+  });
+
+  if(typeof require==="function")test("XLSX нерабочего времени фиксирует период, группу, все страницы и буквальный текст",async()=>{
+    const db=require("./runtime/db-views.js");let downloaded,filename;const queries=[];
+    const info={denominator:2,matchedDevices:2,groups:[],cells:[],tops:[],calendarVersion:"synthetic-rf",calendarSource:"https://www.cbr.ru/other/holidays/",
+      period:{from:"2026-09-23 00:00:00",toExclusive:"2026-11-23 10:00:00"},rows:[{device:"test",name:"=2+2",model:"TE40",ip:"192.0.2.40",cohort:"once",confirmed:1,suspected:2,reboots:3,observedEvents:6}]};
+    const controller=db.createController({render(){},update(){return true},download(bytes,name){downloaded=bytes;filename=name},request:async(_a,q)=>{
+      if(q.name==="offhours"){queries.push(JSON.parse(JSON.stringify(q)));return {...info,hasNext:q.page===0};}
+      return q.name==="facets"?{domains:[],categories:[],manufacturers:[],models:[],locations:[],addresses:[],selected:{}}:{rows:[],hasNext:false};
+    }});
+    controller.setRevision({revision:"1:0"});const state=controller.stateFor("reboots");state.offhours=true;state.filters={period:"2m",source:"logs",accounted:true,category:"vcs",offhoursGroup:"once"};
+    controller.render({route:"reboots",title:"События",renderer:"reboots"});
+    controller.handleClick({closest:()=>({dataset:{dbExport:"offhours"}})});
+    for(let n=0;!downloaded&&n<100;n++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert(downloaded);assertEqual(filename,"vcs-offhours-once.xlsx");
+    const book=global.XLSX.read(downloaded,{type:"array"}),sheet=book.Sheets["Нерабочее время"],matrix=global.XLSX.utils.sheet_to_json(sheet,{header:1});
+    assertEqual(book.SheetNames.join("|"),"Нерабочее время|Условия");assertEqual(matrix.length,3);
+    assertEqual(sheet.A2.v,"=2+2");assertEqual(sheet.A2.t,"s");assert(!sheet.A2.f);
+    assertEqual(sheet.K2.v,1);assertEqual(sheet.K2.t,"n");assertEqual(sheet.L2.v,2);assertEqual(sheet.M2.v,3);
+    assert(queries.some(q=>q.page===1&&q.filters.offhoursUntil===info.period.toExclusive));
+    assert(queries.every(q=>q.filters.offhoursGroup==="once"&&q.filters.accounted===true));controller.deactivate();
+  });
+
+  if(typeof require==="function")test("Экспорт не смешивает разные рабочие БД с одинаковой revision",async()=>{
+    const db=require("./runtime/db-views.js");let source="first",downloaded=false,message="";
+    const controller=db.createController({render(){},update(){return true},sourceIdentity:()=>source,download(){downloaded=true},message(value){message=value},request:async(_a,q)=>{
+      if(q.name==="export-devices"){source="second";return {rows:[],hasNext:false};}
+      return q.name==="facets"?{domains:[],categories:[],manufacturers:[],models:[],locations:[],addresses:[],selected:{}}:q.name==="summary"?{groups:[]}:q.name==="accounted"?{counts:{}}:q.name==="heatmap"?{cells:[]}:q.name==="tops"?{}:{rows:[],hasNext:false};
+    }});
+    controller.setRevision({revision:"1:0"});controller.render({route:"reboots",title:"События",renderer:"reboots"});
+    controller.handleClick({closest:()=>({dataset:{dbExport:"reboot"}})});
+    await new Promise(resolve=>setTimeout(resolve,20));assert(!downloaded);assert(message.includes("не завершён"));
   });
 
   if (typeof require === "function") test("Старый ответ DB-first после Повторить не удаляет новый запрос", async () => {
