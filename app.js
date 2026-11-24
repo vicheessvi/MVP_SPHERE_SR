@@ -6759,6 +6759,7 @@
   let credentialPoolSession = null;
   let managementTargetListSession = null;
   let managementTargetWorkbookSession = null;
+  let managementTargetFileInputSession = null;
   let pollingOutputRootHandle = null;
   let logOutputRootHandle = null;
   let automaticPollingMonitor = null;
@@ -6824,6 +6825,7 @@
     pendingRequests: {},
     exportActivity: null,
     managementTargetBusy: false,
+    managementTargetFeedback: null,
     lastOperation: null,
     equipmentExpanded: initialNavigationState.equipmentExpanded,
     dashboardFilters: { period: "latest_run" },
@@ -7570,14 +7572,23 @@
 
   function render() {
     if (recovery && recovery.kind === "corrupt_state") {
+      managementTargetFileInputSession?.remove();
+      managementTargetFileInputSession = null;
       app.innerHTML = renderRecovery();
       return;
     }
     const user = currentUser();
     if (!user) {
+      managementTargetFileInputSession?.remove();
+      managementTargetFileInputSession = null;
       app.innerHTML = renderLogin();
       return;
     }
+    // Keep only the native file input, not its old form/ancestor tree. This
+    // preserves the user's FileList without retaining detached credential fields.
+    const targetFileInput = managementTargetFileInputSession;
+    targetFileInput?.remove();
+    if (launchMode.kind === "local" && ui.adminAccess?.adminUnlocked !== true) managementTargetFileInputSession = null;
     try { app.innerHTML = renderShell(user); }
     catch {
       // A failed view must not leave navigation stuck on the previous module.
@@ -7587,6 +7598,12 @@
       catch { app.innerHTML = '<main><h1>Не удалось отобразить раздел</h1><p>Данные в базе не удалены.</p></main>'; }
       ui.route = previous;
       setMessage("Раздел не удалось отобразить. Данные базы не изменены; можно открыть другой модуль.", "error");
+    }
+    const replacementFileInput = app.querySelector('[name="managementTargetListFile"]');
+    if (managementTargetFileInputSession && replacementFileInput) {
+      managementTargetFileInputSession.disabled = replacementFileInput.disabled;
+      managementTargetFileInputSession.setAttribute("aria-describedby", "management-target-feedback");
+      replacementFileInput.replaceWith(managementTargetFileInputSession);
     }
     try {global.MVP_SPHERE_BRAND?.mount(app);}catch{/* Optional decoration must not interrupt import or navigation. */}
     refreshOperationStrip();
@@ -8698,6 +8715,16 @@
     </dl><p class="muted">${supported ? `Будет использован механизм ${escapeHtml(capability.key || "подтверждённого опроса")}.` : "Подтверждённый автоматический опрос для этого устройства недоступен; сетевой запрос выполняться не будет."}</p></section>`;
   }
 
+  function setManagementTargetFeedback(phase, filename, message) {
+    ui.managementTargetFeedback = { phase, filename: String(filename || ""), message: String(message || "") };
+  }
+
+  function renderManagementTargetFeedback() {
+    const feedback = ui.managementTargetFeedback;
+    const tone = feedback?.phase === "error" ? "error" : feedback?.phase === "ready" ? "success" : "info";
+    return `<div id="management-target-feedback" data-management-target-feedback class="${tone}-panel break-word" role="status" aria-live="polite"${feedback ? "" : " hidden"}>${feedback?.filename ? `<strong>Файл: ${escapeHtml(feedback.filename)}</strong>` : ""}<p>${escapeHtml(feedback?.message || "")}</p></div>`;
+  }
+
   async function acceptManagementWorkbookSheets(names){
     const pending=managementTargetWorkbookSession;if(!pending)throw new Error("target_workbook_missing");
     const parsed=await parseManagementTargetWorkbook({workbook:pending.workbook,sourceSha256:pending.sourceSha256,selectedSheets:names});
@@ -8708,6 +8735,7 @@
     managementTargetWorkbookSession=null;ui.managementWorkbookSheets=null;ui.managementSheetSelection=[];
     ui.pollingPlanSelection={...resetPollingActions(ui.pollingPlanSelection),targetSource:"device_list",targetListReady:true,ipAddress:"",domains:[POLLING_ALL],categories:[POLLING_ALL],manufacturers:[POLLING_ALL],models:[POLLING_ALL]};
     ui.zeroIntervalAcknowledged=false;ui.pollingPlanResult=null;
+    setManagementTargetFeedback("ready", pending.filename, `Список загружен. Устройств: ${parsed.acceptedCount}. Листы: ${parsed.selectedSheets.join(", ")}. Выберите только необходимые действия.`);
   }
 
   function renderPollingTargetPreview(projection) {
@@ -8770,11 +8798,13 @@
       <section class="card section-gap"${adminLocked ? " hidden" : ""}><h2>4. План автоматического опроса</h2>${launchMode.kind === "local" ? `<button class="button secondary" type="button" data-admin-lock>Закрыть доступ к плану</button>` : ""}
         ${automatic?.completionMessage ? `<p class="${automatic.failed || automatic.saveFailed || automatic.logsFailed || automatic.unsupported || automatic.status !== "completed" ? "warning" : "success"}-panel" data-polling-completion role="status">${escapeHtml(automatic.completionMessage)}</p>` : ""}
         <form class="automatic-plan-form" data-polling-plan-form>
-          <fieldset class="polling-mode-selector"><legend>Источник целевых устройств</legend><div>
+          <fieldset class="polling-mode-selector"${ui.managementTargetBusy ? " disabled" : ""}><legend>Источник целевых устройств</legend><div>
             <label class="polling-mode-choice"><input type="radio" name="targetSource" value="sr"${ui.pollingPlanSelection.targetSource!=="device_list"?" checked":""}> Актуальная SR</label>
             <label class="polling-mode-choice"><input type="radio" name="targetSource" value="device_list"${ui.pollingPlanSelection.targetSource==="device_list"?" checked":""}> Загруженный список XLSX</label>
           </div></fieldset><p class="info-panel">Выполняются только отмеченные ниже действия и только для выбранных целей. Значения столбцов XLSX не создают задачи. Служебные проверки модели/входа и pre/post-read выбранного изменения обязательны.</p>
-          <div class="field"><label for="management-target-list-file">Список устройств для выбранных действий</label><input id="management-target-list-file" name="managementTargetListFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"${ui.managementTargetBusy||automaticPollingMonitor?" disabled":""}></div>
+          <div class="field"><label for="management-target-list-file">Список устройств для выбранных действий</label><input id="management-target-list-file" name="managementTargetListFile" type="file" aria-describedby="management-target-feedback" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"${ui.managementTargetBusy||automaticPollingMonitor?" disabled":""}></div>
+          ${renderManagementTargetFeedback()}
+          <div class="button-row"><button class="button secondary" type="button" data-clear-management-target-list${ui.managementTargetBusy||automaticPollingMonitor?" disabled":""}>Сбросить выбор списка</button></div>
           ${ui.managementWorkbookSheets?`<fieldset class="polling-mode-selector"><legend>Выберите листы XLSX для работы</legend><p>Ни один лист не выбирается автоматически. Подтвердите один или несколько.</p><div>${ui.managementWorkbookSheets.map(name=>`<label class="polling-mode-choice"><input type="checkbox" name="targetSheet" value="${escapeHtml(name)}"${ui.managementSheetSelection?.includes(name)?" checked":""}>${escapeHtml(name)}</label>`).join("")}</div><button type="button" class="button secondary" data-confirm-target-sheets${ui.managementSheetSelection?.length&&!ui.managementTargetBusy?"":" disabled"}>Загрузить выбранные листы</button></fieldset>`:""}
           ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Листы: ${escapeHtml((ui.managementTargetListSummary.sheets||[]).join(", "))}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div><div class="button-row section-gap"><button class="button secondary" type="button" data-download-device-settings-audit>Скачать таблицу фактических настроек</button></div>` : `<p class="muted">Формат — существующая структура SR/XLSX списка работы с портами. Список не заменяет основную SR и аналитику. При нескольких листах требуется явный выбор. После загрузки выберите действия заново.</p>`}
           <label class="polling-tls-option"><input name="collectJson" type="checkbox"${ui.pollingPlanSelection.collectJson !== false ? " checked" : ""}> Формировать JSON-опросы</label><label class="polling-tls-option"><input name="collectLogs" type="checkbox"${ui.pollingPlanSelection.collectLogs ? " checked" : ""}> Собирать логи устройств</label>
@@ -9055,12 +9085,27 @@
   }
 
   async function handleClick(event) {
+    if (event.target.closest("[data-clear-management-target-list]")) {
+      if (ui.managementTargetBusy || automaticPollingMonitor) return;
+      if (managementTargetFileInputSession) managementTargetFileInputSession.value = "";
+      managementTargetFileInputSession = null;
+      managementTargetListSession = null; managementTargetWorkbookSession = null;
+      ui.managementTargetListSummary = null; ui.managementWorkbookSheets = null; ui.managementSheetSelection = [];
+      if (ui.pollingPlanSelection.targetSource === "device_list") {
+        ui.pollingPlanSelection = { ...resetPollingActions(ui.pollingPlanSelection), targetListReady: false };
+        ui.pollingPlanResult = null; ui.zeroIntervalAcknowledged = false;
+      } else ui.pollingPlanSelection.targetListReady = false;
+      setManagementTargetFeedback("empty", "", "Выбор списка сброшен. Выберите XLSX заново. Рабочая база и исходные файлы не изменены.");
+      render(); return;
+    }
     if(event.target.closest("[data-confirm-target-sheets]")){
       if(ui.managementTargetBusy||automaticPollingMonitor)return;
       const names=Array.from(event.target.closest('[data-polling-plan-form]').querySelectorAll('[name="targetSheet"]:checked')).map(element=>element.value);
-      ui.managementTargetBusy=true;refreshOperationStrip();
+      ui.managementTargetBusy=true;
+      setManagementTargetFeedback("reading", managementTargetWorkbookSession?.filename, "Проверка выбранных листов и устройств…");
+      render(); await cooperativeBrowserYield();
       try{await acceptManagementWorkbookSheets(names);setMessage("Выбранные листы загружены. Отметьте только необходимые действия.","success");}
-      catch(error){setMessage((error.safeErrors||["Выбор листов не принят"]).join("; "),"error");}
+      catch(error){const message=(error.safeErrors||["Выбор листов не принят"]).join("; ");setManagementTargetFeedback("error",managementTargetWorkbookSession?.filename,message+" Исправьте выбор листов или файл; запуск заблокирован.");setMessage(message,"error");}
       finally{ui.managementTargetBusy=false;refreshOperationStrip();render();}return;
     }
     if(event.target.closest("[data-dismiss-operation]")){ui.lastOperation=null;refreshOperationStrip();return;}
@@ -9904,6 +9949,7 @@
     }
 
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
+    if (pollingPlanForm && ui.managementTargetBusy) { event.preventDefault(); render(); return; }
     if (pollingPlanForm) {
       event.preventDefault();
       if (launchMode.kind === "local" && ui.adminAccess?.adminUnlocked !== true) { setMessage("Сначала войдите в план опроса.", "error"); render(); return; }
@@ -10447,6 +10493,7 @@
     const dbFilterForm=event.target.closest("[data-db-filters]");
     if(ui.dbMode&&dbFilterForm){dbViews.handleChange(event.target,dbFilterForm);return;}
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
+    if (pollingPlanForm && ui.managementTargetBusy) { render(); return; }
     if(pollingPlanForm&&POLLING_WRITE_FIELDS.includes(event.target.name)){
       ui.pollingPlanSelection[event.target.name]=String(event.target.value||"");ui.pollingPlanResult=null;
       if(event.target.name==="te20NtpServerMode"){const input=pollingPlanForm.querySelector('[name="te20NtpServerValue"]');if(input)input.disabled=event.target.value!=="set";}
@@ -10460,9 +10507,11 @@
     if (pollingPlanForm && event.target.name === "managementTargetListFile") {
       const file = event.target.files?.[0];
       if(ui.managementTargetBusy||automaticPollingMonitor)return;
+      managementTargetFileInputSession = file ? event.target : null;
       managementTargetListSession=null;managementTargetWorkbookSession=null;ui.managementTargetListSummary=null;ui.managementWorkbookSheets=null;ui.managementSheetSelection=[];
       ui.pollingPlanSelection={...resetPollingActions(ui.pollingPlanSelection),targetSource:"device_list",targetListReady:false};ui.pollingPlanResult=null;ui.zeroIntervalAcknowledged=false;
       if (!file || !/\.xlsx$/i.test(file.name)) {
+        setManagementTargetFeedback("error",file?.name,"Выберите список устройств в формате XLSX. Запуск по списку заблокирован.");
         setMessage("Выберите список устройств в формате XLSX.", "error");
         event.target.value = "";
         render();
@@ -10470,7 +10519,9 @@
       }
       let fileBuffer = null;
       if(ui.managementTargetBusy)return;
-      ui.managementTargetBusy=true;refreshOperationStrip();
+      ui.managementTargetBusy=true;
+      setManagementTargetFeedback("reading",file.name,"Чтение XLSX и проверка контрольной суммы…");
+      render();
       try {
         await cooperativeBrowserYield();
         fileBuffer = await readFileArrayBuffer(file);
@@ -10478,14 +10529,14 @@
         managementTargetWorkbookSession={workbook,filename:file.name,sourceSha256:await sha256Bytes(fileBuffer)};
         ui.managementWorkbookSheets=[...(workbook.SheetNames||[])];
         if(ui.managementWorkbookSheets.length===1){await acceptManagementWorkbookSheets(ui.managementWorkbookSheets);setMessage("Список загружен. Отметьте только необходимые действия.","success");}
-        else setMessage("В файле несколько листов. Выберите и подтвердите листы для работы; до этого список не используется.","info");
+        else {setManagementTargetFeedback("sheets",file.name,"Файл прочитан. Выберите один или несколько листов ниже и нажмите «Загрузить выбранные листы». До подтверждения список не используется.");setMessage("В файле несколько листов. Выберите и подтвердите листы для работы; до этого список не используется.","info");}
       } catch (error) {
         const details = Array.isArray(error.safeErrors) ? error.safeErrors.join("; ") : "Проверьте структуру XLSX и уникальность IP-адресов.";
+        setManagementTargetFeedback("error",file.name,`Список не принят. ${details} Запуск заблокирован; для повторного выбора того же файла нажмите «Сбросить выбор списка».`);
         setMessage(`Список устройств не принят. ${details} Запуск по списку заблокирован до корректной загрузки.`, "error");
       } finally {
         ui.managementTargetBusy=false;refreshOperationStrip();
         if (fileBuffer) new Uint8Array(fileBuffer).fill(0);
-        event.target.value = "";
       }
       render();
       return;

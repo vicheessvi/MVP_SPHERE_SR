@@ -8,3 +8,4 @@
 - [x] T006 Write-only journal, неизменяемый job и безопасный recovery.
 - [x] T007 UI source/sheet selection, preview/reset/confirmation и визуальный QA.
 - [x] T008 Request-spy матрица и полные regressions, XLSX QA, docs/ADR/справочник.
+- [x] T009 2026-11-24 исправить исчезновение native FileList после render: сохранять только file input, показывать локальный статус/ошибки, проверить одиночный/многостраничный XLSX, DB rerender и явный reset без изменений активной SR.
