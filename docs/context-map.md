@@ -1,5 +1,20 @@
 # Карта контекста
 
+## Feature 065 — смешанный Answer mode по контрактам
+
+- `specs/065-mixed-answer-mode/`, ADR-0069: новый plan v5 с per-device binding,
+  legacy v3/v4 не меняются. Группы выбираются независимо, остальные writes отдельно.
+- `app.js`: существующие пять групп, preview действий каждого устройства,
+  snapshot и одно подтверждение с распределением. Нет действий — нет подключения.
+- `polling.py`/`server.py`: source/catalog/binding validation до сети, dispatch
+  только назначенного action, Polycom options только Polycom; интервалы исключают noop.
+- `polling_job.py`/`runtime/polling-recovery.js`: отдельный notRequested, immutable
+  bindings/outcomes, сохранение scope при resume без повтора неизвестной записи.
+- Проверки: `test_mixed_answer_mode.py`, `scripts/test-mixed-answer-plan.js`,
+  `scripts/check-explicit-plan-ui.py --mixed` + `check-mixed-answer-ui.js`:
+  15 exact моделей, 5 контрактов, forged API reject, No-change/JSON/logs isolation.
+  Все устройства/credentials в тестах синтетические, vendor adapters не менялись.
+
 ## Feature 064 — продолжение перепроверки при файловых ошибках
 
 - `specs/064-resilient-log-recheck/`, ADR-0068: ошибка файла не прерывает обход;

@@ -355,7 +355,7 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         plan = value.get("plan")
         try:
             assert_no_plan_secrets(plan)
-            if not isinstance(plan, dict) or plan.get("schemaVersion") not in (3,4) or not isinstance(plan.get("devices"), list) or not plan["devices"]:
+            if not isinstance(plan, dict) or plan.get("schemaVersion") not in (3,4,5) or not isinstance(plan.get("devices"), list) or not plan["devices"]:
                 raise ValueError("plan_invalid")
             validate_plan_actions(plan)
             management_tasks = plan.get("managementTasks") or []

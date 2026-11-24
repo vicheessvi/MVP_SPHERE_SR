@@ -103,6 +103,7 @@ class PollingJob:
             "status": "scheduled",
             "total": len(plan["devices"]),
             "processed": 0,
+            "notRequested": 0,
             "successful": 0,
             "failed": 0,
             "unsupported": 0,
@@ -271,7 +272,9 @@ class PollingJob:
                 if log_status == "saved": self._state["logsSaved"] += 1
                 elif log_status == "failed": self._state["logsFailed"] += 1
                 elif log_status == "protocol_required": self._state["logsUnsupported"] += 1
-                if result.get("ok"):
+                if result.get("notRequested") is True:
+                    self._state["notRequested"] += 1
+                elif result.get("ok"):
                     self._state["successful"] += 1
                 elif result.get("networkAttempted") is False:
                     self._state["unsupported"] += 1

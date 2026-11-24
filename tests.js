@@ -28,6 +28,10 @@
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
   const tests = [];
 
+  if (typeof require === "function") test("Смешанный Answer mode v5: per-device bindings, No change и recovery", async () => {
+    await require("./scripts/test-mixed-answer-plan").run();
+  });
+
   if (typeof require === "function") test("Перепроверка логов продолжает остальные файлы, сохраняет доказательства и принимает XML padding", async () => {
     await require("./scripts/test-resilient-log-recheck").run();
   });

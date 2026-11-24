@@ -28,6 +28,9 @@ TE_FAMILY_ANSWER_TASKS = frozenset({"set_te_family_auto_answer_automatic", "set_
 HUAWEI_310_ANSWER_TASKS = frozenset({"set_huawei_310_auto_answer_automatic", "set_huawei_310_auto_answer_manual"})
 HUAWEI_300_ANSWER_TASKS = frozenset({"set_huawei_300_auto_answer_automatic", "set_huawei_300_auto_answer_manual"})
 POLYCOM_ANSWER_TASK = "set_polycom_group_auto_answer"
+ANSWER_TASK_GROUPS = (TE20_ANSWER_TASKS, TE_FAMILY_ANSWER_TASKS, HUAWEI_310_ANSWER_TASKS,
+                      HUAWEI_300_ANSWER_TASKS, frozenset({POLYCOM_ANSWER_TASK}))
+ALL_ANSWER_TASKS = frozenset().union(*ANSWER_TASK_GROUPS)
 TE20_HTTP_TASKS = frozenset({"set_te20_http_open", "set_te20_http_closed"})
 TE20_TELNET_TASKS = frozenset({"set_te20_telnet_open", "set_te20_telnet_closed"})
 TE20_PORT_TASKS = TE20_HTTP_TASKS | TE20_TELNET_TASKS
@@ -85,6 +88,33 @@ def validate_power_changes(plan: dict[str, Any], requested_tasks: list[str]) -> 
         raise PollingError("Power settings are invalid or conflict")
 
 
+def validate_mixed_answer_tasks(plan: dict[str, Any], tasks: list[str]) -> None:
+    if (plan.get("managementRouting") != "per_device_answer" or not tasks
+            or any(task not in ALL_ANSWER_TASKS for task in tasks)
+            or len(set(tasks)) != len(tasks)
+            or any(len(group.intersection(tasks)) > 1 for group in ANSWER_TASK_GROUPS)
+            or plan.get("ntpChanges") is not None or plan.get("powerChanges") is not None):
+        raise PollingError("Mixed routing is only for one Answer Mode target per contract")
+    devices = plan.get("devices")
+    selection = plan.get("selection") or {}
+    if (not isinstance(devices, list) or not devices or not isinstance(selection, dict)
+            or selection.get("mode") not in ("single_ip", "filters")
+            or selection.get("mode") == "single_ip" and len(devices) != 1
+            or plan.get("targetSource") not in ("sr", "device_list")
+            or not re.fullmatch(r"[a-f0-9]{64}", str(plan.get("targetSourceSha256") or "").casefold())):
+        raise PollingError("Mixed Answer Mode source is invalid")
+    for device in devices:
+        if not isinstance(device, dict):
+            raise PollingError("Mixed Answer Mode target is invalid")
+        families = [group for group in ANSWER_TASK_GROUPS
+                    if resolve_management_action(device, min(group)).get("supported")]
+        if len(families) != 1:
+            raise PollingError("Mixed Answer Mode requires a known exact contract for every target")
+        expected = [task for task in tasks if task in families[0]]
+        if device.get("managementTasks") != expected:
+            raise PollingError("Device Answer Mode binding differs from the selected contract")
+
+
 def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: list[str]) -> None:
     polycom_changes = plan.get("polycomAnswerChanges")
     if POLYCOM_ANSWER_TASK in requested_tasks:
@@ -94,6 +124,9 @@ def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: lis
             raise PollingError("Polycom Answer Mode targets are invalid")
     elif polycom_changes is not None:
         raise PollingError("Polycom Answer Mode targets require the exact action")
+    if plan.get("schemaVersion") == 5:
+        validate_mixed_answer_tasks(plan, requested_tasks)
+        return
     answer_tasks = (TE20_ANSWER_TASKS | TE_FAMILY_ANSWER_TASKS | HUAWEI_310_ANSWER_TASKS | HUAWEI_300_ANSWER_TASKS | {POLYCOM_ANSWER_TASK}).intersection(requested_tasks)
     if answer_tasks:
         selection = plan.get("selection") or {}
@@ -181,8 +214,8 @@ def validate_plan_actions(plan: dict[str,Any]) -> None:
     if (type(plan.get("collectJson",True)) is not bool or type(plan.get("collectLogs",False)) is not bool
             or plan.get("collectJson") is False and plan.get("collectLogs") is not True and not tasks):
         raise PollingError("Select at least one explicit action")
-    strict=plan.get("schemaVersion")==4
-    if plan.get("targetSource")=="device_list" and not strict:raise PollingError("Device lists require explicit plan v4")
+    strict=plan.get("schemaVersion") in (4,5)
+    if plan.get("targetSource")=="device_list" and not strict:raise PollingError("Device lists require explicit plan v4/v5")
     if not strict:return
     if (type(plan.get("collectJson")) is not bool or type(plan.get("collectLogs")) is not bool
             or not isinstance(plan.get("managementTasks"),list) or len(set(tasks))!=len(tasks)
@@ -209,7 +242,9 @@ def validate_plan_actions(plan: dict[str,Any]) -> None:
         if ip is None or ip not in source_ips:raise PollingError("Target is absent from the selected source")
         selected.append(ip)
         if (tasks or plan["collectLogs"]) and not plan_device_supported(device):raise PollingError("Selected operation requires a supported target")
-        if any(not resolve_management_action(device,action).get("supported") for action in tasks):raise PollingError("Selected write is unsupported by a target")
+        if plan.get("schemaVersion") != 5:
+            if "managementTasks" in device:raise PollingError("Device bindings require plan v5")
+            if any(not resolve_management_action(device,action).get("supported") for action in tasks):raise PollingError("Selected write is unsupported by a target")
         if plan["collectLogs"] and resolve_manifest(device).get("transport") not in LOG_TRANSPORTS:raise PollingError("Selected logs are unsupported by a target")
     if len(set(selected))!=len(selected):raise PollingError("Explicit targets contain duplicate IP")
     if "disable_insecure_management_services" in tasks and source!="device_list":raise PollingError("Bulk port changes require the uploaded source")
@@ -420,9 +455,13 @@ def plan_interval_bounds(plan: dict[str, Any]) -> tuple[int, int]:
 def validate_plan_interval(plan: dict[str, Any]) -> tuple[int, int]:
     minimum, maximum = plan_interval_bounds(plan)
     devices = plan.get("devices") or []
-    if minimum == maximum and minimum != 0 and sum(plan_device_supported(device) for device in devices if isinstance(device, dict)) > 2:
+    if minimum == maximum and minimum != 0 and sum(plan_device_supported(device) and device_has_operations(plan,device) for device in devices if isinstance(device, dict)) > 2:
         raise PollingError("At least two interval values are required for three or more supported devices")
     return minimum, maximum
+
+
+def device_has_operations(plan: dict[str, Any], device: dict[str, Any]) -> bool:
+    return plan.get("schemaVersion") != 5 or plan.get("collectJson") is True or plan.get("collectLogs") is True or bool(device.get("managementTasks"))
 
 
 def choose_interval_seconds(minimum: int, maximum: int, previous: int | None) -> int:
@@ -472,22 +511,34 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
             abortable_wait(delay, cancel_event, settings.get("wait"))
     allowed_ips = set(valid_ips)
     results: list[dict[str, Any]] = []
+    contacts = [plan_device_supported(device) and device_has_operations(plan,device) for device in devices]
+    remaining_contacts = sum(contacts)
     previous_interval: int | None = None
     for index, device in enumerate(devices):
         if cancel_event is not None and cancel_event.is_set():
             break
         ip = ips[index]
-        if not ip or not plan_device_supported(device):
+        device_tasks = list(device["managementTasks"]) if plan.get("schemaVersion") == 5 else requested_management_tasks
+        if contacts[index]: remaining_contacts -= 1
+        if not device_has_operations(plan,device):
+            result = {"ip":ip,"capturedAt":utc_now(),"adapterKey":resolve_manifest(device)["key"],"ok":True,
+                      "notRequested":True,"networkAttempted":False,"managementActions":[],"readMode":"not_requested"}
+        elif not ip or not plan_device_supported(device):
             manifest = resolve_manifest(device)
             result = {"ip": ip, "capturedAt": utc_now(), "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": None, "durationMs": None}, "networkAttempted": False, "vendorPolling": {"status": manifest.get("protocolStatus") or "protocol_required", "knownModel": manifest["knownModel"]}, "safeError": "verified_protocol_contract_required" if ip else "invalid_or_missing_ip"}
-            result = _complete_management_actions(device, requested_management_tasks, result)
+            result = _complete_management_actions(device, device_tasks, result)
         else:
             progress = settings.get("on_progress")
             if progress:
                 progress({"stage": "polling", "index": index, "total": len(devices), "device": {"ip": ip, "category": device.get("category"), "manufacturer": device.get("manufacturer"), "model": device.get("model")}})
             on_log = settings.get("on_log")
             log_callback = (lambda stream, metadata: on_log(stream, {**metadata, "index": index, "total": len(devices)})) if callable(on_log) else None
-            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges"), "polycom_answer_changes": plan.get("polycomAnswerChanges"), "collect_json":plan.get("collectJson",True),"collect_logs": plan.get("collectLogs") is True,"strict_actions":plan.get("schemaVersion")==4, "on_log": log_callback})
+            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": device_tasks,
+                "ntp_changes": plan.get("ntpChanges") if TE20_NTP_TASK in device_tasks else None,
+                "power_changes": plan.get("powerChanges") if TE20_POWER_TASK in device_tasks else None,
+                "polycom_answer_changes": plan.get("polycomAnswerChanges") if POLYCOM_ANSWER_TASK in device_tasks else None,
+                "collect_json":plan.get("collectJson",True),"collect_logs": plan.get("collectLogs") is True,
+                "strict_actions":plan.get("schemaVersion") in (4,5), "on_log": log_callback})
         if plan.get("collectLogs") is True and "logCollection" not in result:
             log_status = "not_started" if result.get("adapterKey") in LOG_ADAPTER_KEYS else "protocol_required"
             result = {**result, "logCollection": {"status": log_status}}
@@ -496,7 +547,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
             settings["on_result"](result, {"index": index, "total": len(devices), "device": device})
         if settings.get("on_progress"):
             settings["on_progress"]({"stage": "processed", "index": index + 1, "total": len(devices), "result": result})
-        has_next_supported = any(plan_device_supported(candidate) for candidate in devices[index + 1 :])
+        has_next_supported = remaining_contacts > 0
         if result.get("networkAttempted") is not False and has_next_supported and (interval_min != 0 or interval_max != 0):
             interval = choose_interval_seconds(interval_min, interval_max, previous_interval)
             previous_interval = interval
