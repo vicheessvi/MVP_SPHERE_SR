@@ -55,6 +55,17 @@ class ReadModelTests(unittest.TestCase):
     def view(self, name, filters=None, **kwargs):
         return self.model.view(self.workspace, self.revision, name, filters or {}, **kwargs)
 
+    def test_rules_upgrade_notice_excludes_explicit_failed_or_metadata_only_analysis(self):
+        token=self.model.begin(self.workspace,self.revision,"logs")["token"]
+        self.model.batch(self.workspace,token,"logRegistry",[
+            {"path":"bad.xml","format":"Huawei TE XML","deviceId":"te","analysisStatus":"Ошибка разбора","analysisRuleset":None},
+            {"path":"metadata.xml","format":"Huawei TE XML","deviceId":"te","analysisStatus":"Вне анализа Huawei TE/310/300","analysisRuleset":None},
+            {"path":"incomplete.xml","format":"Huawei TE XML","deviceId":"te","analysisComplete":False,"analysisRuleset":None},
+            {"path":"good.xml","format":"Huawei TE XML","deviceId":"te","analysisComplete":True,"analysisRuleset":"current-synthetic"},
+        ])
+        self.model.finish(self.workspace,token,"a"*64)
+        self.assertEqual(self.model.bootstrap(self.workspace)["logRulesets"],[{"ruleset":"current-synthetic","files":1}])
+
     def test_migrated_summary_and_dynamic_gap_preserve_ip_and_status_gates(self):
         summary = self.view("summary")
         counts = {row["kind"]: row["events"] for row in summary["groups"]}

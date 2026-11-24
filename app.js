@@ -2415,6 +2415,24 @@
     return null;
   }
 
+  const LOG_IMPORT_PROBLEM_LIMIT = 100;
+  function hasPriorLogAnalysis(row) {
+    if (!row) return false;
+    if (row.analysisComplete === true || /^[a-f0-9]{64}$/i.test(row.analysisDigest || "")) return true;
+    if (row.analysisComplete === false || row.analysisStatus === "Ошибка разбора"
+      || row.analysisStatus === "Вне анализа Huawei TE/310/300" || row.format === "Ошибка чтения") return false;
+    // Unknown legacy state is conservative: never infer that its evidence was empty.
+    return ["Huawei TE XML", "Huawei 310 XML", "Huawei 300 XML"].includes(row.format);
+  }
+
+  function logFileProblemReason(row, kind, scan) {
+    if (row.format === "Ошибка чтения") return "read_failed";
+    if (["Неизвестный формат", "XML (неизвестная схема)", "ZIP (без распаковки)"].includes(row.format)) return "unsupported_log_format";
+    if (row.matchStatus !== "Сопоставлено") return "device_unmatched";
+    if (kind && scan?.ok !== true) return ["incomplete_log", "unsupported_log_format", "invalid_file", "worker_failed"].includes(scan?.reason) ? scan.reason : "read_failed";
+    return null;
+  }
+
   async function prepareDeviceLogImport(files, currentState, options) {
     const sourceFiles = Array.isArray(files) ? files : [];
     if (!sourceFiles.length) throw new Error("log_import_empty");
@@ -2424,13 +2442,16 @@
     let skippedFiles = 0;
     let recoveredFiles = 0;
     let savedFiles = 0;
+    let problemCount = 0, blockingCount = 0;
+    const blockingProblems = [], otherProblems = [];
     let physicalBytes = 0;
     let scanStart = 0;
     const totalBytes = sourceFiles.reduce((sum, file) => sum + (Number.isSafeInteger(file.size) ? file.size : 0), 0);
     const report = (phase, processed, bytesRead) => {
       const elapsed = scanStart ? (monotonicNow() - scanStart) / 1000 : 0;
       settings.onProgress?.({ phase, processed, total: sourceFiles.length, bytesRead, totalBytes, skippedFiles, recoveredFiles,
-        savedFiles, physicalBytes, bytesPerSecond: elapsed >= 0.5 ? physicalBytes / elapsed : null });
+        savedFiles, physicalBytes, failedFiles: problemCount, blockingFiles: blockingCount,
+        bytesPerSecond: elapsed >= 0.5 ? physicalBytes / elapsed : null });
     };
     const entries = [];
     report("classifying", 0, 0);
@@ -2472,7 +2493,7 @@
       return old && (old.size !== row.size || old.lastModified !== row.sourceLastModified
         || old.prefixSha256 !== row.prefixSha256 || old.format !== row.format || old.deviceId !== row.deviceId);
     });
-    const rulesChanged=oldRegistry.some(item=>{const expected=logAnalysisRuleVersion(item,currentDevices);return expected&&(item.analysisRuleVersion!==expected||item.analysisRuleset!==LOG_ANALYSIS_RULESET);});
+    const rulesChanged=oldRegistry.some(item=>{const expected=logAnalysisRuleVersion(item,currentDevices);return hasPriorLogAnalysis(item)&&expected&&(item.analysisRuleVersion!==expected||item.analysisRuleset!==LOG_ANALYSIS_RULESET);});
     const fullRecheck = settings.forceRescan === true || srChanged || changedOldFile || rulesChanged;
     if (fullRecheck && oldRegistry.some((item) => !selectedPaths.has(item.path))) throw new Error(rulesChanged?"log_rules_recheck_required":"log_full_reimport_required");
     const reuseExisting = oldRegistry.length > 0 && !fullRecheck;
@@ -2501,16 +2522,18 @@
       || (global.navigator?.hardwareConcurrency || 2) < 4 ? 1 : 2;
     const readByLane = Array(concurrency).fill(0);
     const readingProgress = () => report("analyzing", processed, completedBytes + readByLane.reduce((sum, value) => sum + value, 0));
-    const clients = Array.from({ length: concurrency }, (_, lane) => settings.scanClient || LOG_SCAN_CLIENT.createLogScanClient({ onProgress: (done) => {
+    const createClient = lane => settings.scanClient || LOG_SCAN_CLIENT.createLogScanClient({ onProgress: (done) => {
       physicalBytes += Math.max(0, done - readByLane[lane]);
       readByLane[lane] = done;
       readingProgress();
-    } }));
+    } });
+    const clients = Array.from({ length: concurrency }, (_, lane) => createClient(lane));
     const client = { cancel() { for (const worker of clients) worker.cancel?.(); } };
     settings.onClient?.(client);
     const findOld = (row) => {
       const old = reuseExisting ? oldByPath.get(row.path) : null;
       return old && old.analysisStatus !== "Ошибка разбора" && old.format !== "Ошибка чтения"
+        && !(logAnalysisRuleVersion(row, currentDevices) && !hasPriorLogAnalysis(old))
         && old.size === row.size && old.lastModified === row.sourceLastModified
         && old.prefixSha256 === row.prefixSha256 && old.format === row.format && old.deviceId === row.deviceId ? old : null;
     };
@@ -2540,13 +2563,11 @@
         try { scan = await clients[lane].scan(sourceFiles[index], kind, model); }
         catch (error) {
           if (shouldCancel() || error?.message === "log_scan_cancelled") throw new Error("log_import_cancelled");
-          if (error?.message === "log_worker_failed") throw error;
-          scan = { ok: false, reason: "read_failed", markers: [] };
+          const crashed = error?.message === "log_worker_failed";
+          scan = { ok: false, reason: crashed ? "worker_failed" : "read_failed", markers: [] };
+          if (crashed && !settings.scanClient) { clients[lane].close?.(); clients[lane] = createClient(lane); }
         }
       }
-      if (fullRecheck && oldByPath.has(row.path)
-        && (row.format === "Ошибка чтения" || row.matchStatus !== "Сопоставлено" || (kind && !scan?.ok)))
-        throw new Error("log_recheck_incomplete");
       // First persist a completed analysis; only then acknowledge the file in progress.
       if (key && scan?.ok) {
         await checkpoint.write(checkpointScope, key, { kind, scan });
@@ -2555,6 +2576,19 @@
       }
       checkCancel();
       return { kind, scan };
+    }
+    const problemReport = () => ({ items: [...blockingProblems, ...otherProblems].slice(0, LOG_IMPORT_PROBLEM_LIMIT),
+      total: problemCount, blocking: blockingCount, processed, totalFiles: sourceFiles.length, savedFiles, recoveredFiles, canResume: Boolean(checkpoint) });
+    function recordProblem(row, kind, scan) {
+      const protectsEvidence = fullRecheck && hasPriorLogAnalysis(oldByPath.get(row.path));
+      const reason = logFileProblemReason(row, kind, scan)
+        || (protectsEvidence && (!kind || scan?.ok !== true) ? "unsupported_log_format" : null);
+      if (!reason) return;
+      const blocking = protectsEvidence && (!kind || scan?.ok !== true);
+      problemCount += 1;
+      if (blocking) blockingCount += 1;
+      const target = blocking ? blockingProblems : otherProblems;
+      if (target.length < LOG_IMPORT_PROBLEM_LIMIT) target.push({ path: row.path, reason, blocking, size: row.size });
     }
     try {
       scanStart = monotonicNow();
@@ -2570,6 +2604,7 @@
         }
         const { old, kind, scan, recovered } = wave[lane];
         readByLane[lane] = 0;
+        recordProblem(row, kind, scan);
         if (old) {
           const previousRow = oldRowsByPath.get(row.path);
           row.analysisStatus = previousRow?.analysisStatus || old.analysisStatus || "Ранее обработан";
@@ -2590,7 +2625,8 @@
         rowsByPath.set(row.path, row);
         const registry = { path: row.path, size: row.size, lastModified: row.sourceLastModified,
           prefixSha256: row.prefixSha256, format: row.format, deviceId: row.deviceId,
-          analysisRuleVersion:logAnalysisRuleVersion(row,currentDevices),analysisRuleset:kind?LOG_ANALYSIS_RULESET:null,
+          analysisComplete: scan?.ok === true,
+          analysisRuleVersion:scan?.ok ? logAnalysisRuleVersion(row,currentDevices) : null,analysisRuleset:scan?.ok?LOG_ANALYSIS_RULESET:null,
           contentDigest: scan?.contentDigest || null, digestAlgorithm: scan?.digestAlgorithm || null,
           analysisStatus: row.analysisStatus, analysisDigest: scan?.ok
             ? await sha256Text(JSON.stringify({ markers: scan.markers, bootGaps: scan.bootGaps || [] })) : null };
@@ -2606,6 +2642,12 @@
         if ((index + 1) % 8 === 0) await new Promise((resolve) => global.setTimeout(resolve, 0));
       }
       checkCancel();
+      if (blockingCount) {
+        report("blocked", processed, completedBytes);
+        const error = new Error("log_recheck_incomplete");
+        error.logProblems = problemReport();
+        throw error;
+      }
       report("summarizing", processed, completedBytes);
       await cooperativeBrowserYield();
       checkCancel();
@@ -2627,8 +2669,13 @@
         indexes[kind].coverage.files = group.length;
         indexes[kind].coverage.invalidFiles = group.filter((row) => row.analysisStatus === "Ошибка разбора").length;
       }
-      return { rows, summary: summarizeDeviceLogRows(rows), indexes, registry: [...registryByPath.values()], skippedFiles, recoveredFiles,rulesChanged,fullRecheck,
+      const summary = summarizeDeviceLogRows(rows);
+      summary.issues = Math.max(summary.issues, problemCount);
+      return { rows, summary, problems: problemReport(), indexes, registry: [...registryByPath.values()], skippedFiles, recoveredFiles,rulesChanged,fullRecheck,
         checkpoint: checkpointKeys.length ? { scope: checkpointScope, keys: checkpointKeys } : null };
+    } catch (error) {
+      if (error && typeof error === "object" && !error.logProblems) error.logProblems = problemReport();
+      throw error;
     } finally {
       for (const worker of clients) worker.close?.();
     }
@@ -6741,6 +6788,7 @@
     huawei300BarLogIndex: { events: [], coverage: null, sourceSrSha256: null },
     huawei300BoxLogIndex: { events: [], coverage: null, sourceSrSha256: null, validationStatus: "confirmed_user_validation" },
     logImportProgress: null,
+    logImportProblems: null,
     logImportFeedback: null,
     logCompletedCheckpoint: null,
     logImportBusy: false,
@@ -7648,9 +7696,39 @@
 
   function logImportProgressText(progress) {
     const phase = { preparing:"Подготовка импорта и проверка прежних результатов в БД", classifying: "Проверка файлов", analyzing: "Чтение и анализ логов",
-      summarizing: "Объединение событий", saving: "Запись аналитики в рабочую базу" }[progress.phase] || "Импорт";
+      summarizing: "Объединение событий", blocked: "Проверка завершена, публикация ожидает исправления файлов", saving: "Запись аналитики в рабочую базу" }[progress.phase] || "Импорт";
     if (progress.phase === "classifying") return `${phase}: ${progress.processed} из ${progress.total}.`;
-    return `${phase}: ${progress.processed} из ${progress.total} файлов · обработано ${formatBytes(progress.bytesRead || 0)} из ${formatBytes(progress.totalBytes || 0)} · перечитывать не пришлось: ${progress.skippedFiles || 0}.`;
+    return `${phase}: ${progress.processed} из ${progress.total} файлов · обработано ${formatBytes(progress.bytesRead || 0)} из ${formatBytes(progress.totalBytes || 0)} · перечитывать не пришлось: ${progress.skippedFiles || 0} · проблемы: ${progress.failedFiles || 0}${progress.blockingFiles ? ` (нужна перепроверка прежних доказательств: ${progress.blockingFiles})` : ""}.`;
+  }
+
+  function logImportProblemLabel(reason) {
+    return {
+      incomplete_log: "Не найдено завершение XML LogModule. Повторно выгрузите этот лог с терминала; исходник не удаляйте и не дописывайте вручную.",
+      read_failed: "Не удалось прочитать файл. Проверьте доступ к нему и к диску, затем повторите импорт.",
+      invalid_file: "Браузер не смог открыть файл. Выберите исходную папку повторно.",
+      unsupported_log_format: "Формат не распознан для событийной аналитики. Проверьте, что выбран исходный экспорт нужного устройства, а не другой файл.",
+      device_unmatched: "Нет однозначного соответствия актуальной SR. Проверьте соответствующую выгрузку SR и исходный IP в имени файла; не переименовывайте файл для подгонки сопоставления.",
+      worker_failed: "Обработчик файла аварийно завершился. Остальные файлы проверяются новым обработчиком; этот файл можно повторить отдельно при продолжении."
+    }[reason] || "Файл не проверен. Исходные данные и прежняя аналитика не изменены.";
+  }
+
+  function renderLogImportProblems(problems) {
+    if (!problems?.total) return "";
+    const items = Array.isArray(problems.items) ? problems.items.slice(0, LOG_IMPORT_PROBLEM_LIMIT) : [];
+    const resume = problems.canResume
+      ? "При продолжении будут использованы сохранённые контрольные точки."
+      : "Без рабочей базы постоянных контрольных точек нет; при повторе потребуется чтение файлов.";
+    const notice = problems.blocking
+      ? `Остальные файлы обработаны. Прежняя аналитика остаётся активной. ${resume} Исправьте доступ или повторно получите указанные логи, затем выберите ту же полную папку. Исходные логи и прежние результаты не удаляйте.`
+      : "Эти файлы не считаются успешно разобранными событиями. Без прежних событийных доказательств они не блокируют обработку остальных файлов.";
+    const rows = items.map(item => `<tr><td class="break-word">${escapeHtml(item.path)}</td><td>${escapeHtml(logImportProblemLabel(item.reason))}<br><small>Код: ${escapeHtml(item.reason)}</small></td><td>${item.blocking ? "Сохраняем прежние доказательства; нужна проверка файла" : "Не блокирует остальные файлы"}</td></tr>`).join("");
+    return `<section class="warning-panel section-gap" data-log-import-problems role="status">
+      <h3>${problems.blocking ? "Публикация ожидает исправления файлов" : "Замечания к файлам"}</h3>
+      <p>Проверено: ${problems.processed} из ${problems.totalFiles}. Проблем: ${problems.total}; блокируют замену прежних доказательств: ${problems.blocking}. Сохранено готовых разборов: ${problems.savedFiles}; восстановлено: ${problems.recoveredFiles}.</p>
+      <p>${escapeHtml(notice)}</p>
+      <div class="table-wrap"><table><thead><tr><th>Файл</th><th>Причина и действие</th><th>Влияние</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${problems.total > items.length ? `<p>Показаны первые ${items.length} из ${problems.total}; сначала блокирующие файлы.</p>` : ""}
+    </section>`;
   }
 
   function logImportSpeedText(progress) {
@@ -7662,7 +7740,7 @@
 
   function updateLogImportProgress(progress, force = false) {
     ui.logImportProgress = progress;
-    const phase=progress.phase==="classifying"?"classifying":progress.phase==="analyzing"?"analyzing":progress.phase==="saving"||progress.phase==="summarizing"?"publishing":"preparing";
+    const phase=progress.phase==="classifying"?"classifying":progress.phase==="analyzing"||progress.phase==="blocked"?"analyzing":progress.phase==="saving"||progress.phase==="summarizing"?"publishing":"preparing";
     advanceImport("logs",{phase,done:phase==="classifying"?progress.processed:phase==="analyzing"?progress.bytesRead:0,total:phase==="classifying"?progress.total:phase==="analyzing"?progress.totalBytes:100,caption:{classifying:"Проверка файлов",analyzing:"Чтение, анализ и сохранение логов",publishing:"Публикация аналитики в БД",preparing:"Подготовка импорта"}[phase]},false);
     const now = Date.now();
     if (!force && now - logImportLastProgressAt < 250) return;
@@ -8736,6 +8814,7 @@
         <form class="form-grid" data-log-import-form novalidate aria-busy="${ui.logImportBusy}"><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required${logBlock ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forceRescan" type="checkbox"${logBlock ? " disabled" : ""}> Перепроверить ранее загруженные файлы целиком</label><button class="button primary" type="submit" aria-describedby="log-import-feedback"${logBlock ? " disabled" : ""}>${ui.logImportBusy?"Импорт выполняется…":ui.workspaceStatus?.pendingLogFiles > 0 ? "Продолжить импорт логов" : "Импортировать папку логов"}</button></form>
         <p id="log-import-feedback" data-log-import-feedback class="${logFeedback?.type==="error"?"error-panel":logFeedback?.type==="warning"?"warning-panel":"info-panel"}" role="status"${logFeedback?"":" hidden"}>${escapeHtml(logFeedback?.message||"")}</p>
         ${renderImportActivity("logs")}
+        ${renderLogImportProblems(ui.logImportProblems)}
         ${ui.logImportProgress ? `<div class="log-import-progress"><p data-log-import-progress role="status">${escapeHtml(logImportProgressText(ui.logImportProgress))}</p><p data-log-import-speed>${escapeHtml(logImportSpeedText(ui.logImportProgress))}</p>${ui.logImportProgress.phase === "saving" ? "" : `<button class="button danger" type="button" data-cancel-log-import${ui.logImportCancelRequested ? " disabled" : ""}>${ui.logImportCancelRequested ? "Остановка…" : "Остановить импорт"}</button>`}</div>` : ""}
         ${ui.logImportSummary ? `<div class="upload-outcome section-gap" role="status"><strong>Логи импортированы</strong><span>Файлов: ${ui.logImportSummary.files} · размер: ${escapeHtml(formatBytes(ui.logImportSummary.bytes))} · сопоставлено: ${ui.logImportSummary.matched} · проблемы: ${ui.logImportSummary.issues} · без повторного чтения: ${ui.logImportSummary.skippedFiles || 0}</span><span>${Object.entries(ui.logImportSummary.formats).map(([kind, count]) => `${escapeHtml(kind)}: ${count}`).join(" · ")}</span>${ui.dbMode ? '<span>События сохранены в базе. Сводки доступны в модуле анализа перезагрузок.</span>' : `<span>Huawei TE: перезагрузок ${ui.teLogIndex.coverage?.confirmedReboots || 0} · отключений ${ui.teLogIndex.coverage?.powerOffs || 0} · запусков без причины ${ui.teLogIndex.coverage?.unknownStarts || 0}</span>`}</div>${ui.dbMode ? "" : `<div class="table-wrap section-gap"><table><thead><tr><th>Файл</th><th>Папка запуска</th><th>Тип</th><th>Размер</th><th>IP</th><th>Устройство SR</th><th>Сопоставление</th><th>Анализ</th></tr></thead><tbody>${ui.logImportRows.slice(0, 100).map((row) => `<tr><td>${escapeHtml(row.path)}</td><td>${escapeHtml(row.runFolder || "—")}</td><td>${escapeHtml(row.format)}</td><td>${escapeHtml(formatBytes(row.size))}</td><td>${escapeHtml(row.ip || "—")}</td><td>${escapeHtml(row.deviceName || "—")}</td><td>${escapeHtml(row.matchStatus)}</td><td>${escapeHtml(row.analysisStatus || "—")}</td></tr>`).join("")}</tbody></table></div>${ui.logImportRows.length > 100 ? `<p class="muted">Показаны первые 100 файлов из ${ui.logImportRows.length}; итоги рассчитаны по всей папке.</p>` : ""}`}` : ""}
       </section>
@@ -9701,6 +9780,7 @@
       startImport("logs");
       ui.logImportCancelRequested = false;
       ui.logImportFeedback=null;
+      ui.logImportProblems=null;
       const totalBytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
       ui.logImportProgress = { phase: "preparing", processed: 0, total: files.length, bytesRead: 0, totalBytes };
       try {
@@ -9731,6 +9811,7 @@
           } : {})
         });
         if (ui.logImportCancelRequested) throw new Error("log_import_cancelled");
+        ui.logImportProblems = imported.problems;
         ui.teLogIndex = imported.indexes.te;
         ui.huawei310LogIndex = imported.indexes.huawei310;
         ui.huawei300BarLogIndex = imported.indexes.huawei300Bar;
@@ -9758,14 +9839,19 @@
         else workspaceSaved = ui.workspaceStatus?.status !== "ready" || await queueWorkspaceSave();
         const outcome=workspaceSaved ? (imported.rulesChanged?"Перепроверка по новым правилам Shut down завершена. ":"")+"Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ", восстановлено после остановки: " + imported.recoveredFiles + ". Исходные файлы не изменены."
           : "Логи импортированы, но рабочую базу сохранить не удалось. До закрытия вкладки повторите сохранение.";
-        setMessage(outcome,workspaceSaved?"success":"warning");
-        setLogImportFeedback(outcome,workspaceSaved?"info":"warning");
+        setMessage(outcome,workspaceSaved&&!imported.summary.issues?"success":"warning");
+        setLogImportFeedback(outcome,workspaceSaved&&!imported.summary.issues?"info":"warning");
         finishImport("logs",!workspaceSaved?"failed":imported.summary.issues?"partial":"completed",outcome);
       } catch (error) {
+        ui.logImportProblems = error?.logProblems || null;
+        // These exits occur before finish: only unpublished log staging remains.
+        // Do not keep the operational plan locked on an already published SR.
+        if (["log_recheck_incomplete", "log_import_cancelled"].includes(error?.message)
+          && ["logs", "logs-replace"].includes(ui.dbPendingWrite?.mode)) ui.dbPendingWrite = null;
         if (error?.safeCode) ui.workspaceSaveError = workspaceErrorLabel(error.safeCode);
         const message=error?.message === "log_rules_recheck_required" ? "Обновлены правила распознавания Shut down. Выберите полную папку всех ранее импортированных логов: старые результаты нельзя использовать как проверенные по новым правилам. Прежняя аналитика сохранена."
           : error?.message === "log_full_reimport_required" ? "Один из прежних файлов или выгрузка SR изменились. Для точной перепроверки выберите полную папку всех ранее импортированных логов; прежняя аналитика сохранена."
-          : error?.message === "log_recheck_incomplete" ? "Полная перепроверка одного из прежних логов не завершилась. Старая аналитика сохранена без потери доказательств."
+          : error?.message === "log_recheck_incomplete" ? `Проверка папки завершена: ${error.logProblems?.processed || 0} из ${error.logProblems?.totalFiles || 0} файлов. Требуют исправления прежних доказательств: ${error.logProblems?.blocking || 0}. Имена и причины показаны ниже. Старая аналитика сохранена. ${error.logProblems?.canResume ? "При продолжении будут использованы сохранённые контрольные точки." : "Без рабочей базы постоянных контрольных точек нет; при повторе потребуется чтение файлов."}`
           : ui.logImportCancelRequested || error?.message === "log_import_cancelled"
           ? "Импорт логов остановлен. Прежняя аналитика сохранена; подтверждённые промежуточные результаты можно использовать при продолжении."
           : ui.logImportProgress?.phase==="preparing" ? "Не удалось начать импорт: не получены прежние результаты из рабочей базы. Прежние данные не удалены."

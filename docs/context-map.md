@@ -1,5 +1,21 @@
 # Карта контекста
 
+## Feature 064 — продолжение перепроверки при файловых ошибках
+
+- `specs/064-resilient-log-recheck/`, ADR-0068: ошибка файла не прерывает обход;
+  atomic publication прежних доказательств не ослаблена.
+- `app.js`: prior-analysis predicate, bounded/приоритетный отчёт path/reason,
+  checkpoint resume, замена аварийного Worker и видимые причины/счётчики. Metadata
+  и явно ошибочные старые scans не блокируют обновление остальных.
+- Huawei TE/310/300 parsers: bounded end-tail допускает длинный whitespace,
+  но не склеивает токены между chunks и не принимает реальную обрезку.
+- `read_model.py`: upgrade notice не считает явно не проанализированные файлы
+  устаревшей успешной аналитикой. DB schema/event rules/polling API прежние.
+- Проверки: `scripts/test-resilient-log-recheck.js`, `test_read_model.py`,
+  `scripts/check-real-db-filters.py --recheck` + `check-log-recheck-ui.js`:
+  старая ревизия неизменна при ошибке, остальные scans завершены и сохраняются
+  через refresh; после восстановления файла читается только он, без нового loop.
+
 ## Feature 063 — отдельный список и только выбранные действия
 
 - `specs/063-explicit-device-list-plan/`, ADR-0067 — source/actions invariant.

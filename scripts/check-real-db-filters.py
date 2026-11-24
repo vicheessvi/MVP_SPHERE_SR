@@ -21,6 +21,7 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--baseline",action="store_true",help="Reproduce with the previous client from development Git history")
 parser.add_argument("--offhours",action="store_true",help="Check VCS out-of-hours UI and Excel against real SQL")
 parser.add_argument("--shutdown",action="store_true",help="Check a real interrupted shutdown-rules upgrade and resume")
+parser.add_argument("--recheck",action="store_true",help="Check per-file recheck errors, old revision protection, refresh and repair/resume")
 args=parser.parse_args()
 
 with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
@@ -29,12 +30,13 @@ with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
     store=server.state.workspace_store;workspace=store.select(temp/"workspace")["workspaceId"]
     model=ReadModel(store);model.prepare(workspace)
     token=model.begin(workspace,model.bootstrap(workspace)["revision"],"sr")["token"]
-    for first in range(0,1 if args.shutdown else 5000,500):
+    device_count=1 if args.shutdown or args.recheck else 5000
+    for first in range(0,device_count,500):
         model.batch(workspace,token,"inventoryDevices",[{"id":f"synthetic-{i}","nameRaw":f"Synthetic terminal {i}","category":"vcs",
             "manufacturerRaw":"Huawei" if args.offhours or i%2==0 else "Polycom","modelRaw":"TE40" if args.offhours or i%2==0 else "RealPresence Group 310",
             "ipNormalized":f"198.18.{i//250}.{1+i%250}",
             "domain":f"Domain-{i%10}","locationId":f"loc-{i%100}","inCurrentSr":True,"equipmentOverallStatus":"Учёт",
-            "rawRow":{"description":"x"*512}} for i in range(first,min(first+500,1 if args.shutdown else 5000))])
+            "rawRow":{"description":"x"*512}} for i in range(first,min(first+500,device_count))])
     model.batch(workspace,token,"locations",[{"id":f"loc-{i}","name":f"Synthetic room {i}","address":f"Synthetic address {i%10}"} for i in range(100)])
     model.batch(workspace,token,"srImports",[{"id":"synthetic-sr","rawSha256":"a"*64}])
     model.finish(workspace,token)
@@ -60,6 +62,19 @@ with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
                 events.append(event)
                 if i%5==2:events.append({**event,"id":event["id"]+"-second","deviceLocalTime":"2026-11-04 12:00:00"})
             model.batch(workspace,token,"events:te",events)
+        model.finish(workspace,token,"a"*64)
+    if args.recheck:
+        sources=temp/"sources"
+        token=model.begin(workspace,model.bootstrap(workspace)["revision"],"logs")["token"]
+        for run,message,stamp in (("run-one","Controller command: Shut down","2026-11-01 18:01:00"),("run-two","System start","2026-11-02 07:00:00"),("run-three","System start","2026-11-03 07:00:00")):
+            target=sources/run/"198.18.0.1.xml";target.parent.mkdir(parents=True,exist_ok=True)
+            body=f"<?xml version='1.0'?><LogModule>\n[Info][Main] {stamp} LOG_MOD_{'CTL' if run=='run-one' else 'MC'} 7 {message}\n"
+            target.write_text(body+("" if run=="run-one" else "</LogModule>"),encoding="utf-8")
+            path=f"sources/{run}/198.18.0.1.xml"
+            model.batch(workspace,token,"logRegistry",[{"path":path,"format":"Huawei TE XML","deviceId":"synthetic-0","analysisStatus":"Маркеров: 1","analysisDigest":"b"*64,"size":len(body.encode())+12}])
+            model.batch(workspace,token,"events:te",[{"id":"legacy-"+run,"deviceId":"synthetic-0","ip":"198.18.0.1","kind":"power_off" if run=="run-one" else "unknown_start","deviceLocalTime":stamp,"sources":[{"path":path,"line":2}]}])
+        auxiliary=sources/"notes.txt";auxiliary.write_text("Synthetic metadata only",encoding="utf-8")
+        model.batch(workspace,token,"logRegistry",[{"path":"sources/notes.txt","format":"Неизвестный формат","deviceId":None,"analysisStatus":"Вне анализа Huawei TE/310/300"}])
         model.finish(workspace,token,"a"*64)
     def fingerprint():
         with closing(model.connect(workspace)) as c:
@@ -88,16 +103,18 @@ with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
         status,_,_=request("POST","/api/admin/setup",{"username":"synthetic-admin","password":secrets.token_urlsafe(24)})
         assert status==200,"Synthetic admin setup failed"
         config={"url":url,"cookie":cookie}
-        if args.shutdown:config["sources"]=str(sources)
+        if args.shutdown or args.recheck:config["sources"]=str(sources)
+        if args.recheck:config["preview"]=str(temp.parent/("sphere-recheck-"+secrets.token_hex(4)+".png"))
         if args.baseline:config["clientScript"]=subprocess.check_output(["git","show","9219d15:runtime/db-views.js"],cwd=ROOT,encoding="utf-8")
-        result=subprocess.run(["node",str(ROOT/("scripts/check-shutdown-import-ui.js" if args.shutdown else "scripts/check-offhours-ui.js" if args.offhours else "scripts/check-real-db-filters.js"))],input=json.dumps(config),
+        result=subprocess.run(["node",str(ROOT/("scripts/check-log-recheck-ui.js" if args.recheck else "scripts/check-shutdown-import-ui.js" if args.shutdown else "scripts/check-offhours-ui.js" if args.offhours else "scripts/check-real-db-filters.js"))],input=json.dumps(config),
                               cwd=ROOT,text=True,encoding="utf-8",capture_output=True,timeout=90)
         if result.returncode:
             print(result.stderr or "Real browser test failed",file=sys.stderr)
             raise SystemExit(result.returncode)
-        assert (fingerprint()!=before) if args.shutdown else (fingerprint()==before),"Unexpected synthetic data changes"
-        assert (model.bootstrap(workspace)["revision"]!=revision) if args.shutdown else (model.bootstrap(workspace)["revision"]==revision)
+        assert (fingerprint()!=before) if args.shutdown or args.recheck else (fingerprint()==before),"Unexpected synthetic data changes"
+        assert (model.bootstrap(workspace)["revision"]!=revision) if args.shutdown or args.recheck else (model.bootstrap(workspace)["revision"]==revision)
         print(result.stdout.strip())
-        print(json.dumps({"syntheticDatabaseUnchanged":not args.shutdown,"devices":1 if args.shutdown else 5000}))
+        print(json.dumps({"syntheticDatabaseUnchanged":not (args.shutdown or args.recheck),"devices":device_count}))
+        if args.recheck:print(config["preview"])
     finally:
         server.shutdown();server.server_close();thread.join(timeout=3)

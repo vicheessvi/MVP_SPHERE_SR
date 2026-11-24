@@ -381,6 +381,8 @@ class ReadModel:
                     "logSourceSha": self.header(c).get("log", {}).get("indexes", {}).get("te", {}).get("sourceSrSha256"),
                     "logRulesets":[dict(row) for row in c.execute("""SELECT json_extract(payload,'$.analysisRuleset') ruleset,count(*) files
                         FROM rm_records WHERE label='logRegistry' AND json_extract(payload,'$.format') IN ('Huawei TE XML','Huawei 310 XML','Huawei 300 XML')
+                        AND coalesce(json_extract(payload,'$.analysisComplete'),1)!=0
+                        AND coalesce(json_extract(payload,'$.analysisStatus'),'') NOT IN ('Ошибка разбора','Вне анализа Huawei TE/310/300')
                         GROUP BY ruleset""")],
                     "settings": self.header(c).get("state", {}).get("settings") or {}}
 

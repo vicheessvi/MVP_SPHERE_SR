@@ -61,7 +61,8 @@
     }
     return {
       feed(text) {
-        tail = (tail + text).slice(-2048);
+        const nextTail = tail + text, trimmedTail = nextTail.trimEnd();
+        tail = (trimmedTail + (trimmedTail.length < nextTail.length ? " " : "")).slice(-2048);
         const parts = (pending + text).split("\n");
         pending = parts.pop() || "";
         for (const line of parts) process(line);

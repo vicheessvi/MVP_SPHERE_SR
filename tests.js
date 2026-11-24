@@ -28,6 +28,10 @@
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
   const tests = [];
 
+  if (typeof require === "function") test("Перепроверка логов продолжает остальные файлы, сохраняет доказательства и принимает XML padding", async () => {
+    await require("./scripts/test-resilient-log-recheck").run();
+  });
+
   if (typeof require === "function") test("План v4: явные листы XLSX, действия и безопасное продолжение", async () => {
     await require("./scripts/test-explicit-plan").run();
   });
