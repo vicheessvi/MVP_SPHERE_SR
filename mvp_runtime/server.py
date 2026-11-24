@@ -41,6 +41,7 @@ PUBLIC_FILES = {
     "/vendor/xlsx.full.min.js": ("vendor/xlsx.full.min.js", "text/javascript; charset=utf-8"),
     "/runtime/credential-pool.js": ("runtime/credential-pool.js", "text/javascript; charset=utf-8"),
     "/runtime/polling-recovery.js": ("runtime/polling-recovery.js", "text/javascript; charset=utf-8"),
+    "/runtime/vcs-shutdown.js": ("runtime/vcs-shutdown.js", "text/javascript; charset=utf-8"),
     "/runtime/huawei-te-log-events.js": ("runtime/huawei-te-log-events.js", "text/javascript; charset=utf-8"),
     "/runtime/huawei-310-log-events.js": ("runtime/huawei-310-log-events.js", "text/javascript; charset=utf-8"),
     "/runtime/huawei-300-log-events.js": ("runtime/huawei-300-log-events.js", "text/javascript; charset=utf-8"),

@@ -1,8 +1,9 @@
 (function (global) {
   "use strict";
 
-  const RULE_VERSION = "huawei-te-log-v1";
-  const TE20_RULE_VERSION = "huawei-te20-log-v1";
+  const SHUTDOWN=global.MVP_VCS_SHUTDOWN||(typeof require==="function"?require("./vcs-shutdown"):null);
+  const RULE_VERSION = "huawei-te-log-v2";
+  const TE20_RULE_VERSION = "huawei-te20-log-v2";
   const MAX_LINE = 8192;
   const CHUNK_BYTES = 1024 * 1024;
   const BOOT_WINDOW_MS = 10 * 60 * 1000;
@@ -12,7 +13,7 @@
   const TE20_EVENT_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_MC)\s+\d{1,9}\s+\d{1,9}\[[A-Za-z]:\d{1,6}\s+[A-Za-z]:\d{1,6}\]\s+(.{0,4096})$/;
   const TE20_WEB_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_WEB)\s+\d{1,9}\s+(.{0,4096})$/;
   const TE20_REMOTE_LINE = /^\[[^\]\r\n]{1,32}\]\[[^\]\r\n]{1,32}\]\s+(\d{4}-\d\d-\d\d\s+\d\d:\d\d:\d\d)\s+(LOG_MOD_RC)\s+\d{1,9}\s+(.{0,4096})$/;
-  const EVENT_CANDIDATE = /system\s+start|\bsystem\b.{0,70}\bboot\b|\breboots\b|\bshut\b.{0,80}\bdown\b.{0,80}\bterminal\b|\bnormal\b.{0,80}\breboot\b|terminal.{0,50}powered.{0,30}off/i;
+  const EVENT_CANDIDATE = /system\s+start|\bsystem\b.{0,70}\bboot\b|\breboots\b|\bshut[ \t]+down\b|\bnormal\b.{0,80}\breboot\b|terminal.{0,50}powered.{0,30}off/i;
 
   function localTimeValue(raw) {
     const parts = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)$/.exec(raw || "");
@@ -28,30 +29,29 @@
     const line = String(rawLine || "").replace(/\r$/, "");
     if (!line || line.length > MAX_LINE || line.includes("\uFFFD")) return null;
     const te20 = model === "te20";
-    const match = te20 ? (TE20_EVENT_LINE.exec(line) || TE20_WEB_LINE.exec(line) || TE20_REMOTE_LINE.exec(line)) : EVENT_LINE.exec(line);
+    const match = te20 ? (TE20_EVENT_LINE.exec(line) || TE20_WEB_LINE.exec(line) || TE20_REMOTE_LINE.exec(line) || EVENT_LINE.exec(line)) : EVENT_LINE.exec(line);
     if (!match) return null;
     const timeMs = localTimeValue(match[1]);
     if (timeMs === null) return null;
     const module = match[2];
     const message = match[3];
     let kind = null;
-    if (te20) {
+    if(SHUTDOWN?.isTerminalShutdown(message))kind="power_off";
+    else if (te20) {
       if (module === "LOG_MOD_MC" && /\bsystem\b.{0,70}\bboot\b/i.test(message)) kind = "system_start";
       else if (module === "LOG_MOD_WEB" && /\breboots\b/i.test(message) && !/\b(?:fail|failed|error|denied)\b/i.test(message)) kind = "reboot_marker";
-      else if (module === "LOG_MOD_WEB" && /\bshut\b.{0,80}\bdown\b.{0,80}\bterminal\b/i.test(message) && !/\b(?:fail|failed|error|denied)\b/i.test(message)) kind = "power_off";
-      else if (module === "LOG_MOD_RC" && /\buser\b.{0,120}\bshut\b.{0,80}\bdown\b.{0,80}\bterminal\b/i.test(message) && !/\b(?:fail|failed|error|denied)\b/i.test(message)) kind = "power_off";
     } else if (module === "LOG_MOD_MC" && /\bsystem\s+start\b/i.test(message)) kind = "system_start";
     else if (module === "LOG_MOD_MC" && /\bnormal\b.{0,80}\breboot\b/i.test(message)) kind = "reboot_marker";
-    else if (module === "LOG_MOD_BSP" && /\bterminal\b.{0,50}\bpowered\b.{0,30}\boff\b/i.test(message)) kind = "power_off";
+    else if (module === "LOG_MOD_BSP" && /\bterminal\b.{0,50}\bpowered\b.{0,30}\boff\b/i.test(message)&&!SHUTDOWN?.isRejected(message)) kind = "power_off";
     return kind ? { kind, localAt: match[1], timeMs, lineNumber, model: te20 ? "te20" : null,
-      method: kind === "power_off" ? module === "LOG_MOD_RC" ? "remote_control" : module === "LOG_MOD_WEB" ? "web" : null : null } : null;
+      method: kind === "power_off" ? module === "LOG_MOD_RC" ? "remote_control" : module === "LOG_MOD_WEB" ? "web" : "unknown" : null } : null;
   }
 
-  function collector(model) {
+  function collector(model, requireComplete=false) {
     const markers = [];
     const activityTimes = [];
     const coverage = { lines: 0, oversizedLines: 0, malformedCandidates: 0 };
-    let pending = "";
+    let pending = "",tail="";
     let dropping = false;
     let lastActivityMs = null;
     let lastActivityStamp = null;
@@ -71,6 +71,7 @@
     }
     return {
       feed(text) {
+        tail=(tail+text).slice(-512);
         const parts = (pending + text).split("\n");
         pending = parts.pop() || "";
         for (const line of parts) process(line);
@@ -78,6 +79,7 @@
       },
       finish() {
         if (pending && !dropping) process(pending); else if (dropping) coverage.oversizedLines += 1;
+        if(requireComplete&&!/<\/LogModule>\s*$/.test(tail))return {ok:false,reason:"incomplete_log",markers:[],coverage,bootGaps:[]};
         activityTimes.sort((a, b) => a - b);
         let uniqueCount = 0;
         for (let index = 0; index < activityTimes.length; index += 1) {
@@ -124,7 +126,7 @@
     const decoder = new TextDecoder("utf-8", { fatal: false });
     const prefixBytes = new Uint8Array(await file.slice(0, 2048).arrayBuffer());
     if (!isHuaweiTeLogPrefix(decoder.decode(prefixBytes))) return { ok: false, reason: "unsupported_log_format", markers: [], coverage: null };
-    const parser = collector(options?.model);
+    const parser = collector(options?.model,true);
     for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
       if (options?.shouldCancel?.()) throw new Error("log_scan_cancelled");
       const end = Math.min(file.size, offset + CHUNK_BYTES);
@@ -141,6 +143,9 @@
     const starts = markers.filter((item) => item.kind === "system_start");
     const reboots = markers.filter((item) => item.kind === "reboot_marker");
     const sortedStarts = [...starts].sort((a, b) => a.timeMs - b.timeMs || a.lineNumber - b.lineNumber);
+    const startPositions=new Map(sortedStarts.map((item,index)=>[item.lineNumber,index]));
+    const rebootLines=new Map(reboots.map(item=>[item.lineNumber,item]));
+    const shutdowns=markers.filter(item=>item.kind==="power_off").sort((a,b)=>a.timeMs-b.timeMs);
     const paired = new Map();
     for (const marker of reboots) {
       let low = 0; let high = sortedStarts.length;
@@ -154,6 +159,10 @@
     }
     const events = starts.map((start) => {
       const corroborating = paired.get(start.lineNumber) || [];
+      const position=startPositions.get(start.lineNumber),previous=position>0?sortedStarts[position-1].timeMs:-Infinity;
+      const action=SHUTDOWN?.preceding(shutdowns,start.timeMs,previous);
+      const laterExplicitReboot=action&&corroborating.some(line=>{const item=rebootLines.get(line);return item?.model==="te20"&&item.timeMs>action.timeMs&&item.timeMs<=start.timeMs;});
+      if(action&&!laterExplicitReboot)return {kind:"start_after_shutdown",localAt:start.localAt,timeMs:start.timeMs,lineNumber:start.lineNumber,markerLineNumbers:[action.lineNumber],method:action.method||"unknown"};
       return { kind: corroborating.length ? "confirmed_reboot" : "unknown_start", localAt: start.localAt,
         timeMs: start.timeMs, lineNumber: start.lineNumber, markerLineNumbers: corroborating };
     });
@@ -163,11 +172,12 @@
       const key = `${event.kind === "power_off" ? "power_off" : "start"}|${event.localAt}`;
       const previous = unique.get(key);
       if (!previous || (previous.kind === "unknown_start" && event.kind === "confirmed_reboot")) unique.set(key, event);
+      else if(event.kind==="power_off"&&(!previous.method||previous.method==="unknown")&&event.method&&event.method!=="unknown")previous.method=event.method;
     }
     return [...unique.values()].sort((a, b) => b.timeMs - a.timeMs || a.kind.localeCompare(b.kind));
   }
 
-  const api = Object.freeze({ RULE_VERSION, TE20_RULE_VERSION, parseEventLine, isHuaweiTeLogPrefix, scanText, scanFile, deriveEvents });
+  const api = Object.freeze({ RULE_VERSION, TE20_RULE_VERSION, SHUTDOWN_RULESET:SHUTDOWN?.RULESET, reconcileStarts:SHUTDOWN?.reconcileStarts, parseEventLine, isHuaweiTeLogPrefix, scanText, scanFile, deriveEvents });
   if (typeof module === "object" && module.exports) module.exports = api;
   global.MVP_HUAWEI_TE_LOG_EVENTS = api;
 })(typeof window !== "undefined" ? window : globalThis);

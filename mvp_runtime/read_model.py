@@ -379,6 +379,9 @@ class ReadModel:
             sr = c.execute("SELECT payload FROM rm_records WHERE label='srImports' ORDER BY stamp DESC,key DESC LIMIT 1").fetchone()
             return {"revision": revision, "counts": counts, "sr": json.loads(sr[0]) if sr else None,
                     "logSourceSha": self.header(c).get("log", {}).get("indexes", {}).get("te", {}).get("sourceSrSha256"),
+                    "logRulesets":[dict(row) for row in c.execute("""SELECT json_extract(payload,'$.analysisRuleset') ruleset,count(*) files
+                        FROM rm_records WHERE label='logRegistry' AND json_extract(payload,'$.format') IN ('Huawei TE XML','Huawei 310 XML','Huawei 300 XML')
+                        GROUP BY ruleset""")],
                     "settings": self.header(c).get("state", {}).get("settings") or {}}
 
     def context(self, workspace: str, revision: str, label: str, after: str = "") -> dict:
@@ -457,8 +460,9 @@ class ReadModel:
                         priority={"unknown_start":0,"start_after_shutdown":1,"confirmed_reboot":2,"power_off":2}
                         if priority.get(row.get("kind"),0)>priority.get(prior.get("kind"),0):
                             result.update(row)
+                            if row.get("kind")!="start_after_shutdown":result.pop("_shutdownLink",None)
                         for method in ("shutdownMethod","actionMethod"):
-                            if not result.get(method) and row.get(method):result[method]=row[method]
+                            if result.get(method) in (None,"","unknown") and row.get(method):result[method]=row[method]
                         gaps = [item for item in (prior.get("silenceGap"), row.get("silenceGap")) if isinstance(item, dict)]
                         if gaps and result.get("kind") == "unknown_start":
                             result["silenceGap"] = {**min(gaps, key=lambda item: item["seconds"]),
@@ -514,12 +518,15 @@ class ReadModel:
                 c.execute(f"INSERT OR REPLACE INTO rm_records SELECT {','.join(COLS)} FROM rm_staging WHERE batch=?", (token,))
             if imp["mode"] in ("json","sr"):
                 self.rebuild_json_events(c,(lambda done,total:report("relations",75+15*done/max(1,total),done,total)) if on_progress else None)
-            report("cleanup",90)
             if imp["mode"].startswith("logs"):
                 header = self.header(c)
                 for family in ("te", "huawei310", "huawei300Bar", "huawei300Box"):
                     header.setdefault("log", {}).setdefault("indexes", {})[family] = {"sourceSrSha256": source_sr}
                 c.execute("INSERT OR REPLACE INTO rm_meta VALUES('header',?)", (encode(header),))
+                if c.execute("""SELECT 1 FROM rm_staging WHERE batch=? AND label='logRegistry'
+                    AND json_extract(payload,'$.analysisRuleset')='vcs-terminal-shutdown-2026-11-24-v1' LIMIT 1""",(token,)).fetchone():
+                    self.reconcile_shutdown_starts(c,(lambda done,total:report("relations",75+15*done/max(1,total),done,total)) if on_progress else None)
+            report("cleanup",90)
             c.execute("DELETE FROM rm_staging WHERE batch=?", (token,))
             report("cleanup",92)
             c.execute("INSERT OR IGNORE INTO rm_evidence SELECT '',label,event_key,path,line FROM rm_evidence WHERE batch=?",(token,))
@@ -536,6 +543,46 @@ class ReadModel:
             result={"revision": self.revision(c)}
         report("completed",100,status="completed")
         return result
+
+    def reconcile_shutdown_starts(self,c,on_progress=None):
+        """Link separately imported observations; retain a reversible base classification."""
+        sql,args=self.cte(c,{"source":"logs"},True)
+        total=c.execute(sql+" SELECT count(*) FROM events",args).fetchone()[0] if on_progress else 0
+        cursor=c.execute(sql+" SELECT label,key,device,stamp,kind,ip FROM events ORDER BY device,ip,stamp,(kind='power_off') DESC,key",args)
+        previous=None;off=None;done=0;updates=[]
+        def flush():
+            if updates:c.executemany(f"INSERT OR REPLACE INTO rm_records VALUES({MARKS})",updates);updates.clear()
+        for row in cursor:
+            group=(row["device"],row["ip"])
+            if group!=previous:previous=group;off=None
+            kind=row["kind"]
+            if kind=="power_off":
+                body=json.loads(c.execute("SELECT payload FROM rm_records WHERE label=? AND key=?",(row["label"],row["key"])).fetchone()[0])
+                if body.get("shutdownBasis")=="registered_terminal_shutdown":off={"id":row["key"],"stamp":row["stamp"]}
+            elif kind in ("unknown_start","start_after_shutdown","confirmed_reboot"):
+                if off or kind=="start_after_shutdown":
+                    body=json.loads(c.execute("SELECT payload FROM rm_records WHERE label=? AND key=?",(row["label"],row["key"])).fetchone()[0])
+                    saved=body.get("_shutdownLink")
+                    link=saved if kind=="start_after_shutdown" and isinstance(saved,dict) and saved.get("version")==1 and saved.get("previousKind")=="unknown_start" else None
+                    base=link["previousKind"] if link else kind
+                    seconds=0
+                    if off:
+                        try:seconds=(datetime.fromisoformat(row["stamp"])-datetime.fromisoformat(off["stamp"])).total_seconds()
+                        except (ValueError,TypeError):pass
+                    updated=None
+                    if base=="unknown_start" and off and 0<seconds<=315360000:
+                        updated={**body,"kind":"start_after_shutdown","silenceGap":None,"_shutdownLink":{"version":1,"eventId":off["id"],"at":off["stamp"],
+                            "previousKind":"unknown_start","previousGap":link.get("previousGap") if link else body.get("silenceGap")}}
+                    elif link:
+                        updated={**body,"kind":base,"silenceGap":link.get("previousGap")};updated.pop("_shutdownLink",None)
+                    if updated is not None and updated!=body:updates.append(record(row["label"],updated))
+                off=None
+            done+=1
+            if done%500==0:
+                flush()
+                if on_progress:on_progress(done,total)
+        cursor.close();flush()
+        if on_progress:on_progress(done,total)
 
     def clear_checkpoints(self, workspace: str, revision: str, scope: str, keys: list) -> dict:
         if not _hex(scope) or not isinstance(keys,list) or len(keys)>512 or not all(_hex(key) for key in keys):

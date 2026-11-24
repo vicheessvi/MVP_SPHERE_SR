@@ -62,6 +62,7 @@
   const LOG_SCAN_CLIENT = global.MVP_LOG_SCAN_CLIENT || (typeof module === "object" && module.exports ? require("./runtime/log-scan-client") : null);
   if (!HUAWEI_310_LOG_EVENTS) throw new Error("Модуль анализа логов Huawei 310 не загружен");
   if (!LOG_SCAN_CLIENT) throw new Error("Модуль фонового разбора логов не загружен");
+  const LOG_ANALYSIS_RULESET=TE_LOG_EVENTS.SHUTDOWN_RULESET||"legacy-log-rules";
   const { MODULE_CATALOG, UI_TERMS, EQUIPMENT_CATEGORY_CATALOG, ANALYZED_PARAMETER_RULES, POLLING_HELP_ENTRIES } = PRODUCT_CATALOG;
   const EQUIPMENT_CATEGORY_IDS = Object.freeze(EQUIPMENT_CATEGORY_CATALOG.map((item) => item.id));
   const catalogValidation = PRODUCT_CATALOG.validateProductCatalog();
@@ -2357,6 +2358,7 @@
         old.validationStatus = event.validationStatus || old.validationStatus;
         old.actionMethod = event.actionMethod || old.actionMethod;
         old.shutdownMethod = event.shutdownMethod || old.shutdownMethod;
+        if(event.kind!=="start_after_shutdown")delete old._shutdownLink;
         if (event.kind !== "unknown_start") old.silenceGap = null;
       }
       if (event.silenceGap && old.kind === "unknown_start") {
@@ -2371,7 +2373,7 @@
         if (!old.sources.some((item) => item.path === source.path && item.line === source.line)) old.sources.push(source);
       }
     }
-    const ordered = [...events.values()].sort((left, right) => timeValue(right.estimatedAt) - timeValue(left.estimatedAt) || left.id.localeCompare(right.id));
+    const ordered = TE_LOG_EVENTS.reconcileStarts([...events.values()]).sort((left, right) => timeValue(right.estimatedAt) - timeValue(left.estimatedAt) || left.id.localeCompare(right.id));
     const coverage = { ...(previous.coverage || {}) };
     for (const [key, value] of Object.entries(incoming.coverage || {})) {
       if (typeof value === "number" && !["confirmedReboots", "powerOffs", "unknownStarts", "startsAfterShutdown", "gapCandidates"].includes(key)) coverage[key] = (coverage[key] || 0) + value;
@@ -2382,6 +2384,15 @@
     coverage.startsAfterShutdown = ordered.filter((item) => item.kind === "start_after_shutdown").length;
     coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
     return { ...incoming, events: ordered, coverage, validationStatus: incoming.validationStatus || previous.validationStatus };
+  }
+
+  function logAnalysisRuleVersion(row,devices){
+    const device=devices.get(row.deviceId),model=auditModelToken(device?.modelRaw);
+    if(device?.category!=="vcs"||normalizeManufacturer(device.manufacturerNormalized||device.manufacturerRaw)!=="huawei")return null;
+    if(row.format==="Huawei TE XML"&&["te20","te30","te40","te50","te60"].includes(model))return model==="te20"?TE_LOG_EVENTS.TE20_RULE_VERSION:TE_LOG_EVENTS.RULE_VERSION;
+    if(row.format==="Huawei 310 XML"&&["bar310","box310","box610"].includes(model))return model==="bar310"?HUAWEI_310_LOG_EVENTS.RULE_VERSION:`huawei-${model}-log-v2`;
+    if(row.format==="Huawei 300 XML"&&["bar300","box300","box600"].includes(model))return model==="bar300"?HUAWEI_300_LOG_EVENTS.RULE_VERSION:`huawei-${model}-log-v3`;
+    return null;
   }
 
   async function prepareDeviceLogImport(files, currentState, options) {
@@ -2433,6 +2444,7 @@
     const selectedPaths = new Set(imported.rows.map((item) => item.path));
     if (selectedPaths.size !== imported.rows.length) throw new Error("duplicate_log_path");
     const currentSrDigest = currentState?.srImports?.at(-1)?.rawSha256 || null;
+    const currentDevices = new Map(currentState.inventoryDevices.filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
     const oldSrDigest = existing?.indexes?.te?.sourceSrSha256 || null;
     const srChanged = Boolean(oldRegistry.length && oldSrDigest !== currentSrDigest);
     const changedOldFile = imported.rows.some((row) => {
@@ -2440,13 +2452,13 @@
       return old && (old.size !== row.size || old.lastModified !== row.sourceLastModified
         || old.prefixSha256 !== row.prefixSha256 || old.format !== row.format || old.deviceId !== row.deviceId);
     });
-    const fullRecheck = settings.forceRescan === true || srChanged || changedOldFile;
-    if (fullRecheck && oldRegistry.some((item) => !selectedPaths.has(item.path))) throw new Error("log_full_reimport_required");
+    const rulesChanged=oldRegistry.some(item=>{const expected=logAnalysisRuleVersion(item,currentDevices);return expected&&(item.analysisRuleVersion!==expected||item.analysisRuleset!==LOG_ANALYSIS_RULESET);});
+    const fullRecheck = settings.forceRescan === true || srChanged || changedOldFile || rulesChanged;
+    if (fullRecheck && oldRegistry.some((item) => !selectedPaths.has(item.path))) throw new Error(rulesChanged?"log_rules_recheck_required":"log_full_reimport_required");
     const reuseExisting = oldRegistry.length > 0 && !fullRecheck;
     const rowsByPath = new Map(reuseExisting ? oldRowsByPath : []);
     const registryByPath = new Map(reuseExisting ? oldByPath : []);
-    const currentDevices = new Map(currentState.inventoryDevices.filter((item) => item.inCurrentSr !== false).map((item) => [item.id, item]));
-    const sharedLogContext={devices:currentDevices,locations:new Map((currentState.locations||[]).map((item)=>[item.id,item]))};
+    const sharedLogContext={devices:currentDevices,locations:new Map((currentState.locations||[]).map((item)=>[item.id,item])),streaming:typeof settings.onEntry==="function"};
     const makeAccumulators = () => ({
       te: createHuaweiTeLogEventIndex(currentState,sharedLogContext),
       huawei310: createHuawei310LogEventIndex(currentState,sharedLogContext),
@@ -2454,13 +2466,13 @@
       huawei300Box: createHuawei300LogEventIndex(currentState, "box",sharedLogContext)
     });
     let accumulators = makeAccumulators();
-    if(settings.onStart) await settings.onStart({fullRecheck});
+    if(settings.onStart) await settings.onStart({fullRecheck,rulesChanged});
     const checkpoint = settings.checkpoint && currentSrDigest ? settings.checkpoint : null;
     let checkpointScope = null;
     const checkpointKeys = [];
     let known = new Set();
     if (checkpoint) {
-      checkpointScope = await sha256Text(JSON.stringify(["log-import-v1", currentSrDigest, fullRecheck]));
+      checkpointScope = await sha256Text(JSON.stringify(["log-import-v2",LOG_ANALYSIS_RULESET, currentSrDigest, fullRecheck]));
       known = new Set(await checkpoint.list(checkpointScope));
     }
     let processed = 0;
@@ -2495,7 +2507,7 @@
         : huawei && row.format === "Huawei 310 XML" && ["bar310", "box310", "box610"].includes(model) ? "huawei310"
           : huawei && row.format === "Huawei 300 XML" && ["bar300", "box300", "box600"].includes(model) ? "huawei300" : null;
       const key = checkpoint && kind && row.prefixSha256 ? await sha256Text(JSON.stringify(
-        [row.path, row.size, row.sourceLastModified, row.prefixSha256, row.format, row.deviceId, model])) : null;
+        [row.path, row.size, row.sourceLastModified, row.prefixSha256, row.format, row.deviceId, model,logAnalysisRuleVersion(row,currentDevices)])) : null;
       if (key && known.has(key)) {
         const stored = await checkpoint.read(checkpointScope, key);
         if (stored?.kind === kind && (kind ? stored.scan?.ok === true : stored.scan === null)) {
@@ -2558,6 +2570,7 @@
         rowsByPath.set(row.path, row);
         const registry = { path: row.path, size: row.size, lastModified: row.sourceLastModified,
           prefixSha256: row.prefixSha256, format: row.format, deviceId: row.deviceId,
+          analysisRuleVersion:logAnalysisRuleVersion(row,currentDevices),analysisRuleset:kind?LOG_ANALYSIS_RULESET:null,
           contentDigest: scan?.contentDigest || null, digestAlgorithm: scan?.digestAlgorithm || null,
           analysisStatus: row.analysisStatus, analysisDigest: scan?.ok
             ? await sha256Text(JSON.stringify({ markers: scan.markers, bootGaps: scan.bootGaps || [] })) : null };
@@ -2594,7 +2607,7 @@
         indexes[kind].coverage.files = group.length;
         indexes[kind].coverage.invalidFiles = group.filter((row) => row.analysisStatus === "Ошибка разбора").length;
       }
-      return { rows, summary: summarizeDeviceLogRows(rows), indexes, registry: [...registryByPath.values()], skippedFiles, recoveredFiles,
+      return { rows, summary: summarizeDeviceLogRows(rows), indexes, registry: [...registryByPath.values()], skippedFiles, recoveredFiles,rulesChanged,fullRecheck,
         checkpoint: checkpointKeys.length ? { scope: checkpointScope, keys: checkpointKeys } : null };
     } finally {
       for (const worker of clients) worker.close?.();
@@ -2660,7 +2673,7 @@
   function createHuaweiTeLogEventIndex(currentState,context) {
     const {devices,locations}=context||logDeviceContext(currentState);
     const events = new Map();
-    const coverage = { files: 0, scannedFiles: 0, te20Files: 0, excludedFiles: 0, ambiguousFiles: 0, invalidFiles: 0, unknownStarts: 0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
+    const coverage = { files: 0, scannedFiles: 0, te20Files: 0, excludedFiles: 0, ambiguousFiles: 0, invalidFiles: 0, unknownStarts: 0,startsAfterShutdown:0, confirmedReboots: 0, powerOffs: 0, gapCandidates: 0 };
     function add(entry) {
       coverage.files += 1;
       const row = entry?.row || {};
@@ -2692,7 +2705,7 @@
             prior.kind = "confirmed_reboot";
             prior.ruleVersion = model === "te20" ? TE_LOG_EVENTS.TE20_RULE_VERSION : TE_LOG_EVENTS.RULE_VERSION;
           }
-          if (!prior.shutdownMethod && parsed.method) prior.shutdownMethod = parsed.method;
+          if ((!prior.shutdownMethod||prior.shutdownMethod==="unknown") && parsed.method) prior.shutdownMethod = parsed.method;
           if (silenceGap && prior.kind === "unknown_start") {
             const previous = prior.silenceGap;
             prior.silenceGap = previous && previous.seconds <= silenceGap.seconds ? previous : silenceGap;
@@ -2707,14 +2720,16 @@
           locationId: location?.id || device.locationId || null, locationName: location?.name || "Не указано", address: location?.address || "Не указано",
           estimatedAt: new Date(parsed.timeMs).toISOString(), deviceLocalTime: parsed.localAt, timeBasis: "device_local_unknown_timezone",
           ruleVersion: model === "te20" ? TE_LOG_EVENTS.TE20_RULE_VERSION : TE_LOG_EVENTS.RULE_VERSION,
+          ...(parsed.kind==="power_off"?{shutdownBasis:"registered_terminal_shutdown",shutdownInitiator:"not_established",shutdownRuleValidation:"user_approved_semantics"}:{}),
           shutdownMethod: parsed.method || null, silenceGap, sources: [source], sourceCount: 1 });
       }
     }
     function finish() {
-    const ordered = [...events.values()].sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
+    const ordered = (context?.streaming?[...events.values()]:TE_LOG_EVENTS.reconcileStarts([...events.values()])).sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
     coverage.confirmedReboots = ordered.filter((item) => item.kind === "confirmed_reboot").length;
     coverage.powerOffs = ordered.filter((item) => item.kind === "power_off").length;
     coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
+    coverage.startsAfterShutdown = ordered.filter((item) => item.kind === "start_after_shutdown").length;
     coverage.gapCandidates = ordered.filter((item) => item.kind === "unknown_start" && item.silenceGap).length;
     return { events: ordered, coverage, sourceSrSha256: currentState?.srImports?.at(-1)?.rawSha256 || null };
     }
@@ -2743,7 +2758,7 @@
       if (!entry.scan?.ok || !Array.isArray(entry.scan.markers)) { coverage.invalidFiles += 1; return; }
       coverage.scannedFiles += 1;
       if (isBox) coverage.boxFiles += 1;
-      const ruleVersion = isBox ? `huawei-${model}-log-v1` : HUAWEI_310_LOG_EVENTS.RULE_VERSION;
+      const ruleVersion = isBox ? `huawei-${model}-log-v2` : HUAWEI_310_LOG_EVENTS.RULE_VERSION;
       const location = locations.get(device.locationId);
       const gapsByBoot = new Map((entry.scan.bootGaps || []).map((gap) => [gap.bootLocalAt, gap]));
       for (const parsed of HUAWEI_310_LOG_EVENTS.deriveEvents(entry.scan.markers)) {
@@ -2761,7 +2776,7 @@
           }
           const eventPriority = { unknown_start: 0, start_after_shutdown: 1, confirmed_reboot: 2, power_off: 2 };
           if ((eventPriority[parsed.kind] ?? 0) > (eventPriority[prior.kind] ?? 0)) { prior.kind = parsed.kind; prior.ruleVersion = ruleVersion; }
-          if (!prior.actionMethod && parsed.method) prior.actionMethod = parsed.method;
+          if ((!prior.actionMethod||prior.actionMethod==="unknown") && parsed.method) prior.actionMethod = parsed.method;
           if (silenceGap && prior.kind === "unknown_start") {
             const previous = prior.silenceGap;
             prior.silenceGap = previous && previous.seconds <= silenceGap.seconds ? previous : silenceGap;
@@ -2775,11 +2790,11 @@
           mac: device.macNormalized || device.macRaw || "Не указано", vip: Boolean(device.deviceVip || location?.vip),
           locationId: location?.id || device.locationId || null, locationName: location?.name || "Не указано", address: location?.address || "Не указано",
           estimatedAt: new Date(parsed.timeMs).toISOString(), deviceLocalTime: parsed.localAt, timeBasis: "device_local_unknown_timezone",
-          ruleVersion, ...(isBox ? { validationStatus: "confirmed_user_validation" } : {}), actionMethod: parsed.method || null, shutdownMethod: parsed.kind === "power_off" ? parsed.method || null : null, silenceGap, sources: [source], sourceCount: 1 });
+          ruleVersion, ...(isBox ? { validationStatus: "confirmed_user_validation" } : {}), ...(parsed.kind==="power_off"?{shutdownBasis:"registered_terminal_shutdown",shutdownInitiator:"not_established",shutdownRuleValidation:"user_approved_semantics"}:{}), actionMethod: parsed.method || null, shutdownMethod: parsed.kind === "power_off" ? parsed.method || null : null, silenceGap, sources: [source], sourceCount: 1 });
       }
     }
     function finish() {
-    const ordered = [...events.values()].sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
+    const ordered = (context?.streaming?[...events.values()]:TE_LOG_EVENTS.reconcileStarts([...events.values()])).sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
     coverage.confirmedReboots = ordered.filter((item) => item.kind === "confirmed_reboot").length;
     coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
     coverage.startsAfterShutdown = ordered.filter((item) => item.kind === "start_after_shutdown").length;
@@ -2836,14 +2851,15 @@
           mac: device.macNormalized || device.macRaw || "Не указано", vip: Boolean(device.deviceVip || location?.vip),
           locationId: location?.id || device.locationId || null, locationName: location?.name || "Не указано", address: location?.address || "Не указано",
           estimatedAt: new Date(parsed.timeMs).toISOString(), deviceLocalTime: parsed.localAt, timeBasis: "device_local_unknown_timezone",
-          ruleVersion: model === "bar300" ? HUAWEI_300_LOG_EVENTS.RULE_VERSION : `huawei-${model}-log-v2`,
+          ruleVersion: model === "bar300" ? HUAWEI_300_LOG_EVENTS.RULE_VERSION : `huawei-${model}-log-v3`,
           validationStatus: modelGroup === "box" ? "confirmed_user_validation" : parsed.kind === "power_off" || parsed.kind === "start_after_shutdown" ? "confirmed_local_validation" : "bar300_boot_observed",
+          ...(parsed.kind==="power_off"?{shutdownBasis:"registered_terminal_shutdown",shutdownInitiator:"not_established",shutdownRuleValidation:"user_approved_semantics"}:{}),
           actionMethod: parsed.method || null, shutdownMethod: parsed.kind === "power_off" ? parsed.method || null : null,
           silenceGap, sources: [source], sourceCount: 1 });
       }
     }
     function finish() {
-    const ordered = [...events.values()].sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
+    const ordered = (context?.streaming?[...events.values()]:TE_LOG_EVENTS.reconcileStarts([...events.values()])).sort((a, b) => timeValue(b.estimatedAt) - timeValue(a.estimatedAt) || a.id.localeCompare(b.id));
     coverage.unknownStarts = ordered.filter((item) => item.kind === "unknown_start").length;
     coverage.startsAfterShutdown = ordered.filter((item) => item.kind === "start_after_shutdown").length;
     coverage.powerOffs = ordered.filter((item) => item.kind === "power_off").length;
@@ -6426,6 +6442,8 @@
     selectNewPollingFiles,
     buildDeviceLogImportRows,
     prepareDeviceLogImport,
+    logAnalysisRuleVersion,
+    LOG_ANALYSIS_RULESET,
     logImportBlockReason,
     importProgressDisplay,
     createImportActivity,
@@ -6703,6 +6721,7 @@
     render,
     update: updateDatabasePanel,
     updateFilters: updateDatabaseFilters,
+    logRuleset:LOG_ANALYSIS_RULESET,
     sourceIdentity:()=>ui.adminAccess?.adminUnlocked===true&&ui.workspaceStatus?.status==="ready"?JSON.stringify([ui.workspaceStatus.workspaceId,ui.workspaceStatus.path]):null,
     reload: async()=>{
       try {
@@ -7861,7 +7880,7 @@
     const section = (title, group, note) => `<section class="card section-gap"><div class="section-heading"><div><p class="eyebrow">Терминалы ВКС Huawei</p><h2>${escapeHtml(title)}</h2></div></div><p class="muted">${escapeHtml(note)}</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${group.count}</strong></div><div class="card"><span>Устройств</span><strong>${group.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${group.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", group.byDate, { limit: 31 })}${renderRebootChart("По часам", group.byHour, { limit: 24 })}</div><div class="reboot-leader-grid section-gap">${renderRebootChart("TOP 5 устройств", group.topDevices, { limit: 5 })}${renderRebootChart("TOP 5 локаций", group.topLocations, { limit: 5 })}${renderRebootChart("TOP 5 адресов", group.topAddresses, { limit: 5 })}</div>${table(group)}</section>`;
     return `<section class="section-gap"><p class="muted">Проверено файлов: ${coverage.scannedFiles} из ${coverage.files}; исключено: ${coverage.excludedFiles}; ошибки разбора: ${coverage.invalidFiles}. Время показано как локальное время терминала без подтверждённого часового пояса. Порог предположения: ${analytics.silenceMinutes} мин.</p>${coverage.te20Files ? `<p class="info-panel">Для TE20 подтверждённая перезагрузка требует пары «web reboots → System boot»; штатное выключение определяется отдельной web-записью или записью пульта ДУ.</p>` : ""}
       ${mode === "reboots" ? section("Подтверждённые перезагрузки терминалов ВКС", analytics.groups.confirmed_reboot, "TE20: web reboots и последующий System boot; TE30/40/50/60: System start с явным normal reboot. Повторные выгрузки объединяются.") : ""}
-      ${mode === "power" ? section("Зафиксированные штатные выключения терминалов ВКС", analytics.groups.power_off, "Учитываются только отдельные записи о выключении: для TE20 — web или пульт ДУ, для TE30/40/50/60 — Terminal powered off. Они не доказывают аварийную потерю электропитания.") : ""}
+      ${mode === "power" ? section("Зафиксированные штатные выключения терминалов ВКС", analytics.groups.power_off, "Учитываются команды Shut down всего терминала независимо от инициатора и отдельные Terminal powered off. Ошибки, отмена, настройки и выключение компонентов исключены. Это не доказательство аварийной потери электропитания.") : ""}
       ${mode === "power" ? section("Предполагаемые отключения питания терминалов ВКС", analytics.groups.suspected_power_loss, "Низкая достоверность: после длительной паузы в логе появился запуск без подтверждённой команды перезагрузки или выключения. Время события — время возобновления лога, не доказанный момент потери питания. Пауза может объясняться отсутствием событий, неполным логом или изменением часов; эти случаи не входят в подтверждённые итоги.") : ""}
       ${mode === "reboots" ? `<details class="card section-gap"><summary>Запуски с неустановленной причиной — ${analytics.groups.unknown_start.count}</summary><p class="muted">Эти запуски не прибавляются к подтверждённым перезагрузкам.</p>${table(analytics.groups.unknown_start)}</details>` : ""}</section>`;
   }
@@ -7876,7 +7895,7 @@
     const shutdowns = analytics.groups.power_off;
     return `<section class="section-gap"><h2>Huawei CloudLink 310: события из логов</h2><p class="muted">Проверено журналов Bar 310 / Box 310 / Box 610: ${coverage.scannedFiles}, в том числе Box: ${coverage.boxFiles}; исключено: ${coverage.excludedFiles}; ошибки: ${coverage.invalidFiles}. Время — локальное время терминала, без подтверждённого часового пояса.</p>
       ${mode === "reboots" ? `<section class="card section-gap"><h2>Подтверждённые перезагрузки Huawei 310</h2><p class="muted">Bar 310, Box 310 и Box 610: успешная web-команда и следующий System boot либо два события кнопки пульта в пределах 30 секунд и следующий boot без команды выключения. Внутренние restart не учитываются; Box подтверждены администратором.</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${group.count}</strong></div><div class="card"><span>Устройств</span><strong>${group.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${group.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", group.byDate, { limit: 31 })}${renderRebootChart("По часам", group.byHour, { limit: 24 })}</div><div class="reboot-leader-grid section-gap">${renderRebootChart("TOP 5 устройств", group.topDevices, { limit: 5 })}${renderRebootChart("TOP 5 локаций", group.topLocations, { limit: 5 })}${renderRebootChart("TOP 5 адресов", group.topAddresses, { limit: 5 })}</div>${table(group)}</section>` : ""}
-      ${mode === "power" ? `<section class="card section-gap"><h2>Зафиксированные штатные выключения Huawei 310</h2><p class="muted">Web: команда «shut down terminal». Пульт ДУ: запись «user shut down terminal» после кнопки питания. Это не доказательство аварийной потери электропитания.</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${shutdowns.count}</strong></div><div class="card"><span>Устройств</span><strong>${shutdowns.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${shutdowns.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", shutdowns.byDate, { limit: 31 })}${renderRebootChart("По часам", shutdowns.byHour, { limit: 24 })}</div>${table(shutdowns)}</section>` : ""}
+      ${mode === "power" ? `<section class="card section-gap"><h2>Зафиксированные штатные выключения Huawei 310</h2><p class="muted">Команда Shut down всего терминала учитывается без обязательного Web-маркера или кнопки пульта. Инициатор, включая контроллер, не угадывается по каналу. Это не доказательство аварийной потери электропитания.</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${shutdowns.count}</strong></div><div class="card"><span>Устройств</span><strong>${shutdowns.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${shutdowns.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", shutdowns.byDate, { limit: 31 })}${renderRebootChart("По часам", shutdowns.byHour, { limit: 24 })}</div>${table(shutdowns)}</section>` : ""}
       ${mode === "power" ? `<details class="card section-gap"><summary>Предполагаемые отключения питания Huawei 310 — ${analytics.groups.suspected_power_loss.count}</summary><p class="muted">Низкая достоверность: длинная пауза перед запуском не доказывает отсутствие питания.</p>${table(analytics.groups.suspected_power_loss)}</details><details class="card section-gap"><summary>Запуски Huawei 310 после штатного выключения — ${analytics.groups.start_after_shutdown.count}</summary><p class="muted">Команда выключения и новый запуск есть в журнале; это не отдельная перезагрузка.</p>${table(analytics.groups.start_after_shutdown)}</details>` : ""}
       ${mode === "reboots" ? `<details class="card section-gap"><summary>Запуски Huawei 310 с неустановленной причиной — ${analytics.groups.unknown_start.count}</summary><p class="muted">Не прибавляются к подтверждённым перезагрузкам.</p>${table(analytics.groups.unknown_start)}</details>` : ""}</section>`;
   }
@@ -7902,7 +7921,7 @@
       <section class="card section-gap"><h2>${mode === "power" ? "Предполагаемые отключения питания Bar 300" : "Запуски Bar 300 с неустановленной причиной"}</h2><p class="muted">${mode === "power" ? `Пауза не менее ${barAnalytics.silenceMinutes} минут перед новым запуском — лишь низкодостоверное предположение, не доказательство пропажи напряжения. Она не учитывается в подтверждённых выключениях.` : "System boot подтверждает запуск, но не его причину. Общие слова reboot/restart не считаются командой перезагрузки; подтверждённых перезагрузок по этому правилу пока нет."}</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>${mode === "power" ? "Предположений" : "Неизвестных запусков"}</span><strong>${barGroup.count}</strong></div><div class="card"><span>Устройств</span><strong>${barGroup.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${barGroup.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", barGroup.byDate, { limit: 31 })}${renderRebootChart("По часам", barGroup.byHour, { limit: 24 })}</div>${table(barGroup.events)}</section>
       ${mode === "power" ? `<section class="card section-gap"><h2>Подтверждённые штатные выключения Bar 300</h2><p class="muted">Отдельная web-команда «shut down terminal» проверена контролируемым выключением и последующим запуском. Это не аварийное исчезновение электропитания.</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${barPowerOff.count}</strong></div><div class="card"><span>Устройств</span><strong>${barPowerOff.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${barPowerOff.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", barPowerOff.byDate, { limit: 31 })}${renderRebootChart("По часам", barPowerOff.byHour, { limit: 24 })}</div>${table(barPowerOff.events)}</section><details class="card section-gap"><summary>Запуски Bar 300 после штатного выключения — ${barStartsAfterShutdown.count}</summary><p class="muted">Команда выключения и следующий запуск есть в журнале; это не отдельная перезагрузка.</p>${table(barStartsAfterShutdown.events)}</details>` : ""}
       <section class="card section-gap"><h2>${mode === "power" ? "Предполагаемые отключения питания Box 300/600" : "Запуски Box 300/600 с неустановленной причиной"}</h2><p class="muted">${mode === "power" ? `Пауза не менее ${boxAnalytics.silenceMinutes} минут перед неизвестным запуском имеет низкую достоверность и не доказывает потерю напряжения. Администратор проверил событийную аналитику обеих моделей.` : "System boot не доказывает перезагрузку. Общие reboot/restart не входят в подтверждённый счётчик; администратор проверил событийную аналитику обеих моделей."}</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>${mode === "power" ? "Предположений" : "Неизвестных запусков"}</span><strong>${boxGroup.count}</strong></div><div class="card"><span>Устройств</span><strong>${boxGroup.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${boxGroup.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", boxGroup.byDate, { limit: 31 })}${renderRebootChart("По часам", boxGroup.byHour, { limit: 24 })}</div>${table(boxGroup.events)}</section>
-      ${mode === "power" ? `<section class="card section-gap"><h2>Штатные выключения Box 300/600</h2><p class="muted">Учитываются только журналы с точным web-маркером «shut down terminal». Администратор подтвердил событийный анализ обеих моделей; это не доказательство аварийной потери электропитания.</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${boxPowerOff.count}</strong></div><div class="card"><span>Устройств</span><strong>${boxPowerOff.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${boxPowerOff.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", boxPowerOff.byDate, { limit: 31 })}${renderRebootChart("По часам", boxPowerOff.byHour, { limit: 24 })}</div>${table(boxPowerOff.events)}</section><details class="card section-gap"><summary>Запуски Box 300/600 после штатного выключения — ${boxStartsAfterShutdown.count}</summary><p class="muted">Запуск после команды выключения не считается перезагрузкой.</p>${table(boxStartsAfterShutdown.events)}</details>` : ""}</section>`;
+      ${mode === "power" ? `<section class="card section-gap"><h2>Штатные выключения Box 300/600</h2><p class="muted">Учитываются команды Shut down всего терминала в известном формате журнала независимо от инициатора. Web-маркер больше не обязателен. Это не доказательство аварийной потери электропитания.</p><div class="dashboard-kpi-grid reboot-kpi-grid"><div class="card"><span>Событий</span><strong>${boxPowerOff.count}</strong></div><div class="card"><span>Устройств</span><strong>${boxPowerOff.affectedDevices}</strong></div><div class="card"><span>Локаций</span><strong>${boxPowerOff.affectedLocations}</strong></div></div><div class="reboot-chart-grid section-gap">${renderRebootChart("По датам", boxPowerOff.byDate, { limit: 31 })}${renderRebootChart("По часам", boxPowerOff.byHour, { limit: 24 })}</div>${table(boxPowerOff.events)}</section><details class="card section-gap"><summary>Запуски Box 300/600 после штатного выключения — ${boxStartsAfterShutdown.count}</summary><p class="muted">Запуск после команды выключения не считается перезагрузкой.</p>${table(boxStartsAfterShutdown.events)}</details>` : ""}</section>`;
   }
 
   function renderPowerDurationDashboard(data) {
@@ -8598,6 +8617,7 @@
         ${automatic ? `<section class="polling-progress section-gap" aria-live="polite"><div class="polling-progress-heading"><div><span class="eyebrow">${escapeHtml(automaticPollingStatusLabel(automatic.status))}</span><strong>${automatic.processed || 0} из ${automatic.total || 0} устройств</strong></div><strong>${automaticPercent}%</strong></div><progress max="100" value="${automaticPercent}">${automaticPercent}%</progress><dl class="polling-progress-metrics"><div><dt>Успешно</dt><dd>${automatic.successful || 0}</dd></div><div><dt>Ошибки опроса</dt><dd>${automatic.failed || 0}</dd></div><div><dt>Ошибки сохранения</dt><dd>${automatic.saveFailed || 0}</dd></div><div><dt>Не поддерживается</dt><dd>${automatic.unsupported || 0}</dd></div><div><dt>Папка запуска</dt><dd class="mono">${escapeHtml(automatic.runFolderName || "будет создана при старте")}</dd></div></dl>${automatic.allowInsecureTls ? `<p class="muted">Для этого запуска разрешён самоподписанный HTTPS-сертификат. Обычный HTTP не используется.</p>` : ""}${!["completed", "cancelled", "failed"].includes(automatic.status) ? `<button class="button danger" type="button" data-cancel-automatic-polling>Отменить опрос</button>` : ""}</section>` : ""}
       </section>
       <section class="card section-gap"><h2>Импорт логов устройств</h2>
+        ${ui.dbMode&&(dbViews.bootstrap?.logRulesets||[]).some(item=>item.files>0&&item.ruleset!==LOG_ANALYSIS_RULESET)?'<div class="warning-panel" role="status"><strong>Обновлены правила выключения Shut down.</strong><p>Для добавления прежде пропущенных команд выберите полную папку ранее импортированных логов. Перепроверка включится автоматически, старые итоги останутся доступны до успешной публикации. После остановки выберите ту же папку повторно: готовые файлы текущей версии не читаются заново целиком. Polycom RPG — отдельный будущий этап.</p></div>':""}
         ${ui.workspaceStatus?.pendingLogFiles > 0 && !ui.logImportBusy ? `<p class="info-panel">Есть сохранённые результаты незавершённого импорта. Выберите ту же папку с логами и тот же режим перепроверки, чтобы продолжить.</p>` : ""}
         <form class="form-grid" data-log-import-form novalidate aria-busy="${ui.logImportBusy}"><div class="field"><label for="device-log-files" class="sr-only">Общая папка логов</label><input id="device-log-files" name="logFiles" type="file" webkitdirectory directory multiple required${logBlock ? " disabled" : ""}></div><label class="polling-tls-option"><input name="forceRescan" type="checkbox"${logBlock ? " disabled" : ""}> Перепроверить ранее загруженные файлы целиком</label><button class="button primary" type="submit" aria-describedby="log-import-feedback"${logBlock ? " disabled" : ""}>${ui.logImportBusy?"Импорт выполняется…":ui.workspaceStatus?.pendingLogFiles > 0 ? "Продолжить импорт логов" : "Импортировать папку логов"}</button></form>
         <p id="log-import-feedback" data-log-import-feedback class="${logFeedback?.type==="error"?"error-panel":logFeedback?.type==="warning"?"warning-panel":"info-panel"}" role="status"${logFeedback?"":" hidden"}>${escapeHtml(logFeedback?.message||"")}</p>
@@ -9614,14 +9634,15 @@
           }} catch { /* Published analytics is safe; unused checkpoints can be cleaned on a repeat. */ }
         }
         else workspaceSaved = ui.workspaceStatus?.status !== "ready" || await queueWorkspaceSave();
-        const outcome=workspaceSaved ? "Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ", восстановлено после остановки: " + imported.recoveredFiles + ". Исходные файлы не изменены."
+        const outcome=workspaceSaved ? (imported.rulesChanged?"Перепроверка по новым правилам Shut down завершена. ":"")+"Метаданные логов загружены: " + imported.summary.files + " файлов, сопоставлено: " + imported.summary.matched + ", без повторного чтения: " + imported.skippedFiles + ", восстановлено после остановки: " + imported.recoveredFiles + ". Исходные файлы не изменены."
           : "Логи импортированы, но рабочую базу сохранить не удалось. До закрытия вкладки повторите сохранение.";
         setMessage(outcome,workspaceSaved?"success":"warning");
         setLogImportFeedback(outcome,workspaceSaved?"info":"warning");
         finishImport("logs",!workspaceSaved?"failed":imported.summary.issues?"partial":"completed",outcome);
       } catch (error) {
         if (error?.safeCode) ui.workspaceSaveError = workspaceErrorLabel(error.safeCode);
-        const message=error?.message === "log_full_reimport_required" ? "Один из прежних файлов или выгрузка SR изменились. Для точной перепроверки выберите полную папку всех ранее импортированных логов; прежняя аналитика сохранена."
+        const message=error?.message === "log_rules_recheck_required" ? "Обновлены правила распознавания Shut down. Выберите полную папку всех ранее импортированных логов: старые результаты нельзя использовать как проверенные по новым правилам. Прежняя аналитика сохранена."
+          : error?.message === "log_full_reimport_required" ? "Один из прежних файлов или выгрузка SR изменились. Для точной перепроверки выберите полную папку всех ранее импортированных логов; прежняя аналитика сохранена."
           : error?.message === "log_recheck_incomplete" ? "Полная перепроверка одного из прежних логов не завершилась. Старая аналитика сохранена без потери доказательств."
           : ui.logImportCancelRequested || error?.message === "log_import_cancelled"
           ? "Импорт логов остановлен. Прежняя аналитика сохранена; подтверждённые промежуточные результаты можно использовать при продолжении."

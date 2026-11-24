@@ -4,7 +4,7 @@ const http=require("http"),fs=require("fs"),path=require("path"),os=require("os"
 const {chromium}=require(process.env.SPHERE_PLAYWRIGHT_MODULE||"playwright");
 const root=path.resolve(__dirname,"..");
 const allowed=new Set(["/index.html","/styles.css","/app.js","/product-catalog.js","/vendor/xlsx.full.min.js",
-  ...["credential-pool","polling-recovery","huawei-te-log-events","huawei-310-log-events","huawei-300-log-events",
+  ...["credential-pool","polling-recovery","vcs-shutdown","huawei-te-log-events","huawei-310-log-events","huawei-300-log-events",
       "log-scan-worker","log-scan-client","sphere","db-views"].map((name)=>"/runtime/"+name+".js")]);
 const counts={inventoryDevices:5000,pollingResults:25000,logRows:5000,"events:te":1000000};
 const revision="1:0";

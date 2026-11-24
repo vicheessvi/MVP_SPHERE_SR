@@ -427,5 +427,38 @@ class ReadModelTests(unittest.TestCase):
         self.assertEqual(next(row for row in self.view("summary")["groups"] if row["kind"]=="confirmed_reboot")["events"],2)
 
 
+    def test_shutdown_link_across_files_is_atomic_and_reversible_for_late_boot(self):
+        token=self.model.begin(self.workspace,self.revision,"logs")["token"]
+        self.model.batch(self.workspace,token,"logRegistry",[{"path":"synthetic.xml","analysisRuleset":"vcs-terminal-shutdown-2026-11-24-v1"}])
+        events=[{"id":"controller-off","deviceId":"te","ip":"192.0.2.40","kind":"power_off","shutdownBasis":"registered_terminal_shutdown","deviceLocalTime":"2026-11-01 18:01:00"},
+            {"id":"next-boot","deviceId":"te","ip":"192.0.2.40","kind":"unknown_start","deviceLocalTime":"2026-11-02 07:00:00","silenceGap":{"seconds":40000}}]
+        self.model.batch(self.workspace,token,"events:te",events)
+        self.assertFalse(self.view("events",{"kind":"start_after_shutdown","period":"custom","dateFrom":"2026-11-01","dateTo":"2026-11-03"})["rows"])
+        self.revision=self.model.finish(self.workspace,token,"a"*64)["revision"]
+        linked=self.view("events",{"kind":"start_after_shutdown","period":"custom","dateFrom":"2026-11-01","dateTo":"2026-11-03"})["rows"]
+        self.assertEqual([row["key"] for row in linked],["next-boot"])
+        self.assertIsNone(json.loads(linked[0]["payload"])["silenceGap"])
+        cohort=self.view("offhours",{"period":"custom","dateFrom":"2026-11-01","dateTo":"2026-11-03","offhoursGroup":"once"})
+        self.assertEqual(cohort["rows"][0]["confirmed"],1)
+        self.assertEqual(cohort["rows"][0]["suspected"],0)
+        exported=self.view("export-devices",{"kind":"power_off","period":"custom","dateFrom":"2026-11-01","dateTo":"2026-11-03"})["rows"]
+        self.assertEqual(exported[0]["confirmed"],1)
+        self.assertEqual(exported[0]["suspected"],0)
+        token=self.model.begin(self.workspace,self.revision,"logs")["token"]
+        self.model.batch(self.workspace,token,"logRegistry",[{"path":"synthetic-late.xml","analysisRuleset":"vcs-terminal-shutdown-2026-11-24-v1"}])
+        self.model.batch(self.workspace,token,"events:te",[{"id":"late-boot","deviceId":"te","ip":"192.0.2.40","kind":"unknown_start","deviceLocalTime":"2026-11-01 19:00:00"}])
+        self.revision=self.model.finish(self.workspace,token,"a"*64)["revision"]
+        linked=self.view("events",{"kind":"start_after_shutdown","period":"custom","dateFrom":"2026-11-01","dateTo":"2026-11-03"})["rows"]
+        self.assertEqual([row["key"] for row in linked],["late-boot"])
+        original=self.view("events",{"kind":"suspected_power_loss","period":"custom","dateFrom":"2026-11-02","dateTo":"2026-11-03"})["rows"]
+        self.assertEqual([row["key"] for row in original],["next-boot"])
+        token=self.model.begin(self.workspace,self.revision,"logs")["token"]
+        self.model.batch(self.workspace,token,"logRegistry",[{"path":"synthetic-explicit.xml","analysisRuleset":"vcs-terminal-shutdown-2026-11-24-v1"}])
+        self.model.batch(self.workspace,token,"events:te",[{"id":"late-boot","deviceId":"te","ip":"192.0.2.40","kind":"confirmed_reboot","deviceLocalTime":"2026-11-01 19:00:00"}])
+        self.revision=self.model.finish(self.workspace,token,"a"*64)["revision"]
+        explicit=self.view("events",{"kind":"confirmed_reboot","period":"custom","dateFrom":"2026-11-01","dateTo":"2026-11-03"})["rows"]
+        self.assertEqual([row["key"] for row in explicit],["late-boot"])
+        self.assertNotIn("_shutdownLink",json.loads(explicit[0]["payload"]))
+
 if __name__ == "__main__":
     unittest.main()

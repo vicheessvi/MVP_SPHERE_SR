@@ -2,7 +2,7 @@
   "use strict";
 
   if (typeof importScripts === "function") {
-    importScripts("huawei-te-log-events.js", "huawei-310-log-events.js", "huawei-300-log-events.js");
+    importScripts("vcs-shutdown.js", "huawei-te-log-events.js", "huawei-310-log-events.js", "huawei-300-log-events.js");
   }
 
   const parsers = {

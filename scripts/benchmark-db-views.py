@@ -17,6 +17,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--events", type=int, default=1_000_000)
 parser.add_argument("--snapshot",action="store_true")
 parser.add_argument("--offhours",action="store_true",help="Measure the bounded two-month VCS cohort as well")
+parser.add_argument("--shutdown",action="store_true",help="Measure streamed cross-file shutdown/start linking")
 args=parser.parse_args()
 count = args.events
 synthetic_ip=lambda index:f"10.249.{index//250}.{1+index%250}"
@@ -57,6 +58,12 @@ with tempfile.TemporaryDirectory(prefix="sphere-db-benchmark-") as folder:
                    "deviceLocalTime": ((datetime(2026,9,23)+timedelta(minutes=i%86400)) if args.offhours else (datetime(2023,1,1)+timedelta(minutes=i))).strftime("%Y-%m-%d %H:%M:%S"),
                    "silenceGap": {"seconds": 7200} if i%5==0 and i%20 else None}
                   for i in range(first,min(count,first+1000))]
+        if args.shutdown:
+            for offset,event in enumerate(events):
+                cycle=(first+offset)//5000
+                event["kind"]="power_off" if cycle%3==0 else "unknown_start" if cycle%3==1 else "confirmed_reboot"
+                event["silenceGap"]={"seconds":7200} if event["kind"]=="unknown_start" else None
+                if event["kind"]=="power_off":event["shutdownBasis"]="registered_terminal_shutdown"
         if args.snapshot:
             body=encode({"key":"log/indexes/te/events","offset":first,"rows":events})
             store.write_part(workspace,transfer,1+first//1000,sha256(body.encode()).hexdigest(),body)
@@ -74,6 +81,15 @@ with tempfile.TemporaryDirectory(prefix="sphere-db-benchmark-") as folder:
             if progress["ready"]:break
         print(json.dumps({"migrationSeconds":round(time.monotonic()-migration,2)}),flush=True)
     revision=model.bootstrap(workspace)["revision"]
+    if args.shutdown:
+        token=model.begin(workspace,revision,"logs")["token"]
+        model.batch(workspace,token,"logRegistry",[{"path":"synthetic.xml","analysisRuleset":"vcs-terminal-shutdown-2026-11-24-v1"}])
+        progress=[];start=time.monotonic()
+        revision=model.finish(workspace,token,"a"*64,on_progress=progress.append)["revision"]
+        linked=model.view(workspace,revision,"summary",{})
+        assert next((row["events"] for row in linked["groups"] if row["kind"]=="start_after_shutdown"),0)>0
+        assert progress[-1]["percent"]==100
+        print(json.dumps({"view":"shutdown-links-publish","seconds":round(time.monotonic()-start,3),"events":count,"progressUpdates":len(progress)}),flush=True)
     start=time.monotonic()
     facets=model.view(workspace,revision,"facets",{})
     print(json.dumps({"view":"facets","seconds":round(time.monotonic()-start,3),"models":len(facets["models"])}),flush=True)

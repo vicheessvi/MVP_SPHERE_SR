@@ -2876,6 +2876,10 @@
     assertEqual(pollingRecovery.validate(recovery).plan.collectJson, false);
   });
 
+  if(typeof require==="function")test("Shut down: инициатор не ограничивает известные форматы, а перепроверка возобновляется по версии правил",async()=>{
+    await require("./scripts/test-vcs-shutdown").run({quiet:true});
+  });
+
   test("Архив Polycom TGZ импортируется как метаданные точной модели без разбора событий", () => {
     const state = api.createDemoState();
     state.inventoryDevices = [300, 310, 500, 700].map((number, index) => ({ id: `polycom-${number}`, inCurrentSr: true,
@@ -2919,7 +2923,8 @@
     const events = teLogEvents.deriveEvents(scanned.markers);
     assertEqual(events.filter((event) => event.kind === "confirmed_reboot").length, 1);
     assertEqual(events.filter((event) => event.kind === "power_off").length, 1);
-    assertEqual(events.filter((event) => event.kind === "unknown_start").length, 1);
+    assertEqual(events.filter((event) => event.kind === "unknown_start").length, 0);
+    assertEqual(events.filter((event) => event.kind === "start_after_shutdown").length, 1);
     assertEqual(events.find((event) => event.kind === "confirmed_reboot").markerLineNumbers.length, 2);
     assertEqual(teLogEvents.parseEventLine("[Debug][Main] 2026-02-30 10:00:00 LOG_MOD_MC 9 System start", 1), null);
     const file = typeof Blob === "function" ? new Blob([log]) : { size: log.length, slice: (start, end) => ({ arrayBuffer: async () => new TextEncoder().encode(log.slice(start, end)).buffer }) };
@@ -2965,8 +2970,8 @@
     assertEqual(box.events.length, 2);
     assertEqual(box.validationStatus, "confirmed_user_validation");
     assert(box.events.every((event) => event.validationStatus === "confirmed_user_validation"), "Box event validation status must be confirmed");
-    assert(box.events.some((event) => event.ruleVersion === "huawei-box300-log-v2"), "Box 300 rule version must remain model-specific");
-    assert(box.events.some((event) => event.ruleVersion === "huawei-box600-log-v2"), "Box 600 rule version must remain model-specific");
+    assert(box.events.some((event) => event.ruleVersion === "huawei-box300-log-v3"), "Box 300 rule version must remain model-specific");
+    assert(box.events.some((event) => event.ruleVersion === "huawei-box600-log-v3"), "Box 600 rule version must remain model-specific");
     assert(!JSON.stringify(bar).includes("Other activity"));
     const barAnalytics = api.getHuaweiTeLogAnalytics(bar, state, { period: "all", logSilenceMinutes: "60" });
     const boxAnalytics = api.getHuaweiTeLogAnalytics(box, state, { period: "all", logSilenceMinutes: "60" });
@@ -3097,7 +3102,8 @@
     const tooFar = huawei310LogEvents.deriveEvents(huawei310LogEvents.scanText(head + remote("2026-01-04 12:00:00") + remote("2026-01-04 12:01:00") + boot("2026-01-04 12:02:00")).markers);
     assertEqual(tooFar.filter((item) => item.kind === "confirmed_reboot").length, 0);
     const notRemote = huawei310LogEvents.deriveEvents(huawei310LogEvents.scanText(head + shutdown("2026-01-05 12:00:00") + boot("2026-01-05 12:01:00")).markers);
-    assertEqual(notRemote.filter((item) => item.kind === "power_off").length, 0);
+    assertEqual(notRemote.filter((item) => item.kind === "power_off").length, 1);
+    assertEqual(notRemote.find((item) => item.kind === "power_off").method,"unknown");
   });
 
   test("Box 310/610 после пользовательского подтверждения входят в модельную аналитику", () => {
@@ -3115,8 +3121,8 @@
     assertEqual(main.events.filter((item) => item.kind === "power_off").length, 2);
     assertEqual(main.coverage.boxFiles, 2);
     assert(main.events.every((item) => item.validationStatus === "confirmed_user_validation"));
-    assert(main.events.some((item) => item.ruleVersion === "huawei-box310-log-v1"));
-    assert(main.events.some((item) => item.ruleVersion === "huawei-box610-log-v1"));
+    assert(main.events.some((item) => item.ruleVersion === "huawei-box310-log-v2"));
+    assert(main.events.some((item) => item.ruleVersion === "huawei-box610-log-v2"));
     assert(!JSON.stringify(main).includes("Web user"));
     const boxAnalytics = api.getHuaweiTeLogAnalytics(main, state, { period: "all" });
     assertEqual(api.getPowerHeatmapAnalytics(null, boxAnalytics, "confirmed").totalEvents, 2);
@@ -3305,7 +3311,8 @@
     const powerEvents = teLogEvents.deriveEvents(teLogEvents.scanText(powerCycle, { model: "te20" }).markers);
     assertEqual(powerEvents.filter((item) => item.kind === "power_off").length, 1);
     assertEqual(powerEvents.filter((item) => item.kind === "confirmed_reboot").length, 1);
-    assertEqual(powerEvents.filter((item) => item.kind === "unknown_start").length, 2);
+    assertEqual(powerEvents.filter((item) => item.kind === "unknown_start").length, 1);
+    assertEqual(powerEvents.filter((item) => item.kind === "start_after_shutdown").length, 1);
     const remoteShut = "[Info][Main] 2026-01-04 11:58:34 LOG_MOD_RC 107 2048[A:111 B:222] User shut down terminal via remote";
     const remoteBoot = "[Debug][Main] 2026-01-04 12:00:00 LOG_MOD_MC 108 2048[A:111 B:222] Synthetic:System is boot successful";
     const remoteLog = powerCycle.replace("</LogModule>", `${remoteShut}\n${remoteBoot}\n</LogModule>`);
@@ -4011,6 +4018,15 @@
     controller.handleClick({closest:()=>({dataset:{dbKind:"confirmed_reboot"}})});
     assert(!state.offhours);assertEqual(state.filters.period,"7d");
     controller.deactivate();
+  });
+
+  if(typeof require==="function")test("Старая версия логов предупреждает о перепроверке, не скрывая опубликованную аналитику",async()=>{
+    const db=require("./runtime/db-views.js"),controller=db.createController({logRuleset:"new",render(){},request:async()=>({rows:[],hasNext:false})});
+    controller.setRevision({revision:"1:0",logRulesets:[{ruleset:null,files:1}]});
+    const descriptor={route:"reboots",renderer:"reboots",title:"Анализ"};let html=controller.render(descriptor);
+    assert(html.includes("перепроверка по новым правилам Shut down"));assert(html.includes('data-route="upload"'));assert(html.includes("data-db-filters"));
+    controller.setRevision({revision:"1:1",logRulesets:[{ruleset:"new",files:1}]});html=controller.render(descriptor);
+    assert(!html.includes("перепроверка по новым правилам Shut down"));controller.deactivate();
   });
 
   if(typeof require==="function")test("Ошибка календаря не скрывает навигацию по разделам и фильтры",async()=>{

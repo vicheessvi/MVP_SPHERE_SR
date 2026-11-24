@@ -212,7 +212,8 @@
         return [`<button type="button" class="text-button" data-db-device="${escape(row.device)}">${escape(row.name)}</button><small>${escape(row.model)} · ${escape(row.ip)}</small>`,
           escape(row.stamp), escape(KIND_LABELS[row.event_kind]), escape(row.locationName), escape(row.address),
           raw.basis==="date_minus_uptime" ? "Расчёт Date − Uptime" : row.event_kind === "suspected_power_loss" ? "Предположение · низкая" : row.event_kind === "unknown_start" ? "Причина неизвестна" : "Подтверждено логом",
-          escape(evidence)+(raw.sourceCount?`<small>Источников: ${raw.sourceCountIsMinimum?"не менее ":""}${number(raw.sourceCount)}</small>`:"")];
+          escape(evidence)+(raw.sourceCount?`<small>Источников: ${raw.sourceCountIsMinimum?"не менее ":""}${number(raw.sourceCount)}</small>`:"")
+            +(row.event_kind==="power_off"?`<small>Канал: ${{web:"Web",remote_control:"Пульт ДУ"}[raw.shutdownMethod]||"Не установлен"}. Инициатор: не установлен.</small>`:"")];
       });
       return table(["Устройство", "Время терминала", "Событие", "Локация", "Адрес", "Достоверность", "Источники"], rows) + pager(state, data);
     }
@@ -319,6 +320,7 @@
       activeKey = key;
       schedule(descriptor, JSON.parse(JSON.stringify(state)), key);
       const data = cache.get(key) || {};
+      const oldLogRules=options.logRuleset&&(bootstrap?.logRulesets||[]).some(item=>item.files>0&&item.ruleset!==options.logRuleset);
       const slices=[];
       if(state.deviceId)slices.push(data[routeView(descriptor,state)]?.rows?.[0]?.name||state.deviceName||"Выбрано устройство");
       if(state.filters.locationId)slices.push(state.drillLabel||"Выбрана локация");
@@ -335,6 +337,7 @@
       } else content = genericTable(data[routeView(descriptor,state)],state);
       if(data.error&&!data.loading&&!data[routeView(descriptor,state)]&&!(descriptor.renderer==="reboots"&&state.offhours))content='<div class="db-empty"><h3>Запрос не подтверждён</h3><p>Данные не удалены. Повторите запрос или откройте другой раздел.</p></div>';
       return `<div class="db-workspace">${descriptor.compact ? `<h2>${escape(descriptor.title)}</h2>` : `<header class="db-hero page-header"><div><p class="eyebrow">Локальная аналитика · SQLite</p><h1>${escape(descriptor.title)}</h1><p>${escape(descriptor.summary||"Данные из выбранной локальной базы.")}</p></div><div class="db-live"><span></span>База подключена<small>Ревизия ${escape(revision)}</small></div></header>`}
+        ${descriptor.renderer==="reboots"&&oldLogRules?'<aside class="error-panel" role="status"><strong>Для журналов нужна перепроверка по новым правилам Shut down.</strong><p>Пока показана прежняя опубликованная аналитика. Выберите полную исходную папку логов в модуле загрузки: результаты сохраняются по файлам, продолжение после сбоя поддерживается. Нового опроса устройств не требуется. Polycom RPG пока остаётся метаданными.</p><button type="button" class="button secondary" data-route="upload">Открыть импорт логов</button></aside>':""}
         ${descriptor.compact ? "" : filters(state,descriptor.renderer==="reboots",descriptor.renderer==="inventory",facets)}
         <section data-db-panel>
         ${slices.length?`<div class="db-drill-chips">${slices.map((label)=>`<span>${escape(label)}</span>`).join("")}<button type="button" data-db-clear-slice>Снять выбор</button></div>`:""}

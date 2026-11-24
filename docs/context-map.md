@@ -1,5 +1,24 @@
 # Карта контекста
 
+## Feature 062 — Shut down независимо от инициатора
+
+- `runtime/vcs-shutdown.js` — общий semantic guard; три Huawei parser сохраняют
+  собственные форматы/время, принимают команду терминала без Web/кнопки пульта,
+  исключают ошибки/настройки/компоненты. `index.html`, worker и launcher/static
+  allowlist загружают общий helper; обычный polling/write не менялся.
+- `app.js`: parser versions + registry analysisRuleset/analysisRuleVersion,
+  versioned checkpoints, автоматическая полная перепроверка при смене правил,
+  требование всех прежних путей и сохранение старой аналитики до atomic finish.
+  UI показывает предупреждение и неизвестного инициатора без угадывания.
+- `read_model.py` связывает split-file startup с новой зарегистрированной
+  командой только в атомарном native publish, потоково и с прогрессом. Связь
+  обратима при позднем промежуточном запуске. Страницы/агрегаты feature 061
+  остаются прежними; полного restore истории в браузер нет.
+- Проверки: `scripts/test-vcs-shutdown.js`, `test_read_model.py`,
+  `check-real-db-filters.py --shutdown` + `check-shutdown-import-ui.js`,
+  `benchmark-db-views.py --shutdown`. Polycom RPG пользователь отложил до
+  подключения устройства; сейчас TGZ metadata-only. ADR-0066, `specs/062-vcs-shutdown-commands/`.
+
 ## Feature 061 — DB-first рабочие экраны
 
 - Нерабочее время ВКС «Учёт»: `offhours.md`, ADR-0065, `read_model.py` view `offhours`

@@ -62,7 +62,7 @@ class LauncherTests(unittest.TestCase):
                 file.parent.mkdir(parents=True,exist_ok=True)
                 file.write_text("synthetic",encoding="utf-8")
             for name in ("runtime/polling-recovery.js","runtime/db-views.js","runtime/log-scan-client.js",
-                         "runtime/log-scan-worker.js","runtime/huawei-310-log-events.js","runtime/huawei-300-log-events.js"):
+                         "runtime/log-scan-worker.js","runtime/huawei-310-log-events.js","runtime/huawei-300-log-events.js","runtime/vcs-shutdown.js"):
                 with self.subTest(resource=name):
                     file=root/name
                     file.unlink()

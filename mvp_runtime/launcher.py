@@ -20,6 +20,7 @@ REQUIRED_FILES = (
     "vendor/xlsx.full.min.js",
     "runtime/credential-pool.js",
     "runtime/polling-recovery.js",
+    "runtime/vcs-shutdown.js",
     "runtime/huawei-te-log-events.js",
     "runtime/huawei-310-log-events.js",
     "runtime/huawei-300-log-events.js",
