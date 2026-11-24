@@ -101,7 +101,7 @@ def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: lis
         digest = str(plan.get("targetSourceSha256") or "").casefold()
         mode = selection.get("mode") if isinstance(selection, dict) else None
         ips = [normalize_ipv4(device.get("ipNormalized") or device.get("ip")) if isinstance(device, dict) else None for device in devices] if isinstance(devices, list) else []
-        if (len(answer_tasks) != 1 or len(requested_tasks) != 1 or plan.get("targetSource") != "sr"
+        if (len(answer_tasks) != 1 or len(requested_tasks) != 1 or plan.get("targetSource") not in ("sr","device_list")
                 or not re.fullmatch(r"[0-9a-f]{64}", digest) or not isinstance(selection, dict)
                 or mode not in {"single_ip", "filters"} or not isinstance(devices, list) or not devices
                 or plan.get("ntpChanges") is not None or plan.get("powerChanges") is not None
@@ -127,9 +127,10 @@ def validate_te20_single_target_tasks(plan: dict[str, Any], requested_tasks: lis
     source_digest = str(plan.get("targetSourceSha256") or "").casefold()
     selection = plan.get("selection") or {}
     devices = plan.get("devices") or []
-    if (plan.get("targetSource") != "sr"
+    listed_single=plan.get("targetSource")=="device_list" and len(devices)==1
+    if (plan.get("targetSource") not in ("sr","device_list")
             or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest)
-            or not isinstance(selection, dict) or selection.get("mode") != "single_ip"
+            or not isinstance(selection, dict) or (selection.get("mode") != "single_ip" and not listed_single)
             or not isinstance(devices, list) or len(devices) != 1 or not isinstance(devices[0], dict)
             or any(not resolve_management_action(devices[0], task).get("supported") for task in requested_tasks)):
         raise PollingError("TE20 management action requires one exact SR target selected by IP")
@@ -171,6 +172,48 @@ def ping_device(ip: Any, timeout_ms: Any = 3000) -> dict[str, Any]:
         return {"ok": False, "durationMs": round((time.monotonic() - started) * 1000), "safeError": "no_ping_response"}
     except OSError:
         return {"ok": False, "durationMs": round((time.monotonic() - started) * 1000), "safeError": "ping_process_failed"}
+
+
+def validate_plan_actions(plan: dict[str,Any]) -> None:
+    if not isinstance(plan,dict):raise PollingError("Polling plan is invalid")
+    tasks=plan.get("managementTasks") or []
+    if not isinstance(tasks,list) or any(not isinstance(item,str) for item in tasks):raise PollingError("Management task selection is invalid")
+    if (type(plan.get("collectJson",True)) is not bool or type(plan.get("collectLogs",False)) is not bool
+            or plan.get("collectJson") is False and plan.get("collectLogs") is not True and not tasks):
+        raise PollingError("Select at least one explicit action")
+    strict=plan.get("schemaVersion")==4
+    if plan.get("targetSource")=="device_list" and not strict:raise PollingError("Device lists require explicit plan v4")
+    if not strict:return
+    if (type(plan.get("collectJson")) is not bool or type(plan.get("collectLogs")) is not bool
+            or not isinstance(plan.get("managementTasks"),list) or len(set(tasks))!=len(tasks)
+            or any(item not in {str(entry.get("id")) for entry in CATALOG.get("managementActions",[])} for item in tasks)):
+        raise PollingError("Explicit action fields are required")
+    expected=(["collect_json"] if plan["collectJson"] else [])+(["collect_logs"] if plan["collectLogs"] else [])+tasks
+    if not expected or plan.get("selectedActions")!=expected:raise PollingError("Action selection differs from the approved plan")
+    devices=plan.get("devices")
+    source=plan.get("targetSource")
+    ips=plan.get("sourceTargetIps")
+    sheets=plan.get("targetSourceSheets")
+    if (source not in ("sr","device_list") or not isinstance(devices,list) or not devices
+            or not re.fullmatch(r"[a-f0-9]{64}",str(plan.get("targetSourceSha256") or "").casefold())
+            or not isinstance(ips,list) or not ips or any(not isinstance(ip,str) or normalize_ipv4(ip)!=ip for ip in ips)
+            or len(set(ips))!=len(ips) or not isinstance(sheets,list)
+            or any(not isinstance(name,str) or not name or len(name)>128 or re.search(r"[\x00-\x1f]",name) for name in sheets)
+            or len(set(sheets))!=len(sheets)
+            or source=="device_list" and not sheets or source=="sr" and sheets):
+        raise PollingError("Explicit target source is invalid")
+    selected=[];source_ips=set(ips)
+    for device in devices:
+        if not isinstance(device,dict):raise PollingError("Explicit target is invalid")
+        ip=normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
+        if ip is None or ip not in source_ips:raise PollingError("Target is absent from the selected source")
+        selected.append(ip)
+        if (tasks or plan["collectLogs"]) and not plan_device_supported(device):raise PollingError("Selected operation requires a supported target")
+        if any(not resolve_management_action(device,action).get("supported") for action in tasks):raise PollingError("Selected write is unsupported by a target")
+        if plan["collectLogs"] and resolve_manifest(device).get("transport") not in LOG_TRANSPORTS:raise PollingError("Selected logs are unsupported by a target")
+    if len(set(selected))!=len(selected):raise PollingError("Explicit targets contain duplicate IP")
+    if "disable_insecure_management_services" in tasks and source!="device_list":raise PollingError("Bulk port changes require the uploaded source")
+    validate_te20_single_target_tasks(plan,tasks)
 
 
 Adapter = Callable[[dict[str, Any], Any, dict[str, Any]], dict[str, Any]]
@@ -303,9 +346,12 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
     captured_at = utc_now()
     manifest = resolve_manifest(device)
     requested_management_tasks = [str(item) for item in settings.get("management_tasks", [])]
+    collect_json=settings.get("collect_json",True) is True
     collect_logs = settings.get("collect_logs") is True
     supported_management_tasks = [item for item in requested_management_tasks if resolve_management_action(device, item).get("supported")]
     transport = manifest.get("transport")
+    if not collect_json and collect_logs and not requested_management_tasks and transport not in LOG_TRANSPORTS:
+        return {"ip":ip,"capturedAt":captured_at,"adapterKey":manifest["key"],"ok":False,"networkAttempted":False,"safeError":"log_contract_required","logCollection":{"status":"protocol_required"}}
     if device.get("pollingSupported") is False or not transport or manifest.get("protocolStatus") != "supported":
         result = {"ip": ip, "capturedAt": captured_at, "adapterKey": manifest["key"], "ok": False, "failedStage": "adapter", "ping": {"ok": None, "durationMs": None}, "networkAttempted": False, "vendorPolling": {"status": manifest["protocolStatus"], "knownModel": manifest["knownModel"]}, "safeError": "verified_protocol_contract_required" if manifest["protocolStatus"] == "protocol_required" else "adapter_unsupported"}
         return _complete_management_actions(device, requested_management_tasks, result)
@@ -324,12 +370,16 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
         result = adapter(
             {**device, "ipNormalized": ip, "allowInsecureTls": device.get("allowInsecureTls") is True or settings.get("allow_insecure_tls") is True},
             credential,
-            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes"), "polycom_answer_changes": settings.get("polycom_answer_changes"), "collect_logs": collect_logs and transport in LOG_TRANSPORTS, "on_log": settings.get("on_log"), "log_opener": settings.get("log_opener")},
+            {"request": settings.get("request"), "timeout_ms": settings.get("timeout_ms"), "now": settings.get("now"), "allow_insecure_tls": settings.get("allow_insecure_tls") is True, "management_tasks": supported_management_tasks, "ntp_changes": settings.get("ntp_changes"), "power_changes": settings.get("power_changes"), "polycom_answer_changes": settings.get("polycom_answer_changes"), "collect_json":collect_json,"collect_logs": collect_logs and transport in LOG_TRANSPORTS, "on_log": settings.get("on_log") if collect_logs else None, "log_opener": settings.get("log_opener") if collect_logs else None},
         )
         merged = {**result, "ip": ip, "capturedAt": result.get("capturedAt") or captured_at, "adapterKey": manifest["key"], "networkAttempted": True, "ping": {"ok": True, "durationMs": ping.get("durationMs")}}
         if collect_logs and transport not in LOG_TRANSPORTS:
             merged["logCollection"] = {"status": "protocol_required"}
-        return _complete_management_actions(device, requested_management_tasks, merged)
+        merged=_complete_management_actions(device,requested_management_tasks,merged)
+        if settings.get("strict_actions"):
+            if collect_logs and (merged.get("logCollection") or {}).get("status")!="saved":merged.update(ok=False,failedStage="log_collection",safeError="selected_log_not_completed")
+            if any(item.get("status") not in ("applied","already_compliant") for item in merged.get("managementActions",[])):merged.update(ok=False,failedStage="management_action",safeError="selected_management_not_completed")
+        return merged
     except BaseException as error:
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise
@@ -390,8 +440,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
     if not isinstance(plan, dict) or not isinstance(plan.get("devices"), list):
         raise PollingError("Polling plan must contain devices[]")
     settings = options or {}
-    if type(plan.get("collectLogs", False)) is not bool or type(plan.get("collectJson", True)) is not bool or (plan.get("collectLogs") is not True and plan.get("collectJson") is False):
-        raise PollingError("Log collection option must be boolean")
+    validate_plan_actions(plan)
     requested_management_tasks = plan.get("managementTasks") or []
     known_management_tasks = {str(item.get("id")) for item in CATALOG.get("managementActions", [])}
     if (
@@ -402,7 +451,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
         raise PollingError("Polling plan contains an unknown management task")
     if "disable_insecure_management_services" in requested_management_tasks:
         source_digest = str(plan.get("targetSourceSha256") or "").casefold()
-        if plan.get("targetSource") != "port_closure_list" or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest):
+        if plan.get("targetSource") not in ("port_closure_list","device_list") or len(source_digest) != 64 or any(character not in "0123456789abcdef" for character in source_digest):
             raise PollingError("Port-closure task requires a verified dedicated target list")
     validate_te20_single_target_tasks(plan, requested_management_tasks)
     devices = [dict(device) for device in plan["devices"]]
@@ -438,7 +487,7 @@ def run_plan(plan: dict[str, Any], options: dict[str, Any] | None = None) -> lis
                 progress({"stage": "polling", "index": index, "total": len(devices), "device": {"ip": ip, "category": device.get("category"), "manufacturer": device.get("manufacturer"), "model": device.get("model")}})
             on_log = settings.get("on_log")
             log_callback = (lambda stream, metadata: on_log(stream, {**metadata, "index": index, "total": len(devices)})) if callable(on_log) else None
-            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges"), "polycom_answer_changes": plan.get("polycomAnswerChanges"), "collect_logs": plan.get("collectLogs") is True, "on_log": log_callback})
+            result = probe_device(device, {**settings, "allowed_ips": allowed_ips, "management_tasks": requested_management_tasks, "ntp_changes": plan.get("ntpChanges"), "power_changes": plan.get("powerChanges"), "polycom_answer_changes": plan.get("polycomAnswerChanges"), "collect_json":plan.get("collectJson",True),"collect_logs": plan.get("collectLogs") is True,"strict_actions":plan.get("schemaVersion")==4, "on_log": log_callback})
         if plan.get("collectLogs") is True and "logCollection" not in result:
             log_status = "not_started" if result.get("adapterKey") in LOG_ADAPTER_KEYS else "protocol_required"
             result = {**result, "logCollection": {"status": log_status}}

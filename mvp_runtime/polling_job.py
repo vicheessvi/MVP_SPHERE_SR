@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .polling import PollingCancelled, abortable_wait, normalize_ipv4, run_plan
+from .polling import PollingCancelled, abortable_wait, normalize_ipv4, run_plan, validate_plan_actions
 from .redaction import assert_no_plan_secrets, sanitize_result
 
 
@@ -66,6 +66,7 @@ class PollingJob:
         try:
             plan = copy.deepcopy(settings.get("plan"))
             assert_no_plan_secrets(plan)
+            validate_plan_actions(plan)
         except Exception as error:
             if isinstance(error, JobInputError):
                 raise

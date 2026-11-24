@@ -368,6 +368,7 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
     from mvp_runtime.polling import normalize_ipv4
 
     settings = options or {}
+    collect_json=settings.get("collect_json",True) is True
     contract = MODEL_CONTRACTS[model_key]
     label = str(contract["label"])
     ip = normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
@@ -472,7 +473,8 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
 
         resources: dict[str, dict[str, Any]] = {}
         resource_errors: dict[str, str] = {}
-        for key, action_name in RESOURCE_ACTIONS.items():
+        selected_resources=RESOURCE_ACTIONS if collect_json else {key:value for key,value in RESOURCE_ACTIONS.items() if key in ("versionInfo","productEsn","systemMac")}
+        for key, action_name in selected_resources.items():
             try:
                 outer, data = action(action_name, {"acCSRFToken": csrf})
                 if outer.get("success") != 1:
@@ -489,12 +491,12 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
         mac = resources.get("systemMac") or {}
         has_mac = any(isinstance(value, str) and MAC_PATTERN.fullmatch(value.strip()) for value in mac.values())
         if not _model_matches(version.get("model"), label) or not (serial or has_mac):
-            return {**base, "failedStage": "resources", "safeError": "resource_schema_unconfirmed", "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors}}
+            return {**base, "failedStage": "resources", "safeError": "resource_schema_unconfirmed", "diagnostics": {"attemptedResourceKeys": list(selected_resources), "resourceErrors": resource_errors}}
 
-        site_name = _read_site_name(bundle, action, csrf)
+        site_name = _read_site_name(bundle, action, csrf) if collect_json else {"status":"not_requested","value":None}
         device_settings = unknown_device_settings(label, not_exposed=("snmpV2", "autoUpdate"))
         device_settings["fields"]["snmpV2"]["reason"] = "version_not_supported"
-        if model_key in ("bar300", "box300", "box600"):
+        if collect_json and model_key in ("bar300", "box300", "box600"):
             device_settings["fields"]["autoUpdate"] = _read_bar300_auto_update(bundle, action, csrf)
             device_settings["fields"]["http"] = _read_bar300_http(bundle, action, csrf)
             device_settings["fields"]["telnet"] = _read_bar300_telnet(bundle, action, csrf)
@@ -574,7 +576,7 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             "deviceSettings": device_settings,
             "rawResources": sanitize_result(resources),
             "readMode": "targeted",
-            "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
+            "diagnostics": {"attemptedResourceKeys": list(selected_resources), "resourceErrors": resource_errors},
         }
         if log_collection is not None:
             result["logCollection"] = log_collection
@@ -585,6 +587,9 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
                 result["ok"] = False
                 result["failedStage"] = "management_action"
                 result["safeError"] = failed_action.get("safeError") or "management_action_failed"
+        if not collect_json:
+            for key in ("webBlocks","siteName","deviceSettings","rawResources"):result.pop(key,None)
+            result["readMode"]="selected_actions"
         return result
     finally:
         if authenticated:

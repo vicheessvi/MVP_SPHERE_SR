@@ -1,5 +1,21 @@
 # Карта контекста
 
+## Feature 063 — отдельный список и только выбранные действия
+
+- `specs/063-explicit-device-list-plan/`, ADR-0067 — source/actions invariant.
+- `app.js`: явный SR/XLSX source, выбор одного/нескольких листов, атомарная
+  валидация IP/колонок, preview <=100 целей, reset/confirmation и plan v4.
+- `mvp_runtime/polling.py`, `server.py`, `polling_job.py`: общий strict validator,
+  source membership, frozen job и прежние exact/single-target write guards.
+- Huawei TE/310/300 и Polycom adapters: collect_json=false исключает обычные
+  ресурсы/настройки/Site name; auth/identity и выбранные logs/write сохраняются.
+- `runtime/polling-recovery.js`: безопасные outcome и write-only журнал без
+  обычных JSON-файлов; неизменяемые листы/actions при продолжении.
+- Проверки: `scripts/test-explicit-plan.js`, `test_explicit_plan.py`,
+  `test_selected_adapter_reads.py`, `scripts/check-explicit-plan-ui.py` + `.js`.
+  Последняя — real Python API + browser с временной БД и синтетическим adapter,
+  без vendor network. DB-first история/аналитика и контракты устройств прежние.
+
 ## Feature 062 — Shut down независимо от инициатора
 
 - `runtime/vcs-shutdown.js` — общий semantic guard; три Huawei parser сохраняют

@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .catalog import CATALOG
 from .admin_access import configured, create_verifier, default_verifier_path, verify
 from .credentials import CredentialFileError, MAX_XLSX_BYTES, parse_credential_pairs, parse_credential_workbook
-from .polling import PollingError, normalize_ipv4, validate_plan_interval, validate_te20_single_target_tasks
+from .polling import PollingError, normalize_ipv4, validate_plan_interval, validate_te20_single_target_tasks, validate_plan_actions
 from .polling_job import JobInputError, PollingJob, TERMINAL_STATUSES, create_polling_job
 from .redaction import PlanSecretError, assert_no_plan_secrets
 from .workspace import LEGACY_PAYLOAD_BYTES, MAX_PART_BYTES, WorkspaceError, WorkspaceStore, choose_workspace_directory, default_workspace_locator_path
@@ -355,10 +355,9 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
         plan = value.get("plan")
         try:
             assert_no_plan_secrets(plan)
-            if not isinstance(plan, dict) or plan.get("schemaVersion") != 3 or not isinstance(plan.get("devices"), list) or not plan["devices"]:
+            if not isinstance(plan, dict) or plan.get("schemaVersion") not in (3,4) or not isinstance(plan.get("devices"), list) or not plan["devices"]:
                 raise ValueError("plan_invalid")
-            if type(plan.get("collectLogs", False)) is not bool or type(plan.get("collectJson", True)) is not bool or (plan.get("collectLogs") is not True and plan.get("collectJson") is False):
-                raise ValueError("plan_invalid")
+            validate_plan_actions(plan)
             management_tasks = plan.get("managementTasks") or []
             known_management_tasks = {str(item.get("id")) for item in CATALOG.get("managementActions", [])}
             if (
@@ -369,7 +368,7 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
                 raise ValueError("plan_invalid")
             if "disable_insecure_management_services" in management_tasks:
                 target_source_digest = str(plan.get("targetSourceSha256") or "").casefold()
-                if plan.get("targetSource") != "port_closure_list" or not re.fullmatch(r"[0-9a-f]{64}", target_source_digest):
+                if plan.get("targetSource") not in ("port_closure_list","device_list") or not re.fullmatch(r"[0-9a-f]{64}", target_source_digest):
                     raise ValueError("plan_invalid")
             validate_te20_single_target_tasks(plan, management_tasks)
             valid_ips = []

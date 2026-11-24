@@ -2290,11 +2290,31 @@
   }
 
   async function parseManagementTargetWorkbook(input) {
-    const parsed = rowsFromWorkbook(input?.arrayBuffer);
-    if (!parsed.ok) return { ok: false, devices: [], errors: parsed.errors };
-    const normalized = parseManagementTargetRows(parsed);
-    if (!normalized.ok) return normalized;
-    return { ...normalized, sheetName: parsed.sheetName, headers: parsed.headers, rows: parsed.rows, sourceSha256: await sha256Bytes(input.arrayBuffer) };
+    try{
+      const workbook=input?.workbook||global.XLSX.read(input?.arrayBuffer,{type:"array",cellDates:false});
+      const sheetNames=[...(workbook.SheetNames||[])];
+      if(input.selectedSheets===undefined&&sheetNames.length>1)return {ok:false,devices:[],needsSheetSelection:true,sheetNames,errors:["Выберите листы XLSX для работы"]};
+      const selected=input.selectedSheets===undefined?sheetNames:input.selectedSheets;
+      if(!Array.isArray(selected)||!selected.length||new Set(selected).size!==selected.length||selected.some(name=>!sheetNames.includes(name)))return {ok:false,devices:[],sheetNames,errors:["Подтвердите один или несколько существующих листов"]};
+      const headers=[],rows=[];
+      for(const name of selected){
+        const matrix=global.XLSX.utils.sheet_to_json(workbook.Sheets[name],{header:1,defval:"",raw:false});
+        const first=matrix.findIndex(row=>Array.isArray(row)&&row.some(cell=>normalizeDisplay(cell)));
+        if(first<0)return {ok:false,devices:[],errors:[`Лист «${name}» пуст`]};
+        const columns=matrix[first].map(cell=>normalizeDisplay(cell)||"");
+        if(columns.some((column,index)=>column&&columns.findIndex(other=>normalizeSrHeader(other)===normalizeSrHeader(column))!==index))return {ok:false,devices:[],errors:[`Лист «${name}»: повторяющиеся заголовки`]};
+        const data=matrix.slice(first+1).filter(row=>Array.isArray(row)&&row.some(cell=>normalizeDisplay(cell))).map(row=>Object.fromEntries(columns.map((column,index)=>[column,row[index]??""])));
+        const checked=parseManagementTargetRows({headers:columns,rows:data});
+        if(!checked.ok)return {ok:false,devices:[],errors:checked.errors.map(message=>`Лист «${name}»: ${message}`)};
+        for(const column of columns)if(!headers.includes(column))headers.push(column);
+        for (const row of data) rows.push(row);
+      }
+      const normalized=parseManagementTargetRows({headers,rows});
+      if(!normalized.ok)return normalized;
+      const digest=input.sourceSha256||await sha256Bytes(input.arrayBuffer);
+      if(!/^[a-f0-9]{64}$/i.test(String(digest)))return {ok:false,devices:[],errors:["Не подтверждена контрольная сумма XLSX"]};
+      return {...normalized,sheetName:selected.join(", "),sheetNames,selectedSheets:[...selected],headers,rows,sourceSha256:digest};
+    }catch{return {ok:false,devices:[],errors:["Не удалось прочитать XLSX"]};}
   }
 
   function classifyDeviceLogPrefix(prefix, filename) {
@@ -2988,10 +3008,8 @@
   function deriveAutomaticPollingPlan(currentState, input) {
     const selection = input || {};
     const mode = selection.mode === POLLING_SELECTION_MODE_SINGLE_IP ? POLLING_SELECTION_MODE_SINGLE_IP : POLLING_SELECTION_MODE_FILTERS;
-    const usesManagementTargetList = selection.disableInsecureManagementServices === true;
-    const inventorySource = usesManagementTargetList && Array.isArray(selection.managementTargetDevices)
-      ? selection.managementTargetDevices
-      : currentState.inventoryDevices;
+    const usesManagementTargetList = selection.targetSource==="device_list"||(!selection.targetSource&&selection.disableInsecureManagementServices===true);
+    const inventorySource = usesManagementTargetList ? (Array.isArray(selection.managementTargetDevices)?selection.managementTargetDevices:[]) : currentState.inventoryDevices;
     const inventory = inventorySource.filter((device) => device.inCurrentSr !== false && EQUIPMENT_CATEGORY_IDS.includes(device.category));
     const availableDomains = pollingOptions(inventory, "domains");
     const domains = normalizePollingSelection(Object.prototype.hasOwnProperty.call(selection, "domains") ? selection.domains : [POLLING_ALL], availableDomains);
@@ -3019,7 +3037,7 @@
     const managementSkippedDevices = selectedDevices.filter((device) => !supportsManagementTask(device, MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES));
     return Object.freeze({
       mode,
-      targetSource: usesManagementTargetList ? "port_closure_list" : "sr",
+      targetSource: usesManagementTargetList ? (selection.targetSource==="device_list"?"device_list":"port_closure_list") : "sr",
       availableDomains: Object.freeze(availableDomains),
       availableCategories: Object.freeze(availableCategories),
       availableManufacturers: Object.freeze(availableManufacturers),
@@ -3040,23 +3058,70 @@
   }
 
   function pollingStartEnabled(selection, zeroIntervalAcknowledged, busy) {
-    return !busy && (!isZeroIntervalRange(selection) || zeroIntervalAcknowledged === true);
+    const actions=selection.explicitActions!==true||selection.collectJson===true||selection.collectLogs===true||hasPollingWriteSelection(selection);
+    const source=selection.targetSource!=="device_list"||selection.targetListReady===true;
+    return !busy && actions&&source&&(!isZeroIntervalRange(selection) || zeroIntervalAcknowledged === true);
+  }
+
+  const POLLING_WRITE_FIELDS=Object.freeze(["te20AnswerMode","teFamilyAnswerMode","huawei310AnswerMode","huawei300AnswerMode","polycomPointToPointAnswerMode","polycomMultipointAnswerMode","te20HttpMode","te20TelnetMode","te20AutoUpdateMode","te20SshMode","te20NtpEnabled","te20NtpMode","te20NtpServerMode","te20NtpServerValue","te20ShutdownRestart","te20SleepMinutes","te20ScheduledRestart","te20RestartTime"]);
+  function hasPollingWriteSelection(value){return value.disableInsecureManagementServices===true||POLLING_WRITE_FIELDS.some(name=>name!=="te20NtpServerValue"&&value[name]!==undefined&&value[name]!=="");}
+  function resetPollingActions(value){return {...value,collectJson:false,collectLogs:false,disableInsecureManagementServices:false,...Object.fromEntries(POLLING_WRITE_FIELDS.map(name=>[name,""]))};}
+  function pollingActionSummaryText(selection) {
+    const labels = [];
+    if (selection.collectJson === true) labels.push("JSON-опросы");
+    if (selection.collectLogs === true) labels.push("сбор логов");
+    if (hasPollingWriteSelection(selection)) labels.push("выбранные изменения параметров");
+    return labels.length ? `Выбрано: ${labels.join(" · ")}. Все остальные действия исключены. Точный состав будет подтверждён перед запуском.` : "Действия не выбраны. Отметьте JSON, логи или конкретное изменение параметра. Запуск без действий запрещён.";
+  }
+  function pollingPlanActionLabels(plan){
+    const labels=[];if(plan.collectJson===true)labels.push("Сформировать JSON-опросы");if(plan.collectLogs===true)labels.push("Собрать логи");
+    for(const action of plan.managementTasks||[]){
+      if(action.includes("auto_answer_automatic"))labels.push("Answer mode: Автоматически");
+      else if(action.includes("auto_answer_manual"))labels.push("Answer mode: Вручную");
+      else if(action==="set_polycom_group_auto_answer")labels.push("Answer mode Polycom: "+Object.entries(plan.polycomAnswerChanges||{}).map(([key,value])=>`${key==="pointToPoint"?"Одноточечный":"Многоточечный"}: ${value==="automatic"?"Автоматически":value==="manual"?"Вручную":"Не менять"}`).join(", "));
+      else if(action==="disable_insecure_management_services")labels.push("Закрыть HTTP/Telnet в пределах подтверждённого контракта модели");
+      else if(action.includes("_http_"))labels.push("HTTP: "+(action.endsWith("open")?"Открыть":"Закрыть"));
+      else if(action.includes("_telnet_"))labels.push("Telnet: "+(action.endsWith("open")?"Открыть":"Закрыть"));
+      else if(action.includes("_ssh_"))labels.push("SSH: "+(action.endsWith("enabled")?"Включить":"Отключить"));
+      else if(action==="disable_te20_auto_update")labels.push("Автообновление: Отключить");
+      else if(action==="set_te20_ntp_settings"){
+        const changes=plan.ntpChanges||{},parts=[];
+        if(changes.enabled!==null&&changes.enabled!==undefined)parts.push("Синхронизация — "+(changes.enabled?"Включить":"Отключить"));
+        if(changes.mode)parts.push("Режим сервера — "+(changes.mode==="automatic"?"Авто":"Вручную"));
+        if(changes.server!==null&&changes.server!==undefined)parts.push("Сервер — "+changes.server);
+        labels.push("NTP: "+parts.join("; "));
+      }
+      else if(action==="set_te20_power_settings"){
+        const changes=plan.powerChanges||{},parts=[];
+        if(changes.shutdownRestart!==null&&changes.shutdownRestart!==undefined)parts.push("Shut Down/Restart — "+(changes.shutdownRestart?"Включить":"Отключить"));
+        if(changes.sleepMinutes!==null&&changes.sleepMinutes!==undefined)parts.push("Сон — "+(changes.sleepMinutes===0?"Никогда":changes.sleepMinutes+" мин"));
+        if(changes.scheduledRestart!==null&&changes.scheduledRestart!==undefined)parts.push("Плановый перезапуск — "+(changes.scheduledRestart?"Включить":"Отключить"));
+        if(Number.isInteger(changes.restartHour)&&Number.isInteger(changes.restartMinute))parts.push("Время перезапуска — "+String(changes.restartHour).padStart(2,"0")+":"+String(changes.restartMinute).padStart(2,"0"));
+        labels.push("Питание: "+parts.join("; "));
+      }
+      else labels.push(action);
+    }
+    return labels;
   }
 
   function createPollingPlan(currentState, input) {
     const projection = deriveAutomaticPollingPlan(currentState, input);
     const errors = [];
-    const usesManagementTargetList = input.disableInsecureManagementServices === true;
+    const usesManagementTargetList = ["device_list","port_closure_list"].includes(projection.targetSource);
+    const explicit=input.explicitActions===true||projection.targetSource==="device_list";
+    const targetDigest=usesManagementTargetList?String(input.managementTargetSourceSha256||""):String(currentState.srImports.at(-1)?.rawSha256||"");
+    const singleTargetMode=projection.mode===POLLING_SELECTION_MODE_SINGLE_IP||(projection.targetSource==="device_list"&&projection.selectedDevices.length===1);
     if (usesManagementTargetList) {
-      if (!Array.isArray(input.managementTargetDevices) || !input.managementTargetDevices.length) errors.push("Загрузите файл «Список устройств для закрытия портов 80 и 23 (http, telnet)»");
-      if (!/^[0-9a-f]{64}$/i.test(String(input.managementTargetSourceSha256 || ""))) errors.push("Не удалось подтвердить список устройств для закрытия портов");
+      if (!Array.isArray(input.managementTargetDevices) || !input.managementTargetDevices.length) errors.push("Загрузите список устройств для выбранных действий");
+      if (!/^[0-9a-f]{64}$/i.test(String(input.managementTargetSourceSha256 || ""))) errors.push("Не удалось подтвердить загруженный список устройств");
+      if(projection.targetSource==="device_list"&&(!Array.isArray(input.managementTargetSheets)||!input.managementTargetSheets.length))errors.push("Подтвердите листы загруженного списка");
     } else if (!currentState.srImports.some((item) => item.status === "processed" || item.status === "partial")) errors.push("Сначала загрузите выгрузку SR");
     if (projection.mode === POLLING_SELECTION_MODE_SINGLE_IP) {
       const ipErrors = {
         empty: "Введите IP-адрес устройства",
         invalid: "Введите корректный IPv4-адрес устройства",
-        not_found: usesManagementTargetList ? "Устройство с таким IP отсутствует в списке устройств для закрытия портов" : "Устройство с таким IP отсутствует в актуальной выгрузке SR",
-        ambiguous: usesManagementTargetList ? "В списке устройств для закрытия портов найдено несколько устройств с таким IP" : "В актуальной выгрузке SR найдено несколько устройств с таким IP"
+        not_found: usesManagementTargetList ? "Устройство с таким IP отсутствует в загруженном списке" : "Устройство с таким IP отсутствует в актуальной выгрузке SR",
+        ambiguous: usesManagementTargetList ? "В загруженном списке найдено несколько устройств с таким IP" : "В актуальной выгрузке SR найдено несколько устройств с таким IP"
       };
       if (projection.ipResolution.status !== "found") errors.push(ipErrors[projection.ipResolution.status] || "Устройство по IP не выбрано");
     } else {
@@ -3085,8 +3150,10 @@
     if (!projection.supportedDevices.length) errors.push("Среди выбранных устройств нет оборудования с поддерживаемым автоматическим опросом");
     if (input.collectLogs !== undefined && typeof input.collectLogs !== "boolean") errors.push("Некорректный выбор сбора логов");
     if (input.collectJson !== undefined && typeof input.collectJson !== "boolean") errors.push("Некорректный выбор JSON-опросов");
-    if (input.collectJson === false && input.collectLogs !== true) errors.push("Выберите JSON-опросы, сбор логов или оба варианта");
+    if(explicit&&(typeof input.collectJson!=="boolean"||typeof input.collectLogs!=="boolean"))errors.push("Явно выберите действия плана");
+    if (explicit && (projection.selectedDevices.some(device => !normalizeIpv4(device.ipNormalized)) || new Set(projection.selectedDevices.map(device => normalizeIpv4(device.ipNormalized))).size !== projection.selectedDevices.length)) errors.push("У целей должны быть корректные уникальные IP-адреса");
     const managementTasks = input.disableInsecureManagementServices === true ? [MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES] : [];
+    if (input.te20AnswerMode && !["automatic", "manual"].includes(input.te20AnswerMode)) errors.push("Недопустимое значение Answer mode Huawei TE20");
     if (input.te20AnswerMode === "automatic" || input.setTe20AutoAnswerAutomatic === true) managementTasks.push(MANAGEMENT_TASK_TE20_AUTO_ANSWER);
     if (input.te20AnswerMode === "manual") managementTasks.push(MANAGEMENT_TASK_TE20_MANUAL_ANSWER);
     if (input.teFamilyAnswerMode && !TE_FAMILY_ANSWER_TASK_BY_MODE[input.teFamilyAnswerMode]) errors.push("Недопустимое значение Answer mode Huawei TE30/40/50/60");
@@ -3138,6 +3205,13 @@
       if (TE20_PORT_TASK_BY_MODE[port][value]) managementTasks.push(TE20_PORT_TASK_BY_MODE[port][value]);
     }
     const answerTask = managementTasks.find((task) => [MANAGEMENT_TASK_TE20_AUTO_ANSWER, MANAGEMENT_TASK_TE20_MANUAL_ANSWER, ...Object.values(TE_FAMILY_ANSWER_TASK_BY_MODE), ...Object.values(HUAWEI_310_ANSWER_TASK_BY_MODE), ...Object.values(HUAWEI_300_ANSWER_TASK_BY_MODE), MANAGEMENT_TASK_POLYCOM_ANSWER].includes(task));
+    if(input.collectJson===false&&input.collectLogs!==true&&!managementTasks.length)errors.push("Выберите хотя бы одно действие: JSON, логи или изменение параметров");
+    if(explicit&&managementTasks.some(task=>projection.selectedDevices.some(device=>!supportsManagementTask(device,task))))errors.push("Выбранная задача изменения поддерживается не всеми целевыми устройствами");
+    if(explicit&&input.collectLogs===true){
+      // A precise catalog check is performed by runtime as well.
+      const logKeys=new Set(["vcs/huawei/te20-legacy","vcs/huawei/te-family","vcs/huawei/bar310","vcs/huawei/box310","vcs/huawei/box610","vcs/huawei/bar300","vcs/huawei/box300","vcs/huawei/box600","vcs/polycom/group300","vcs/polycom/group310","vcs/polycom/group500","vcs/polycom/group700"]);
+      if(projection.selectedDevices.some(device=>!logKeys.has(resolvePollingCapability(device).key)))errors.push("Сбор логов поддерживается не всеми целевыми устройствами");
+    }
     const portTasks = managementTasks.filter((task) => Object.values(TE20_PORT_TASK_BY_MODE).some((group) => Object.values(group).includes(task)));
     if (answerTask && managementTasks.length > 1) errors.push("Запускайте изменение Answer mode отдельно от других задач управления");
     if (managementTasks.includes(MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) && managementTasks.length > 1) errors.push("Отключение автообновления запускайте отдельно от других задач управления");
@@ -3150,12 +3224,14 @@
       || !projection.selectedDevices.length
       || (projection.mode === POLLING_SELECTION_MODE_SINGLE_IP && projection.selectedDevices.length !== 1)
       || projection.selectedDevices.some((device) => !supportsManagementTask(device, answerTask))
-      || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Для изменения Answer mode выберите один IP или фильтрами только точные устройства одной поддерживаемой группы из актуальной SR");
-    if (managementTasks.includes(MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Отключение автообновления доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
-    if (sshTask && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], sshTask) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Изменение SSH доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
-    if (managementTasks.includes(MANAGEMENT_TASK_TE20_NTP) && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_NTP) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Изменение NTP доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
-    if (managementTasks.includes(MANAGEMENT_TASK_TE20_POWER) && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_POWER) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Управление питанием доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
-    if (portTasks.length && (projection.mode !== POLLING_SELECTION_MODE_SINGLE_IP || projection.selectedDevices.length !== 1 || portTasks.some((task) => !supportsManagementTask(projection.selectedDevices[0], task)) || !/^[0-9a-f]{64}$/i.test(String(currentState.srImports.at(-1)?.rawSha256 || "")))) errors.push("Изменение HTTP/Telnet доступно только для одного точного Huawei TE20, выбранного по IP из загруженной SR");
+      || !/^[0-9a-f]{64}$/i.test(targetDigest))) errors.push("Для изменения Answer mode выберите один IP или фильтрами только точные устройства одной поддерживаемой группы из актуальной SR или загруженного списка");
+    if (managementTasks.includes(MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) && (!singleTargetMode || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_DISABLE_AUTO_UPDATE) || !/^[0-9a-f]{64}$/i.test(targetDigest))) errors.push("Отключение автообновления доступно только для одного точного Huawei TE20");
+    if (sshTask && (!singleTargetMode || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], sshTask) || !/^[0-9a-f]{64}$/i.test(targetDigest))) errors.push("Изменение SSH доступно только для одного точного Huawei TE20");
+    if (managementTasks.includes(MANAGEMENT_TASK_TE20_NTP) && (!singleTargetMode || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_NTP) || !/^[0-9a-f]{64}$/i.test(targetDigest))) errors.push("Изменение NTP доступно только для одного точного Huawei TE20");
+    if (managementTasks.includes(MANAGEMENT_TASK_TE20_POWER) && (!singleTargetMode || projection.selectedDevices.length !== 1 || !supportsManagementTask(projection.selectedDevices[0], MANAGEMENT_TASK_TE20_POWER) || !/^[0-9a-f]{64}$/i.test(targetDigest))) errors.push("Управление питанием доступно только для одного точного Huawei TE20");
+    if (portTasks.length && (!singleTargetMode || projection.selectedDevices.length !== 1 || portTasks.some((task) => !supportsManagementTask(projection.selectedDevices[0], task)) || !/^[0-9a-f]{64}$/i.test(targetDigest))) errors.push("Изменение HTTP/Telnet доступно только для одного точного Huawei TE20");
+    if(explicit&&input.disableInsecureManagementServices&&!usesManagementTargetList)errors.push("Для группового закрытия портов выберите источник «Загруженный список XLSX»");
+    if(explicit&&input.targetSource&&!["sr","device_list"].includes(input.targetSource))errors.push("Неизвестный источник целей");
     if (managementTasks.includes(MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES) && !projection.managementEligibleDevices.length) errors.push("Среди выбранных устройств нет точной модели Huawei с поддержкой выбранной задачи управления HTTP/Telnet");
     if (errors.length) return { ok: false, state: deepClone(currentState), projection, errors };
     let next = deepClone(currentState);
@@ -3165,9 +3241,11 @@
       intervalMinSeconds, intervalMaxSeconds, ...(legacyInterval ? { intervalSeconds: intervalMinSeconds } : {}),
       authenticationInputSha256: String(input.credentialSourceSha256).toLowerCase(), selection: deepClone(projection.selection),
       targetSource: projection.targetSource,
+      planSchemaVersion:explicit?4:3,
+      ...(explicit?{selectedActions:[...(input.collectJson===true?["collect_json"]:[]),...(input.collectLogs===true?["collect_logs"]:[]),...managementTasks],targetSourceSheets:usesManagementTargetList?[...(input.managementTargetSheets||[])]:[],sourceTargetIps:[...new Set((usesManagementTargetList?input.managementTargetDevices:currentState.inventoryDevices).filter(device=>device.inCurrentSr!==false).map(device=>normalizeIpv4(device.ipNormalized)).filter(Boolean))]}:{}),
       targetSourceSha256: usesManagementTargetList ? String(input.managementTargetSourceSha256).toLowerCase() : (currentState.srImports.at(-1)?.rawSha256 || null),
       deviceIds: usesManagementTargetList ? [] : projection.selectedDevices.map((device) => device.id),
-      targetDevices: usesManagementTargetList ? projection.selectedDevices.map(pollingRuntimeDevice) : [],
+      targetDevices: usesManagementTargetList||explicit ? projection.selectedDevices.map(pollingRuntimeDevice) : [],
       managementTasks,
       collectLogs: input.collectLogs === true,
       collectJson: input.collectJson !== false,
@@ -3185,12 +3263,12 @@
   function buildPollingPlanExport(currentState, planId) {
     const plan = currentState.pollingRuns.find((item) => item.id === planId && item.kind === "plan");
     if (!plan) return { ok: false, errors: ["План опроса не найден"] };
-    const devices = plan.targetSource === "port_closure_list"
+    const devices = ["port_closure_list","device_list"].includes(plan.targetSource)||plan.planSchemaVersion===4
       ? deepClone(plan.targetDevices || [])
       : (plan.deviceIds || []).map((deviceId) => currentState.inventoryDevices.find((item) => item.id === deviceId)).filter(Boolean).map(pollingRuntimeDevice);
     return {
       ok: true,
-      payload: { schemaVersion: 3, scheduledAt: plan.capturedAt, intervalMinSeconds: plan.intervalMinSeconds, intervalMaxSeconds: plan.intervalMaxSeconds, ...(Number.isInteger(plan.intervalSeconds) ? { intervalSeconds: plan.intervalSeconds } : {}), authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), collectLogs: plan.collectLogs === true, collectJson: plan.collectJson !== false, ...(plan.ntpChanges ? { ntpChanges: deepClone(plan.ntpChanges) } : {}), ...(plan.powerChanges ? { powerChanges: deepClone(plan.powerChanges) } : {}), ...(plan.polycomAnswerChanges ? { polycomAnswerChanges: deepClone(plan.polycomAnswerChanges) } : {}), devices },
+      payload: { schemaVersion: plan.planSchemaVersion||3, ...(plan.planSchemaVersion===4?{selectedActions:deepClone(plan.selectedActions),targetSourceSheets:deepClone(plan.targetSourceSheets),sourceTargetIps:deepClone(plan.sourceTargetIps)}:{}), scheduledAt: plan.capturedAt, intervalMinSeconds: plan.intervalMinSeconds, intervalMaxSeconds: plan.intervalMaxSeconds, ...(Number.isInteger(plan.intervalSeconds) ? { intervalSeconds: plan.intervalSeconds } : {}), authenticationInputSha256: plan.authenticationInputSha256, targetSource: plan.targetSource || "sr", targetSourceSha256: plan.targetSourceSha256 || null, selection: deepClone(plan.selection || {}), selectionSummary: deepClone(plan.selectionSummary || {}), managementTasks: deepClone(plan.managementTasks || []), collectLogs: plan.collectLogs === true, collectJson: plan.collectJson !== false, ...(plan.ntpChanges ? { ntpChanges: deepClone(plan.ntpChanges) } : {}), ...(plan.powerChanges ? { powerChanges: deepClone(plan.powerChanges) } : {}), ...(plan.polycomAnswerChanges ? { polycomAnswerChanges: deepClone(plan.polycomAnswerChanges) } : {}), devices },
       filename: `extron-polling-plan-${String(plan.capturedAt || "").slice(0, 10) || "local"}.json`,
       errors: []
     };
@@ -6633,6 +6711,7 @@
   const initialNavigationState = createNavigationState();
   let credentialPoolSession = null;
   let managementTargetListSession = null;
+  let managementTargetWorkbookSession = null;
   let pollingOutputRootHandle = null;
   let logOutputRootHandle = null;
   let automaticPollingMonitor = null;
@@ -6683,7 +6762,7 @@
     pollingCancelRequested: false,
     pollingPlanResult: null,
     zeroIntervalAcknowledged: false,
-    pollingPlanSelection: { mode: POLLING_SELECTION_MODE_FILTERS, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL], scheduledAt: "", intervalMinSeconds: "0", intervalMaxSeconds: "0", allowInsecureTls: true, disableInsecureManagementServices: false, collectLogs: false, collectJson: true, te20AnswerMode: "", teFamilyAnswerMode: "", huawei310AnswerMode: "", huawei300AnswerMode: "", polycomPointToPointAnswerMode: "", polycomMultipointAnswerMode: "", te20HttpMode: "", te20TelnetMode: "", te20AutoUpdateMode: "", te20SshMode: "", te20NtpEnabled: "", te20NtpMode: "", te20NtpServerMode: "", te20NtpServerValue: "", te20ShutdownRestart: "", te20SleepMinutes: "", te20ScheduledRestart: "", te20RestartTime: "" },
+    pollingPlanSelection: resetPollingActions({explicitActions:true,targetSource:"sr",targetListReady:false,mode:POLLING_SELECTION_MODE_FILTERS,ipAddress:"",domains:[POLLING_ALL],categories:[POLLING_ALL],manufacturers:[POLLING_ALL],models:[POLLING_ALL],scheduledAt:"",intervalMinSeconds:"0",intervalMaxSeconds:"0",allowInsecureTls:true}),
     credentialSummary: null,
     adminAccess: launchMode.kind === "local" ? null : { adminConfigured: false, adminUnlocked: false },
     managementTargetListSummary: null,
@@ -7258,10 +7337,12 @@
   }
 
   function recoveryTargetsMatchCurrentSource(manifest) {
-    const dedicated = manifest.plan.targetSource === "port_closure_list";
+    const dedicated = ["port_closure_list","device_list"].includes(manifest.plan.targetSource);
     if (dedicated && (!managementTargetListSession?.sourceSha256 || managementTargetListSession.sourceSha256 !== manifest.plan.targetSourceSha256)) return false;
+    if(manifest.plan.targetSource==="device_list"&&JSON.stringify([...(managementTargetListSession?.selectedSheets||[])].sort())!==JSON.stringify([...(manifest.plan.targetSourceSheets||[])].sort()))return false;
     if (!dedicated && (!manifest.plan.targetSourceSha256 || !state.srImports.some((item) => item.rawSha256 === manifest.plan.targetSourceSha256))) return false;
-    const source = dedicated ? managementTargetListSession.devices : state.inventoryDevices;
+    if (!dedicated && manifest.plan.schemaVersion === 4 && state.srImports.at(-1)?.rawSha256 !== manifest.plan.targetSourceSha256) return false;
+    const source = dedicated ? managementTargetListSession.devices : state.inventoryDevices.filter(device => device.inCurrentSr !== false);
     if (!Array.isArray(source) || !source.length) return false;
     const currentByIp = new Map(source.map((device) => {
       const projected = pollingRuntimeDevice(device);
@@ -7311,7 +7392,7 @@
               setMessage(`Не удалось сохранить JSON для устройства ${escapeHtml(String(pending.payload?.ip || "без IP"))}. Опрос остальных устройств продолжается.`, "warning");
             }
             const originalIndex = recovery.originalIndices[pending.index];
-            POLLING_RECOVERY.record(recovery.manifest, originalIndex, saved);
+            POLLING_RECOVERY.record(recovery.manifest, originalIndex, saved,pending.payload);
             await writePollingRecovery(runDirectory, recovery.manifest);
             await runtimeRequest(`/api/polling/jobs/${encodeURIComponent(jobId)}/result/${encodeURIComponent(pending.resultId)}/ack`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ saved }) });
           }
@@ -7323,9 +7404,10 @@
           selectedPollingRecovery = recovery.manifest.status === "completed" ? null : recovery;
           ui.pollingRecoverySummary = selectedPollingRecovery ? { folder: runDirectory.name, remaining: recovery.manifest.plan.devices.length - recovery.manifest.savedIndices.length, requiresReview: recovery.manifest.requiresReview?.length || 0 } : null;
           const message = status.status === "completed"
-            ? `Автоматический опрос завершён. Папка ${runDirectory.name}. ${status.saveFailed ? `Не сохранено JSON: ${status.saveFailed}; доступно продолжение.` : ""}${status.logsFailed ? ` Ошибки сохранения логов: ${status.logsFailed}.` : ""}`
+            ? `План завершён. Успешно: ${status.successful||0}; ошибок: ${status.failed||0}; не поддерживается: ${status.unsupported||0}. Папка ${runDirectory.name}. ${status.saveFailed ? `Не сохранено результатов: ${status.saveFailed}; доступно продолжение.` : ""}${status.logsFailed ? ` Ошибки сохранения логов: ${status.logsFailed}.` : ""}`
             : automaticPollingErrorMessage(status.safeError || (status.status === "cancelled" ? "polling_cancelled" : "local_runtime_error"));
-          setMessage(message, status.status === "completed" ? (status.saveFailed || status.logsFailed ? "warning" : "success") : status.status === "cancelled" ? "warning" : "error");
+          ui.automaticPolling.completionMessage = message;
+          setMessage(message, status.status === "completed" ? (status.saveFailed || status.logsFailed ||status.failed||status.unsupported? "warning" : "success") : status.status === "cancelled" ? "warning" : "error");
           render();
           break;
         }
@@ -7341,6 +7423,7 @@
       if (automaticPollingMonitor === monitorToken) automaticPollingMonitor = null;
       credentialPoolSession = null;
       ui.credentialSummary = null;
+      if (ui.route === "upload") render();
     }
   }
 
@@ -7348,13 +7431,15 @@
     if (launchMode.kind !== "local") throw Object.assign(new Error("runtime_required"), { safeCode: "runtime_required" });
     const exported = buildPollingPlanExport(state, planId);
     if (!exported.ok) throw Object.assign(new Error("plan_invalid"), { safeCode: "plan_invalid" });
+    if(exported.payload.schemaVersion===4&&((exported.payload.targetSource==="device_list"&&(!managementTargetListSession||managementTargetWorkbookSession))||!recoveryTargetsMatchCurrentSource({plan:exported.payload})))throw Object.assign(new Error("target_source_changed"),{safeCode:"recovery_source_required"});
     if (isZeroIntervalRange(exported.payload) && !ui.zeroIntervalAcknowledged) throw Object.assign(new Error("zero_interval_confirmation_required"), { safeCode: "zero_interval_confirmation_required" });
     if (exported.payload.collectJson && (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle))) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
     if (exported.payload.collectLogs && (!logOutputRootHandle || !await ensurePollingOutputPermission(logOutputRootHandle))) throw Object.assign(new Error("log_folder_required"), { safeCode: "log_folder_required" });
+    if(!exported.payload.collectJson&&!exported.payload.collectLogs&&(!pollingOutputRootHandle||!await ensurePollingOutputPermission(pollingOutputRootHandle)))throw Object.assign(new Error("journal_folder_required"),{safeCode:"result_save_failed"});
     if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
     const startedAt = new Date().toISOString();
     const logRunDirectory = exported.payload.collectLogs ? await createPollingRunDirectory(logOutputRootHandle, startedAt) : null;
-    const runDirectory = exported.payload.collectJson ? await createPollingRunDirectory(pollingOutputRootHandle, startedAt) : logRunDirectory;
+    const runDirectory = exported.payload.collectJson||!exported.payload.collectLogs ? await createPollingRunDirectory(pollingOutputRootHandle, startedAt) : logRunDirectory;
     const manifest = POLLING_RECOVERY.create(exported.payload, allowInsecureTls);
     if (logRunDirectory) manifest.logFolderName = logRunDirectory.name;
     const recovery = { manifest, runDirectory, originalIndices: exported.payload.devices.map((_, index) => index) };
@@ -7379,6 +7464,7 @@
     const recoveryPlan = selectedPollingRecovery.manifest.plan;
     if (recoveryPlan.collectJson !== false && (!pollingOutputRootHandle || !await ensurePollingOutputPermission(pollingOutputRootHandle))) throw Object.assign(new Error("result_save_failed"), { safeCode: "result_save_failed" });
     if (recoveryPlan.collectLogs && (!logOutputRootHandle || !await ensurePollingOutputPermission(logOutputRootHandle))) throw Object.assign(new Error("log_folder_required"), { safeCode: "log_folder_required" });
+    if(recoveryPlan.collectJson===false&&!recoveryPlan.collectLogs&&(!pollingOutputRootHandle||!await ensurePollingOutputPermission(pollingOutputRootHandle)))throw Object.assign(new Error("journal_folder_required"),{safeCode:"result_save_failed"});
     if (!credentialPoolSession?.sourceSha256) throw Object.assign(new Error("credentials_required"), { safeCode: "credentials_required" });
     const recovery = selectedPollingRecovery;
     const logRunDirectory = recoveryPlan.collectLogs ? { name: recovery.manifest.logFolderName, handle: await logOutputRootHandle.getDirectoryHandle(recovery.manifest.logFolderName) } : null;
@@ -7386,6 +7472,7 @@
     const verifiedSaved = await verifySavedResults(recovery);
     recovery.manifest.savedIndices = verifiedSaved;
     const remaining = POLLING_RECOVERY.remaining(recovery.manifest, verifiedSaved);
+    if(recoveryPlan.schemaVersion===4&&!global.confirm(`Продолжить исходный план? Текущие поля формы его не меняют.\nЦелей к продолжению: ${remaining.originalIndices.length}.\nЛисты: ${(recoveryPlan.targetSourceSheets||[]).join(", ")||"SR"}.\nТолько действия:\n${pollingPlanActionLabels(recoveryPlan).map(label=>"— "+label).join("\n")}\nНеясные результаты записей автоматически не повторяются.`))return;
     if (remaining.skippedForReview.length) {
       recovery.manifest.requiresReview = remaining.skippedForReview;
       await writePollingRecovery(recovery.runDirectory, recovery.manifest);
@@ -7395,7 +7482,7 @@
     }
     const writeTask = remaining.plan.managementTasks?.length > 0;
     const warning = writeTask
-      ? `Продолжить опрос ${remaining.originalIndices.length} устройств из папки ${recovery.runDirectory.name}? ${remaining.skippedForReview.length} устройств с неизвестным исходом операции управления будут пропущены и требуют отдельной проверки. Подтвердите повторное разрешение задачи отключения портов.`
+      ? `Продолжить опрос ${remaining.originalIndices.length} устройств из папки ${recovery.runDirectory.name}? ${remaining.skippedForReview.length} устройств с неизвестным исходом операции управления будут пропущены и требуют отдельной проверки. Подтвердите выполнение только исходных задач изменения параметров.`
       : `Продолжить опрос ${remaining.originalIndices.length} устройств из папки ${recovery.runDirectory.name}? Уже подтверждённые результаты повторно опрашиваться не будут.`;
     if (!global.confirm(warning)) return;
     if (Number(remaining.plan.intervalMinSeconds) === 0 && Number(remaining.plan.intervalMaxSeconds) === 0 && !global.confirm("Опрос будет продолжен без интервалов между устройствами. Подтвердить?")) return;
@@ -8509,7 +8596,7 @@
   function renderPollingIpTarget(projection) {
     const resolution = projection.ipResolution;
     if (resolution.status !== "found") {
-      const sourceLabel = projection.targetSource === "port_closure_list" ? "списка устройств для закрытия портов" : "актуальной выгрузки SR";
+      const sourceLabel = projection.targetSource === "device_list"?"загруженного списка XLSX":projection.targetSource === "port_closure_list" ? "списка устройств для закрытия портов" : "актуальной выгрузки SR";
       const messages = {
         empty: `Введите полный IPv4-адрес устройства из ${sourceLabel}.`,
         invalid: "IP-адрес указан некорректно.",
@@ -8533,11 +8620,29 @@
     </dl><p class="muted">${supported ? `Будет использован механизм ${escapeHtml(capability.key || "подтверждённого опроса")}.` : "Подтверждённый автоматический опрос для этого устройства недоступен; сетевой запрос выполняться не будет."}</p></section>`;
   }
 
+  async function acceptManagementWorkbookSheets(names){
+    const pending=managementTargetWorkbookSession;if(!pending)throw new Error("target_workbook_missing");
+    const parsed=await parseManagementTargetWorkbook({workbook:pending.workbook,sourceSha256:pending.sourceSha256,selectedSheets:names});
+    if(pending!==managementTargetWorkbookSession)return;
+    if(!parsed.ok)throw Object.assign(new Error("target_list_invalid"),{safeErrors:parsed.errors});
+    managementTargetListSession={devices:parsed.devices,sourceSha256:parsed.sourceSha256,headers:parsed.headers,rows:parsed.rows,selectedSheets:parsed.selectedSheets};
+    ui.managementTargetListSummary={filename:pending.filename,acceptedCount:parsed.acceptedCount,sheets:parsed.selectedSheets};
+    managementTargetWorkbookSession=null;ui.managementWorkbookSheets=null;ui.managementSheetSelection=[];
+    ui.pollingPlanSelection={...resetPollingActions(ui.pollingPlanSelection),targetSource:"device_list",targetListReady:true,ipAddress:"",domains:[POLLING_ALL],categories:[POLLING_ALL],manufacturers:[POLLING_ALL],models:[POLLING_ALL]};
+    ui.zeroIntervalAcknowledged=false;ui.pollingPlanResult=null;
+  }
+
+  function renderPollingTargetPreview(projection) {
+    const devices = projection.selectedDevices;
+    return `<details class="polling-target-preview section-gap"><summary>Проверить выбранные цели: ${devices.length}</summary><p class="muted">Запуск затронет только этот набор. Показаны первые ${Math.min(devices.length, 100)} из ${devices.length}. Изменения источника или фильтров обновляют список до запуска.</p><div class="table-wrap"><table><thead><tr><th>Наименование устройства</th><th>IP</th><th>Производитель</th><th>Модель</th></tr></thead><tbody>${devices.slice(0, 100).map(device => `<tr><td>${escapeHtml(device.nameRaw || device.name || device.deviceName || "—")}</td><td class="mono">${escapeHtml(device.ipNormalized || "—")}</td><td>${escapeHtml(device.manufacturerRaw || device.manufacturer || "—")}</td><td>${escapeHtml(device.modelRaw || device.model || "—")}</td></tr>`).join("") || '<tr><td colspan="4">Цели пока не выбраны</td></tr>'}</tbody></table></div></details>`;
+  }
+
   function renderUpload() {
     const pollingProgress = ui.pollingProgress;
     const automatic = ui.automaticPolling;
     const automaticPercent = automatic?.total ? Math.min(100, Math.round((automatic.processed / automatic.total) * 100)) : 0;
     const importsBusy=ui.inventoryBusy||ui.logImportBusy||Boolean(ui.dbPrepare)||ui.dbOperationLoading||ui.workspaceSaveStatus==="restoring";
+    ui.pollingPlanSelection.targetListReady=Boolean(managementTargetListSession?.devices?.length&&!managementTargetWorkbookSession);
     const projection = deriveAutomaticPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [] });
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     const zeroInterval = isZeroIntervalRange(ui.pollingPlanSelection);
@@ -8585,13 +8690,17 @@
         </section>
       </div>
       <section class="card section-gap"${adminLocked ? " hidden" : ""}><h2>4. План автоматического опроса</h2>${launchMode.kind === "local" ? `<button class="button secondary" type="button" data-admin-lock>Закрыть доступ к плану</button>` : ""}
+        ${automatic?.completionMessage ? `<p class="${automatic.failed || automatic.saveFailed || automatic.logsFailed || automatic.unsupported || automatic.status !== "completed" ? "warning" : "success"}-panel" data-polling-completion role="status">${escapeHtml(automatic.completionMessage)}</p>` : ""}
         <form class="automatic-plan-form" data-polling-plan-form>
-          <div class="filter-grid section-gap"><div class="field"><label>Answer mode Huawei Bar 310/Box 310/Box 610 (один IP)<select name="huawei310AnswerMode"><option value=""${!ui.pollingPlanSelection.huawei310AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.huawei310AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.huawei310AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div></div>
-          <div class="filter-grid section-gap"><div class="field"><label>Answer mode Huawei Bar 300/Box 300/Box 600 (один IP или совместимая группа)<select name="huawei300AnswerMode"><option value=""${!ui.pollingPlanSelection.huawei300AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.huawei300AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.huawei300AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div></div>
-          <div class="filter-grid section-gap"><div class="field"><label>Answer mode Polycom Group — одноточечный вызов<select name="polycomPointToPointAnswerMode"><option value=""${!ui.pollingPlanSelection.polycomPointToPointAnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.polycomPointToPointAnswerMode === "automatic" ? " selected" : ""}>Автоматически</option><option value="manual"${ui.pollingPlanSelection.polycomPointToPointAnswerMode === "manual" ? " selected" : ""}>Вручную</option></select></label></div><div class="field"><label>Answer mode Polycom Group — многоточечный вызов<select name="polycomMultipointAnswerMode"><option value=""${!ui.pollingPlanSelection.polycomMultipointAnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.polycomMultipointAnswerMode === "automatic" ? " selected" : ""}>Автоматически</option><option value="manual"${ui.pollingPlanSelection.polycomMultipointAnswerMode === "manual" ? " selected" : ""}>Вручную</option></select></label></div></div>
-          <div class="field"><label for="management-target-list-file">Список устройств для закрытия портов 80 и 23 (http, telnet)</label><input id="management-target-list-file" name="managementTargetListFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>
-          ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div><div class="button-row section-gap"><button class="button secondary" type="button" data-download-device-settings-audit>Скачать таблицу фактических настроек</button></div>` : `<p class="muted">Файл должен иметь структуру выгрузки SR. Он используется только для задачи закрытия портов и не добавляется в основную SR или аналитику.</p>`}
+          <fieldset class="polling-mode-selector"><legend>Источник целевых устройств</legend><div>
+            <label class="polling-mode-choice"><input type="radio" name="targetSource" value="sr"${ui.pollingPlanSelection.targetSource!=="device_list"?" checked":""}> Актуальная SR</label>
+            <label class="polling-mode-choice"><input type="radio" name="targetSource" value="device_list"${ui.pollingPlanSelection.targetSource==="device_list"?" checked":""}> Загруженный список XLSX</label>
+          </div></fieldset><p class="info-panel">Выполняются только отмеченные ниже действия и только для выбранных целей. Значения столбцов XLSX не создают задачи. Служебные проверки модели/входа и pre/post-read выбранного изменения обязательны.</p>
+          <div class="field"><label for="management-target-list-file">Список устройств для выбранных действий</label><input id="management-target-list-file" name="managementTargetListFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"${ui.managementTargetBusy||automaticPollingMonitor?" disabled":""}></div>
+          ${ui.managementWorkbookSheets?`<fieldset class="polling-mode-selector"><legend>Выберите листы XLSX для работы</legend><p>Ни один лист не выбирается автоматически. Подтвердите один или несколько.</p><div>${ui.managementWorkbookSheets.map(name=>`<label class="polling-mode-choice"><input type="checkbox" name="targetSheet" value="${escapeHtml(name)}"${ui.managementSheetSelection?.includes(name)?" checked":""}>${escapeHtml(name)}</label>`).join("")}</div><button type="button" class="button secondary" data-confirm-target-sheets${ui.managementSheetSelection?.length&&!ui.managementTargetBusy?"":" disabled"}>Загрузить выбранные листы</button></fieldset>`:""}
+          ${ui.managementTargetListSummary ? `<div class="safe-summary" aria-live="polite"><strong>Список устройств загружен</strong><span>Файл: ${escapeHtml(ui.managementTargetListSummary.filename)}</span><span>Листы: ${escapeHtml((ui.managementTargetListSummary.sheets||[]).join(", "))}</span><span>Принято устройств: ${ui.managementTargetListSummary.acceptedCount}</span></div><div class="button-row section-gap"><button class="button secondary" type="button" data-download-device-settings-audit>Скачать таблицу фактических настроек</button></div>` : `<p class="muted">Формат — существующая структура SR/XLSX списка работы с портами. Список не заменяет основную SR и аналитику. При нескольких листах требуется явный выбор. После загрузки выберите действия заново.</p>`}
           <label class="polling-tls-option"><input name="collectJson" type="checkbox"${ui.pollingPlanSelection.collectJson !== false ? " checked" : ""}> Формировать JSON-опросы</label><label class="polling-tls-option"><input name="collectLogs" type="checkbox"${ui.pollingPlanSelection.collectLogs ? " checked" : ""}> Собирать логи устройств</label>
+          <div class="output-folder-picker section-gap"><div><strong>Папка служебного журнала изменений</strong><p class="muted">Если выбрано только изменение параметров, JSON-опросы и логи не создаются. В выбранной папке сохраняется только polling-recovery.json для контроля и безопасного продолжения. ${escapeHtml(ui.pollingOutputFolderName||"Папка пока не выбрана")}</p></div><button type="button" class="button secondary" data-select-polling-output${automaticPollingMonitor?" disabled":""}>Выбрать папку журнала</button></div>
           <div class="output-folder-picker section-gap"><div><strong>Отдельная папка для логов</strong><p class="muted">${ui.logOutputFolderName ? `Выбрана папка: ${escapeHtml(ui.logOutputFolderName)}` : "Выберите папку при включении сбора логов."}</p></div><button class="button secondary" type="button" data-select-log-output${launchMode.kind === "local" && !automaticPollingMonitor ? "" : " disabled"}>Выбрать папку логов</button></div>
           <fieldset class="polling-mode-selector"><legend>Способ выбора устройств</legend><div>
             <label class="polling-mode-choice"><input type="radio" name="pollingMode" value="${POLLING_SELECTION_MODE_FILTERS}"${projection.mode === POLLING_SELECTION_MODE_FILTERS ? " checked" : ""}> По фильтрам</label>
@@ -8603,14 +8712,19 @@
             ${renderPollingChoiceGroup("manufacturers", "Производитель", projection.availableManufacturers, projection.selection.manufacturers)}
             ${renderPollingChoiceGroup("models", "Модель", projection.availableModels, projection.selection.models)}
           </div>` : `<div class="polling-ip-selector"><div class="field"><label for="polling-target-ip">IP-адрес</label><input id="polling-target-ip" name="ipAddress" data-polling-ip-input inputmode="decimal" autocomplete="off" placeholder="Например, 192.0.2.10" value="${escapeHtml(ui.pollingPlanSelection.ipAddress || "")}"></div><div data-polling-ip-result aria-live="polite">${renderPollingIpTarget(projection)}</div></div>`}
-          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><span class="field-label">Интервал между опросами устройств</span><div class="polling-interval-range"><label for="polling-interval-min">От, секунд<input id="polling-interval-min" name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMinSeconds ?? "0")}" required></label><label for="polling-interval-max">До, секунд<input id="polling-interval-max" name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMaxSeconds ?? "0")}" required></label></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Отключить HTTP и Telnet по возможностям модели</label><div class="field"><label>Answer mode Huawei TE20 (один IP)<select name="te20AnswerMode"><option value=""${!ui.pollingPlanSelection.te20AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.te20AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.te20AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div><div class="field"><label>Answer mode Huawei TE30/TE40/TE50/TE60 (один IP)<select name="teFamilyAnswerMode"><option value=""${!ui.pollingPlanSelection.teFamilyAnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.teFamilyAnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.teFamilyAnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Для Bar 310, Box 310 и Box 610 отключается только HTTP; управление Telnet не предоставлено web-интерфейсом. Фильтры используют отдельный список устройств.</p>` : ""}</div>
+          <div class="filter-grid section-gap"><div class="field"><label>Дата и время начала опроса</label><input name="scheduledAt" type="datetime-local" value="${escapeHtml(ui.pollingPlanSelection.scheduledAt || "")}" required></div><div class="field"><span class="field-label">Интервал между опросами устройств</span><div class="polling-interval-range"><label for="polling-interval-min">От, секунд<input id="polling-interval-min" name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMinSeconds ?? "0")}" required></label><label for="polling-interval-max">До, секунд<input id="polling-interval-max" name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0" step="1" value="${escapeHtml(ui.pollingPlanSelection.intervalMaxSeconds ?? "0")}" required></label></div></div><label class="polling-tls-option"><input name="allowInsecureTls" type="checkbox"${ui.pollingPlanSelection.allowInsecureTls ? " checked" : ""}> Разрешить самоподписанный HTTPS-сертификат для этого запуска</label><label class="polling-tls-option"><input name="disableInsecureManagementServices" type="checkbox"${ui.pollingPlanSelection.disableInsecureManagementServices ? " checked" : ""}> Отключить HTTP и Telnet по возможностям модели</label><div class="field"><label>Answer mode Huawei TE20 (один IP или совместимая группа)<select name="te20AnswerMode"><option value=""${!ui.pollingPlanSelection.te20AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.te20AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.te20AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div><div class="field"><label>Answer mode Huawei TE30/TE40/TE50/TE60 (один IP или совместимая группа)<select name="teFamilyAnswerMode"><option value=""${!ui.pollingPlanSelection.teFamilyAnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.teFamilyAnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.teFamilyAnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div>${ui.pollingPlanSelection.disableInsecureManagementServices ? `<p class="muted">Доступно целей ${projection.managementEligibleDevices.length}, будет пропущено ${projection.managementSkippedDevices.length}. Для Bar 310, Box 310 и Box 610 отключается только HTTP; управление Telnet не предоставлено web-интерфейсом. Фильтры используют отдельный список устройств.</p>` : ""}</div>
           <div class="filter-grid section-gap"><div class="field"><label>HTTP Huawei TE20 (один IP)<select name="te20HttpMode"><option value=""${!ui.pollingPlanSelection.te20HttpMode ? " selected" : ""}>Не менять</option><option value="open"${ui.pollingPlanSelection.te20HttpMode === "open" ? " selected" : ""}>Открыть</option><option value="close"${ui.pollingPlanSelection.te20HttpMode === "close" ? " selected" : ""}>Закрыть</option></select></label></div><div class="field"><label>Telnet Huawei TE20 (один IP)<select name="te20TelnetMode"><option value=""${!ui.pollingPlanSelection.te20TelnetMode ? " selected" : ""}>Не менять</option><option value="open"${ui.pollingPlanSelection.te20TelnetMode === "open" ? " selected" : ""}>Открыть</option><option value="close"${ui.pollingPlanSelection.te20TelnetMode === "close" ? " selected" : ""}>Закрыть</option></select></label></div></div>
           <div class="filter-grid section-gap"><div class="field"><label>Автообновление Huawei TE20 (один IP)<select name="te20AutoUpdateMode"><option value=""${!ui.pollingPlanSelection.te20AutoUpdateMode ? " selected" : ""}>Не менять</option><option value="disable"${ui.pollingPlanSelection.te20AutoUpdateMode === "disable" ? " selected" : ""}>Отключить</option></select></label></div></div>
           <div class="filter-grid section-gap"><div class="field"><label>SSH Huawei TE20 (один IP)<select name="te20SshMode"><option value=""${!ui.pollingPlanSelection.te20SshMode ? " selected" : ""}>Не менять</option><option value="enable"${ui.pollingPlanSelection.te20SshMode === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20SshMode === "disable" ? " selected" : ""}>Отключить</option></select></label></div></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Answer mode Huawei Bar 310/Box 310/Box 610 (один IP или совместимая группа)<select name="huawei310AnswerMode"><option value=""${!ui.pollingPlanSelection.huawei310AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.huawei310AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.huawei310AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Answer mode Huawei Bar 300/Box 300/Box 600 (один IP или совместимая группа)<select name="huawei300AnswerMode"><option value=""${!ui.pollingPlanSelection.huawei300AnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.huawei300AnswerMode === "automatic" ? " selected" : ""}>Автоматически — включить автоответ</option><option value="manual"${ui.pollingPlanSelection.huawei300AnswerMode === "manual" ? " selected" : ""}>Вручную — отключить автоответ</option></select></label></div></div>
+          <div class="filter-grid section-gap"><div class="field"><label>Answer mode Polycom Group — одноточечный вызов<select name="polycomPointToPointAnswerMode"><option value=""${!ui.pollingPlanSelection.polycomPointToPointAnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.polycomPointToPointAnswerMode === "automatic" ? " selected" : ""}>Автоматически</option><option value="manual"${ui.pollingPlanSelection.polycomPointToPointAnswerMode === "manual" ? " selected" : ""}>Вручную</option></select></label></div><div class="field"><label>Answer mode Polycom Group — многоточечный вызов<select name="polycomMultipointAnswerMode"><option value=""${!ui.pollingPlanSelection.polycomMultipointAnswerMode ? " selected" : ""}>Не менять</option><option value="automatic"${ui.pollingPlanSelection.polycomMultipointAnswerMode === "automatic" ? " selected" : ""}>Автоматически</option><option value="manual"${ui.pollingPlanSelection.polycomMultipointAnswerMode === "manual" ? " selected" : ""}>Вручную</option></select></label></div></div>
           <fieldset class="polling-mode-selector section-gap"><legend>NTP Huawei TE20 (один IP)</legend><div class="filter-grid"><div class="field"><label>Синхронизация NTP<select name="te20NtpEnabled"><option value=""${!ui.pollingPlanSelection.te20NtpEnabled ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20NtpEnabled === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20NtpEnabled === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Режим адреса NTP<select name="te20NtpMode"><option value=""${!ui.pollingPlanSelection.te20NtpMode ? " selected" : ""}>Без изменений</option><option value="manual"${ui.pollingPlanSelection.te20NtpMode === "manual" ? " selected" : ""}>Вручную</option><option value="automatic"${ui.pollingPlanSelection.te20NtpMode === "automatic" ? " selected" : ""}>Авто</option></select></label></div><div class="field"><label>Имя сервера NTP<select name="te20NtpServerMode"><option value=""${!ui.pollingPlanSelection.te20NtpServerMode ? " selected" : ""}>Без изменений</option><option value="set"${ui.pollingPlanSelection.te20NtpServerMode === "set" ? " selected" : ""}>Ввести значение</option></select></label><input name="te20NtpServerValue" aria-label="Новое имя сервера NTP" autocomplete="off" maxlength="41" placeholder="Имя или IP сервера" value="${escapeHtml(ui.pollingPlanSelection.te20NtpServerValue || "")}"${ui.pollingPlanSelection.te20NtpServerMode === "set" ? "" : " disabled"}></div></div></fieldset>
           <fieldset class="polling-mode-selector section-gap"><legend>Управление питанием Huawei TE20 (один IP)</legend><div class="filter-grid"><div class="field"><label>Shut Down/Restart<select name="te20ShutdownRestart"><option value=""${!ui.pollingPlanSelection.te20ShutdownRestart ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20ShutdownRestart === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20ShutdownRestart === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Переход в спящий режим<select name="te20SleepMinutes"><option value=""${ui.pollingPlanSelection.te20SleepMinutes === "" ? " selected" : ""}>Без изменений</option>${TE20_SLEEP_VALUES.map((minutes) => `<option value="${minutes}"${String(ui.pollingPlanSelection.te20SleepMinutes) === String(minutes) ? " selected" : ""}>${minutes === 0 ? "Никогда" : `${minutes} мин`}</option>`).join("")}</select></label></div><div class="field"><label>Плановый перезапуск<select name="te20ScheduledRestart"><option value=""${!ui.pollingPlanSelection.te20ScheduledRestart ? " selected" : ""}>Без изменений</option><option value="enable"${ui.pollingPlanSelection.te20ScheduledRestart === "enable" ? " selected" : ""}>Включить</option><option value="disable"${ui.pollingPlanSelection.te20ScheduledRestart === "disable" ? " selected" : ""}>Отключить</option></select></label></div><div class="field"><label>Время перезапуска, ЧЧ:ММ<input name="te20RestartTime" type="time" aria-label="Время планового перезапуска" value="${escapeHtml(ui.pollingPlanSelection.te20RestartTime || "")}"></label></div></div></fieldset>
           <div class="warning-panel polling-zero-warning" data-zero-interval-warning role="alert"${zeroInterval ? "" : " hidden"}><strong>Опрос без интервалов</strong><p>При диапазоне 0–0 между опросами устройств не будет пауз. Следующий опрос начнётся сразу после сохранения результата предыдущего устройства.</p><label><input type="checkbox" name="confirmNoInterval" data-confirm-zero-interval${zeroInterval && ui.zeroIntervalAcknowledged ? " checked" : ""}> Подтверждаю запуск опроса без интервалов</label></div>
-          <button class="button primary" type="submit" data-start-automatic-polling${databaseTargetsReady() && pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor)) ? "" : " disabled"}>Сформировать и запустить опрос</button>
+          <div class="info-panel" data-polling-action-summary role="status">${pollingActionSummaryText(ui.pollingPlanSelection)}</div>
+          <div data-polling-target-preview>${renderPollingTargetPreview(projection)}</div>
+          <button class="button primary" type="submit" data-start-automatic-polling${databaseTargetsReady() && pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor) || ui.managementTargetBusy) ? "" : " disabled"}>Сформировать и запустить опрос</button>
         </form>
         <dl class="polling-plan-counts" aria-live="polite"><div><dt>Выбрано устройств</dt><dd data-polling-count="selected">${projection.selectedDevices.length}</dd></div><div><dt>Автоматический опрос доступен</dt><dd data-polling-count="supported">${projection.supportedDevices.length}</dd></div><div><dt>Не поддерживается</dt><dd data-polling-count="unsupported">${projection.unsupportedDevices.length}</dd></div><div><dt>Закрытие портов доступно</dt><dd data-polling-count="management-eligible">${projection.managementEligibleDevices.length}</dd></div><div><dt>Закрытие портов будет пропущено</dt><dd data-polling-count="management-skipped">${projection.managementSkippedDevices.length}</dd></div></dl>
         ${ui.pollingPlanResult ? `<div class="info-panel section-gap">План сформирован: устройств ${ui.pollingPlanResult.total}; автоматический опрос доступен для ${ui.pollingPlanResult.implemented}; не поддерживается ${ui.pollingPlanResult.notImplemented}.</div>` : ""}
@@ -8862,6 +8976,14 @@
   }
 
   async function handleClick(event) {
+    if(event.target.closest("[data-confirm-target-sheets]")){
+      if(ui.managementTargetBusy||automaticPollingMonitor)return;
+      const names=Array.from(event.target.closest('[data-polling-plan-form]').querySelectorAll('[name="targetSheet"]:checked')).map(element=>element.value);
+      ui.managementTargetBusy=true;refreshOperationStrip();
+      try{await acceptManagementWorkbookSheets(names);setMessage("Выбранные листы загружены. Отметьте только необходимые действия.","success");}
+      catch(error){setMessage((error.safeErrors||["Выбор листов не принят"]).join("; "),"error");}
+      finally{ui.managementTargetBusy=false;refreshOperationStrip();render();}return;
+    }
     if(event.target.closest("[data-dismiss-operation]")){ui.lastOperation=null;refreshOperationStrip();return;}
     if(ui.dbMode && event.target.closest("[data-db-sources]")) {ui.dbSourcesVisible=!ui.dbSourcesVisible;render();return;}
     if(ui.dbMode && event.target.closest("[data-db-context-retry]")) {
@@ -9734,8 +9856,10 @@
       if (launchMode.kind !== "local") { setMessage("Для автоматического опроса откройте START_MVP_SPHERE_SR.py установленным Python 3.11 или новее.", "error"); render(); return; }
       if (ui.pollingPlanSelection.collectJson && !pollingOutputRootHandle) { setMessage("Для JSON-опросов выберите общую папку результатов.", "error"); render(); return; }
       if (ui.pollingPlanSelection.collectLogs && !logOutputRootHandle) { setMessage("Для сбора логов выберите отдельную папку логов.", "error"); render(); return; }
-      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [], managementTargetSourceSha256: managementTargetListSession?.sourceSha256 || "", credentialsReady: Boolean(credentialPoolSession?.sourceSha256), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
+      const result = createPollingPlan(state, { ...ui.pollingPlanSelection, managementTargetDevices: managementTargetListSession?.devices || [], managementTargetSourceSha256: managementTargetListSession?.sourceSha256 || "",managementTargetSheets:managementTargetListSession?.selectedSheets||[], credentialsReady: Boolean(credentialPoolSession?.sourceSha256), credentialSourceSha256: credentialPoolSession?.sourceSha256 || "", actorId: currentUser()?.id || "system" });
       if (!result.ok) { setMessage(result.errors.join("; "), "error"); render(); return; }
+      if(result.plan.collectJson===false&&!result.plan.collectLogs&&!pollingOutputRootHandle){setMessage("Для режима только изменения выберите папку служебного журнала.","error");render();return;}
+      if(result.plan.planSchemaVersion===4&&!global.confirm(`Подтвердите точный состав плана.\nИсточник: ${result.plan.targetSource==="device_list"?"XLSX, листы: "+result.plan.targetSourceSheets.join(", "):"Актуальная SR"}.\nЦелей: ${result.plan.selectionSummary.total}.\nВыполнить только:\n${pollingPlanActionLabels(result.plan).map(label=>"— "+label).join("\n")}\nОбычный JSON: ${result.plan.collectJson?"да":"нет"}. Логи: ${result.plan.collectLogs?"да":"нет"}.\nСлужебные проверки и журнал выполнения обязательны. Продолжить?`))return;
       if (ui.pollingPlanSelection.disableInsecureManagementServices && !global.confirm(`Для точных Huawei TE20/TE30/TE40/TE50/TE60 будут применены подтверждённые настройки HTTP и Telnet; для Bar 310, Box 310 и Box 610 — только HTTP. Отсутствующее управление Telnet на моделях 310 будет отмечено в результате без изменения настройки. HTTP-запись на Box 310/610 ещё не проверена на реальном устройстве: сначала проверьте одну точную модель по IP. Поддерживается целей: ${result.plan.selectionSummary.managementEligible}; будет пропущено: ${result.plan.selectionSummary.managementSkipped}. Продолжить?`)) return;
       if (ui.pollingPlanSelection.te20AnswerMode && !global.confirm(`Answer mode Huawei TE20: ${result.plan.selectionSummary.total} устройств, целевой режим «${ui.pollingPlanSelection.te20AnswerMode === "automatic" ? "Автоматически" : "Вручную"}». ${result.plan.selectionSummary.total > 1 ? "Это массовое изменение. " : ""}Изменится обработка входящих вызовов. Каждое устройство будет проверено отдельно до и после записи. Продолжить?`)) return;
       if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm(`Answer mode Huawei TE30/40/50/60: ${result.plan.selectionSummary.total} устройств, целевой режим «${ui.pollingPlanSelection.teFamilyAnswerMode === "automatic" ? "Автоматически" : "Вручную"}». ${result.plan.selectionSummary.total > 1 ? "Это массовое изменение. " : ""}Изменится обработка входящих вызовов. Каждое устройство будет проверено отдельно до и после записи. Продолжить?`)) return;
@@ -10228,58 +10352,19 @@
     const checkbox = form.querySelector("[data-confirm-zero-interval]");
     if (checkbox) checkbox.checked = required && ui.zeroIntervalAcknowledged;
     const startButton = form.querySelector("[data-start-automatic-polling]");
-    if (startButton) startButton.disabled = !databaseTargetsReady() || !pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor));
+    if (startButton) startButton.disabled = !databaseTargetsReady() || !pollingStartEnabled(ui.pollingPlanSelection, ui.zeroIntervalAcknowledged, Boolean(automaticPollingMonitor) || ui.managementTargetBusy);
+    const summary = form.querySelector("[data-polling-action-summary]");
+    if (summary) summary.textContent = pollingActionSummaryText(ui.pollingPlanSelection);
   }
 
   async function handleChange(event) {
     const dbFilterForm=event.target.closest("[data-db-filters]");
     if(ui.dbMode&&dbFilterForm){dbViews.handleChange(event.target,dbFilterForm);return;}
     const pollingPlanForm = event.target.closest("[data-polling-plan-form]");
-    if (pollingPlanForm && event.target.name === "te20AnswerMode") {
-      ui.pollingPlanSelection.te20AnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
-      return;
-    }
-    if (pollingPlanForm && event.target.name === "teFamilyAnswerMode") {
-      ui.pollingPlanSelection.teFamilyAnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
-      return;
-    }
-    if (pollingPlanForm && event.target.name === "huawei310AnswerMode") {
-      ui.pollingPlanSelection.huawei310AnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
-      return;
-    }
-    if (pollingPlanForm && event.target.name === "huawei300AnswerMode") {
-      ui.pollingPlanSelection.huawei300AnswerMode = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
-      return;
-    }
-    if (pollingPlanForm && ["polycomPointToPointAnswerMode", "polycomMultipointAnswerMode"].includes(event.target.name)) {
-      ui.pollingPlanSelection[event.target.name] = ["automatic", "manual"].includes(event.target.value) ? event.target.value : "";
-      return;
-    }
-    if (pollingPlanForm && ["te20HttpMode", "te20TelnetMode"].includes(event.target.name)) {
-      ui.pollingPlanSelection[event.target.name] = ["open", "close"].includes(event.target.value) ? event.target.value : "";
-      return;
-    }
-    if (pollingPlanForm && event.target.name === "te20AutoUpdateMode") {
-      ui.pollingPlanSelection.te20AutoUpdateMode = event.target.value === "disable" ? "disable" : "";
-      return;
-    }
-    if (pollingPlanForm && event.target.name === "te20SshMode") {
-      ui.pollingPlanSelection.te20SshMode = ["enable", "disable"].includes(event.target.value) ? event.target.value : "";
-      return;
-    }
-    if (pollingPlanForm && ["te20NtpEnabled", "te20NtpMode", "te20NtpServerMode"].includes(event.target.name)) {
-      ui.pollingPlanSelection[event.target.name] = String(event.target.value || "");
-      if (event.target.name === "te20NtpServerMode") {
-        const serverInput = pollingPlanForm.querySelector('[name="te20NtpServerValue"]');
-        if (serverInput) serverInput.disabled = event.target.value !== "set";
-      }
-      ui.pollingPlanResult = null;
-      return;
-    }
-    if (pollingPlanForm && ["te20ShutdownRestart", "te20SleepMinutes", "te20ScheduledRestart"].includes(event.target.name)) {
-      ui.pollingPlanSelection[event.target.name] = String(event.target.value || "");
-      ui.pollingPlanResult = null;
-      return;
+    if(pollingPlanForm&&POLLING_WRITE_FIELDS.includes(event.target.name)){
+      ui.pollingPlanSelection[event.target.name]=String(event.target.value||"");ui.pollingPlanResult=null;
+      if(event.target.name==="te20NtpServerMode"){const input=pollingPlanForm.querySelector('[name="te20NtpServerValue"]');if(input)input.disabled=event.target.value!=="set";}
+      syncZeroIntervalConsent(pollingPlanForm);return;
     }
     if (pollingPlanForm && event.target.name === "confirmNoInterval") {
       ui.zeroIntervalAcknowledged = event.target.checked === true && isZeroIntervalRange(ui.pollingPlanSelection);
@@ -10288,6 +10373,9 @@
     }
     if (pollingPlanForm && event.target.name === "managementTargetListFile") {
       const file = event.target.files?.[0];
+      if(ui.managementTargetBusy||automaticPollingMonitor)return;
+      managementTargetListSession=null;managementTargetWorkbookSession=null;ui.managementTargetListSummary=null;ui.managementWorkbookSheets=null;ui.managementSheetSelection=[];
+      ui.pollingPlanSelection={...resetPollingActions(ui.pollingPlanSelection),targetSource:"device_list",targetListReady:false};ui.pollingPlanResult=null;ui.zeroIntervalAcknowledged=false;
       if (!file || !/\.xlsx$/i.test(file.name)) {
         setMessage("Выберите список устройств в формате XLSX.", "error");
         event.target.value = "";
@@ -10300,16 +10388,14 @@
       try {
         await cooperativeBrowserYield();
         fileBuffer = await readFileArrayBuffer(file);
-        const parsed = await parseManagementTargetWorkbook({ arrayBuffer: fileBuffer });
-        if (!parsed.ok) throw Object.assign(new Error("management_target_list_invalid"), { safeErrors: parsed.errors });
-        managementTargetListSession = { devices: parsed.devices, sourceSha256: parsed.sourceSha256, headers: parsed.headers, rows: parsed.rows };
-        ui.managementTargetListSummary = { filename: file.name, acceptedCount: parsed.acceptedCount };
-        ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ipAddress: "", domains: [POLLING_ALL], categories: [POLLING_ALL], manufacturers: [POLLING_ALL], models: [POLLING_ALL] };
-        ui.pollingPlanResult = null;
-        setMessage(`Список устройств для закрытия портов загружен. Принято устройств: ${parsed.acceptedCount}.`, "success");
+        const workbook=global.XLSX.read(fileBuffer,{type:"array",cellDates:false});
+        managementTargetWorkbookSession={workbook,filename:file.name,sourceSha256:await sha256Bytes(fileBuffer)};
+        ui.managementWorkbookSheets=[...(workbook.SheetNames||[])];
+        if(ui.managementWorkbookSheets.length===1){await acceptManagementWorkbookSheets(ui.managementWorkbookSheets);setMessage("Список загружен. Отметьте только необходимые действия.","success");}
+        else setMessage("В файле несколько листов. Выберите и подтвердите листы для работы; до этого список не используется.","info");
       } catch (error) {
         const details = Array.isArray(error.safeErrors) ? error.safeErrors.join("; ") : "Проверьте структуру XLSX и уникальность IP-адресов.";
-        setMessage(`Список устройств не принят. ${details} Прежний список сохранён.`, "error");
+        setMessage(`Список устройств не принят. ${details} Запуск по списку заблокирован до корректной загрузки.`, "error");
       } finally {
         ui.managementTargetBusy=false;refreshOperationStrip();
         if (fileBuffer) new Uint8Array(fileBuffer).fill(0);
@@ -10323,6 +10409,14 @@
       ui.pollingPlanResult = null;
       render();
       return;
+    }
+    if(pollingPlanForm&&event.target.name==="targetSource"){
+      ui.pollingPlanSelection={...resetPollingActions(ui.pollingPlanSelection),targetSource:event.target.value==="device_list"?"device_list":"sr",ipAddress:"",domains:[POLLING_ALL],categories:[POLLING_ALL],manufacturers:[POLLING_ALL],models:[POLLING_ALL]};
+      ui.pollingPlanResult=null;ui.zeroIntervalAcknowledged=false;render();return;
+    }
+    if(pollingPlanForm&&event.target.name==="targetSheet"){
+      ui.managementSheetSelection=Array.from(pollingPlanForm.querySelectorAll('[name="targetSheet"]:checked')).map(element=>element.value);
+      const button=pollingPlanForm.querySelector('[data-confirm-target-sheets]');if(button)button.disabled=!ui.managementSheetSelection.length;return;
     }
     if (pollingPlanForm && event.target.matches("[data-polling-plan-filter]")) {
       const dimension = event.target.dataset.pollingPlanFilter;
@@ -10359,6 +10453,7 @@
     if (pollingPlanForm && ["collectLogs", "collectJson"].includes(event.target.name)) {
       ui.pollingPlanSelection[event.target.name] = event.target.checked === true;
       ui.pollingPlanResult = null;
+      syncZeroIntervalConsent(pollingPlanForm);
       return;
     }
     if (!event.target.matches("[data-import-backup]") || !event.target.files?.[0]) return;
@@ -10414,11 +10509,13 @@
     if (event.target.name === "te20NtpServerValue") {
       ui.pollingPlanSelection.te20NtpServerValue = String(event.target.value || "");
       ui.pollingPlanResult = null;
+      syncZeroIntervalConsent(pollingPlanForm);
       return;
     }
     if (event.target.name === "te20RestartTime") {
       ui.pollingPlanSelection.te20RestartTime = String(event.target.value || "");
       ui.pollingPlanResult = null;
+      syncZeroIntervalConsent(pollingPlanForm);
       return;
     }
     if (!event.target.matches("[data-polling-ip-input]")) return;
@@ -10428,6 +10525,8 @@
     ui.pollingPlanSelection = { ...ui.pollingPlanSelection, ...deepClone(projection.selection) };
     const resultContainer = pollingPlanForm.querySelector("[data-polling-ip-result]");
     if (resultContainer) resultContainer.innerHTML = renderPollingIpTarget(projection);
+    const targetPreview = pollingPlanForm.querySelector("[data-polling-target-preview]");
+    if (targetPreview) targetPreview.innerHTML = renderPollingTargetPreview(projection);
     const counts = { selected: projection.selectedDevices.length, supported: projection.supportedDevices.length, unsupported: projection.unsupportedDevices.length, "management-eligible": projection.managementEligibleDevices.length, "management-skipped": projection.managementSkippedDevices.length };
     Object.entries(counts).forEach(([name, value]) => {
       const target = document.querySelector(`[data-polling-count="${name}"]`);

@@ -4,7 +4,7 @@
 
 Проект подготовлен к дальнейшему редактированию через ИИ-агента и GitHub SpecKit.
 
-- Видение: `docs/project-vision.md`. Текущая feature: `specs/062-vcs-shutdown-commands/`; DB-first архитектура feature 061 сохраняется.
+- Видение: `docs/project-vision.md`. Текущая feature: `specs/063-explicit-device-list-plan/`; DB-first архитектура feature 061 сохраняется.
 - Интерфейс: Windows, HTML5, CSS3, Vanilla JavaScript, browser File/System Access API, vendored SheetJS CE 0.20.3.
 - Production runtime автоматического опроса: установленный Python 3.11+ и только стандартная библиотека; `START_MVP_SPHERE_SR.py` открывает авторизованную loopback-сессию.
 - Node.js используется только при разработке для JavaScript regression/reference checks и не требуется пользователю.
@@ -16,6 +16,22 @@
 - Feature 061: миллион событий — контрольный масштаб, не лимит.
 
 ## Правила работы агента
+
+- Feature 063 / ADR-0067: раздел 4 явно выбирает источник `sr` или отдельный
+  `device_list` существующей XLSX/SR-структуры для любых уже разрешённых действий.
+  Несколько листов требуют явного выбора, дубли IP/неверные выбранные листы
+  блокируют весь список; источник не заменяет SR/аналитику и не имеет fallback.
+  Новая форма начинает без действий; смена файла/источника сбрасывает выбор.
+  Plan v4 фиксирует sheets/digest/sourceTargetIps, boolean JSON/logs, exact
+  selectedActions и snapshot целей. Runtime проверяет согласованность, membership
+  и совместимость до сети; значения колонок XLSX никогда не становятся командами.
+  При JSON=false разрешены только прежние auth/model/identity/bundle gates и
+  выбранные logs/write pre-read/one-write/post-read, не полный опрос/Site name.
+  Write-only сохраняет явно выбранный служебный polling-recovery.json, без файлов
+  JSON-опросов/логов. Resume сохраняет исходные действия/листы и не повторяет
+  неясный write. Legacy v3 совместим, новый источник требует v4. Это расширяет
+  только способ выбора целей: одноточечные и групповые ограничения write,
+  TLS/admin/Origin/CSRF/allowlist и vendor-контракты не ослабляются.
 
 - Feature 062 / ADR-0066: по явному одобрению администратора 2026-11-24 команды
   Shut down всего терминала учитываются независимо от инициатора во всех известных

@@ -979,6 +979,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
     from mvp_runtime.polling import PollingError, normalize_ipv4, validate_ntp_changes, validate_power_changes
 
     settings = options or {}
+    collect_json=settings.get("collect_json",True) is True
     request = settings.get("request") or native_https_request
     nonce = settings.get("nonce") or (lambda: str(random.random()))
     ip = normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
@@ -1111,7 +1112,8 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
 
     resources: dict[str, dict[str, Any]] = {}
     resource_errors: dict[str, str] = {}
-    for key, action_name in RESOURCE_ACTIONS.items():
+    selected_resources=RESOURCE_ACTIONS if collect_json else {key:value for key,value in RESOURCE_ACTIONS.items() if key in ("versionInfo","productEsn","systemMac")}
+    for key, action_name in selected_resources.items():
         if action_name not in bundle_text:
             resource_errors[key] = "resource_marker_missing"
             continue
@@ -1138,7 +1140,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             "failedStage": "resources",
             "safeError": "resource_schema_unconfirmed",
             "webInterface": {"ok": True, "evidence": f"Huawei {planned_model.upper()} login and resource markers found", "insecureTls": not reject_unauthorized, "tlsProfile": tls_profile or "system_default"},
-            "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
+            "diagnostics": {"attemptedResourceKeys": list(selected_resources), "resourceErrors": resource_errors},
         }
     log_collection = None
     if settings.get("collect_logs") is True and planned_model in SUPPORTED_MODELS:
@@ -1167,7 +1169,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
                     try: stream.close()
                     except Exception: pass
     management_actions = []
-    site_name = read_site_name(bundle_text, lambda name, payload: action(name, {**(payload or {}), "acCSRFToken": csrf_token}))
+    site_name = read_site_name(bundle_text, lambda name, payload: action(name, {**(payload or {}), "acCSRFToken": csrf_token})) if collect_json else {"status":"not_requested","value":None}
     if planned_model in SUPPORTED_MODELS and site_name["status"] == "protocol_required":
         site_name = _read_te_site_name_config(bundle_text, csrf_token, action)
     if DISABLE_INSECURE_SERVICES_ACTION in requested_management_tasks:
@@ -1198,7 +1200,9 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         if SET_TE20_POWER_ACTION in requested_management_tasks:
             management_actions.append(_set_te20_power_settings(bundle_text, csrf_token, action, settings["power_changes"]))
     verified_action = next((item for item in management_actions if item.get("id") == DISABLE_INSECURE_SERVICES_ACTION and item.get("status") in {"applied", "already_compliant"}), None)
-    if verified_action:
+    if not collect_json:
+        device_settings=unknown_device_settings(planned_model.upper())
+    elif verified_action:
         device_settings = unknown_device_settings(planned_model.upper(), not_exposed=("snmpV2",) if planned_model == TE20_MODEL else ())
         if planned_model == TE20_MODEL:
             device_settings["fields"]["snmpV2"]["reason"] = "version_not_supported"
@@ -1236,7 +1240,7 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
         "deviceSettings": device_settings,
         "rawResources": safe_resources,
         "readMode": "targeted",
-        "diagnostics": {"attemptedResourceKeys": list(RESOURCE_ACTIONS), "resourceErrors": resource_errors},
+        "diagnostics": {"attemptedResourceKeys": list(selected_resources), "resourceErrors": resource_errors},
     }
     if site_name["status"] == "read":
         result["webBlocks"]["Device Info"]["Site Name"] = site_name["value"]
@@ -1249,6 +1253,9 @@ def poll_huawei_te_device(device: dict[str, Any], credentials: Any, options: dic
             result["ok"] = False
             result["failedStage"] = "management_action"
             result["safeError"] = failed_action.get("safeError") or "management_action_failed"
+    if not collect_json:
+        for key in ("webBlocks","siteName","deviceSettings","rawResources"):result.pop(key,None)
+        result["readMode"]="selected_actions"
     return result
 
 

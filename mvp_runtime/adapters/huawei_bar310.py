@@ -873,7 +873,9 @@ def poll_huawei_310_family_device(
 
     resources: dict[str, dict[str, Any]] = {}
     resource_errors: dict[str, str] = {}
-    for key, path in BAR310_RESOURCE_PATHS.items():
+    collect_json=settings.get("collect_json",True) is True
+    selected_resources=BAR310_RESOURCE_PATHS if collect_json else {key:value for key,value in BAR310_RESOURCE_PATHS.items() if key in ("version","specification")}
+    for key, path in selected_resources.items():
         try:
             outer, data = json_request("GET", path, token=True)
             if outer.get("success") != 1:
@@ -891,7 +893,7 @@ def poll_huawei_310_family_device(
     stable_identity = any(str(version.get(key) or "").strip() for key in ("SN", "ESN"))
     if not stable_identity:
         stable_identity = any(_valid_mac(specification.get(key)) for key in ("wanMac", "lanMac", "apMac", "staMac"))
-    diagnostics = {"attemptedResourceKeys": list(BAR310_RESOURCE_PATHS), "resourceErrors": resource_errors}
+    diagnostics = {"attemptedResourceKeys": list(selected_resources), "resourceErrors": resource_errors}
     interface = {
         "ok": True,
         "evidence": evidence_label,
@@ -942,7 +944,7 @@ def poll_huawei_310_family_device(
     site_name = read_site_name(
         bundle_text,
         lambda name, payload: json_request("POST", f"/action.cgi?ActionID={name}", payload, token=True),
-    )
+    ) if collect_json else {"status":"not_requested","value":None}
     settings_profile = str(contract.get("settings_read_profile") or "")
     profile_for_model = {
         "Bar 310": "bar310_confirmed",
@@ -964,7 +966,9 @@ def poll_huawei_310_family_device(
         management_actions.append(_set_huawei_310_answer_mode(answer_tasks[0], bundle_text, json_request, settle,
                                 str(contract.get("answer_mode_validation_status") or "provisional_user_validation")))
     verified_http_action = next((item for item in management_actions if item.get("id") == DISABLE_INSECURE_SERVICES_ACTION and item.get("status") in {"applied", "already_compliant"}), None)
-    if profile_for_model and settings_profile == profile_for_model:
+    if not collect_json:
+        device_settings=unknown_device_settings(contract_model)
+    elif profile_for_model and settings_profile == profile_for_model:
         device_settings = _read_310_settings(contract_model, bundle_text, json_request, skip_http=bool(verified_http_action), validation_status="confirmed_user_validation" if confirmed_box_settings else None)
     elif verified_http_action:
         device_settings = unknown_device_settings(contract_model, not_exposed=("telnet", "snmpV2", "autoUpdate"))
@@ -994,6 +998,9 @@ def poll_huawei_310_family_device(
             result["ok"] = False
             result["failedStage"] = "management_action"
             result["safeError"] = failed_action.get("safeError") or "management_action_failed"
+    if not collect_json:
+        for key in ("webBlocks","siteName","deviceSettings","rawResources"):result.pop(key,None)
+        result["readMode"]="selected_actions"
     return finalize(result)
 
 

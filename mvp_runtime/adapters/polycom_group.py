@@ -509,6 +509,7 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
 
     contract = CONTRACTS[model_number]
     settings = options or {}
+    collect_json=settings.get("collect_json",True) is True
     ip = normalize_ipv4(device.get("ipNormalized") or device.get("ip"))
     base: dict[str, Any] = {
         "ip": ip,
@@ -622,292 +623,297 @@ def poll_polycom_group_device(device: dict[str, Any], credentials: Any, model_nu
 
         resource_errors: dict[str, str] = {}
         mac = None
-        try:
-            config = _json_response(perform("POST", CONFIG_PATH, {"names": [MAC_NAME]}))
-            values = config.get("vars") if isinstance(config, dict) else None
-            if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict) or values[0].get("name") != MAC_NAME:
-                raise PolycomContractError("configuration_schema_unconfirmed")
-            mac = _safe_mac(values[0].get("value"))
-            if not mac:
-                resource_errors["mac"] = "configuration_schema_unconfirmed"
-        except BaseException as error:
-            if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                raise
-            resource_errors["mac"] = _error_code(error)
+        if collect_json or not serial:
+            try:
+                config = _json_response(perform("POST", CONFIG_PATH, {"names": [MAC_NAME]}))
+                values = config.get("vars") if isinstance(config, dict) else None
+                if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict) or values[0].get("name") != MAC_NAME:
+                    raise PolycomContractError("configuration_schema_unconfirmed")
+                mac = _safe_mac(values[0].get("value"))
+                if not mac:
+                    resource_errors["mac"] = "configuration_schema_unconfirmed"
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                resource_errors["mac"] = _error_code(error)
         if not serial and not mac:
             raise PolycomContractError("stable_identity_missing")
 
-        device_settings = unknown_device_settings(contract["model"], not_exposed=("wifi",))
-        settings_validation = "confirmed_user_validation"
-        device_settings["validationStatus"] = settings_validation
-        if all(marker in main_text for marker in TELNET_BUNDLE_MARKERS):
-            try:
-                telnet_name = SETTING_CONFIG_NAMES["telnet"][0]
-                enabled = _polycom_string_bool(_read_exact_config_value(perform, telnet_name))
-                if enabled is None:
-                    raise PolycomContractError("configuration_value_unconfirmed")
-                device_settings["fields"]["telnet"] = {
-                    "status": "read", "value": "enabled" if enabled else "disabled",
-                    "source": f"POST /rest/config:{telnet_name}",
-                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
-                }
-            except BaseException as error:
-                if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                    raise
-                device_settings["fields"]["telnet"] = {"status": "unavailable", "value": None}
-                resource_errors["settings.telnet"] = _error_code(error)
-        if all(marker in main_text for marker in HTTP_BUNDLE_MARKERS):
-            try:
-                web_name, only_name, port_name = SETTING_CONFIG_NAMES["http"]
-                web_enabled = _polycom_string_bool(_read_exact_config_value(perform, web_name))
-                https_only = _polycom_string_bool(_read_exact_config_value(perform, only_name))
-                port_raw = _read_exact_config_value(perform, port_name)
-                if web_enabled is None or https_only is None or not re.fullmatch(r"[0-9]{1,5}", port_raw):
-                    raise PolycomContractError("configuration_value_unconfirmed")
-                configured_port = int(port_raw)
-                if not 1 <= configured_port <= 65535:
-                    raise PolycomContractError("configuration_value_unconfirmed")
-                device_settings["fields"]["http"] = {
-                    "status": "read", "value": "enabled" if web_enabled and not https_only else "disabled",
-                    "source": f"POST /rest/config:{web_name},{only_name},{port_name}",
-                    "webAccessEnabled": web_enabled, "httpsOnly": https_only, "configuredPort": configured_port,
-                    "meaning": "web_http_allowed",
-                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
-                }
-            except BaseException as error:
-                if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                    raise
-                device_settings["fields"]["http"] = {"status": "unavailable", "value": None}
-                resource_errors["settings.http"] = _error_code(error)
-        if all(marker in main_text for marker in SNMP_BUNDLE_MARKERS):
-            try:
-                service_name, version_name = SETTING_CONFIG_NAMES["snmpV2"]
-                service_enabled = _polycom_string_bool(_read_exact_config_value(perform, service_name))
-                configured_enabled = _polycom_string_bool(_read_exact_config_value(perform, version_name))
-                if service_enabled is None or configured_enabled is None:
-                    raise PolycomContractError("configuration_value_unconfirmed")
-                device_settings["fields"]["snmpV2"] = {
-                    "status": "read", "value": "enabled" if service_enabled and configured_enabled else "disabled",
-                    "source": f"POST /rest/config:{service_name},{version_name}",
-                    "serviceEnabled": service_enabled, "configuredEnabled": configured_enabled,
-                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
-                }
-            except BaseException as error:
-                if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                    raise
-                device_settings["fields"]["snmpV2"] = {"status": "unavailable", "value": None}
-                resource_errors["settings.snmpV2"] = _error_code(error)
-        if all(marker in main_text for marker in AUTO_UPDATE_BUNDLE_MARKERS):
-            try:
-                auto_name = SETTING_CONFIG_NAMES["autoUpdate"][0]
-                enabled = _polycom_string_bool(_read_exact_config_value(perform, auto_name))
-                if enabled is None:
-                    raise PolycomContractError("configuration_value_unconfirmed")
-                device_settings["fields"]["autoUpdate"] = {
-                    "status": "read", "value": "enabled" if enabled else "disabled",
-                    "source": f"POST /rest/config:{auto_name}",
-                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
-                }
-            except BaseException as error:
-                if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                    raise
-                device_settings["fields"]["autoUpdate"] = {"status": "unavailable", "value": None}
-                resource_errors["settings.autoUpdate"] = _error_code(error)
-        if all(marker in main_text for marker in AUTO_ANSWER_BUNDLE_MARKERS):
-            answer_names = SETTING_CONFIG_NAMES["autoAnswer"]
-            modes: dict[str, str | None] = {}
-            unconfirmed: list[str] = []
-            for label, name in zip(("pointToPoint", "multipoint"), answer_names):
+        if not collect_json:
+            device_settings=unknown_device_settings(contract["model"],not_exposed=("wifi",))
+            result={**base,"ok":True,"readMode":"selected_actions","verifiedModel":contract["model"]}
+        else:
+            device_settings = unknown_device_settings(contract["model"], not_exposed=("wifi",))
+            settings_validation = "confirmed_user_validation"
+            device_settings["validationStatus"] = settings_validation
+            if all(marker in main_text for marker in TELNET_BUNDLE_MARKERS):
                 try:
-                    mode = _polycom_yes_no(_read_exact_config_value(perform, name))
-                    if mode is None:
+                    telnet_name = SETTING_CONFIG_NAMES["telnet"][0]
+                    enabled = _polycom_string_bool(_read_exact_config_value(perform, telnet_name))
+                    if enabled is None:
                         raise PolycomContractError("configuration_value_unconfirmed")
-                    modes[label] = mode
+                    device_settings["fields"]["telnet"] = {
+                        "status": "read", "value": "enabled" if enabled else "disabled",
+                        "source": f"POST /rest/config:{telnet_name}",
+                        "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                    }
                 except BaseException as error:
                     if isinstance(error, (KeyboardInterrupt, SystemExit)):
                         raise
-                    modes[label] = None
-                    unconfirmed.append(label)
-                    resource_errors[f"settings.autoAnswer.{label}"] = _error_code(error)
-            if len(unconfirmed) < 2:
-                device_settings["fields"]["autoAnswer"] = {
-                    "status": "read", "value": modes,
-                    "source": f"POST /rest/config:{','.join(answer_names)}",
-                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
-                    **({"unconfirmedFields": unconfirmed} if unconfirmed else {}),
-                }
-            else:
-                device_settings["fields"]["autoAnswer"] = {"status": "unavailable", "value": None}
-        if all(marker in main_text for marker in NTP_BUNDLE_MARKERS):
-            try:
-                mode_name, primary_name, secondary_name = SETTING_CONFIG_NAMES["ntp"]
-                raw_mode = _read_exact_config_value(perform, mode_name)
-                if raw_mode.casefold() != "manual":
-                    raise PolycomContractError("configuration_value_unconfirmed")
-                servers: dict[str, str | None] = {}
-                unconfirmed_servers: list[str] = []
-                for label, name in (("primaryServer", primary_name), ("secondaryServer", secondary_name)):
+                    device_settings["fields"]["telnet"] = {"status": "unavailable", "value": None}
+                    resource_errors["settings.telnet"] = _error_code(error)
+            if all(marker in main_text for marker in HTTP_BUNDLE_MARKERS):
+                try:
+                    web_name, only_name, port_name = SETTING_CONFIG_NAMES["http"]
+                    web_enabled = _polycom_string_bool(_read_exact_config_value(perform, web_name))
+                    https_only = _polycom_string_bool(_read_exact_config_value(perform, only_name))
+                    port_raw = _read_exact_config_value(perform, port_name)
+                    if web_enabled is None or https_only is None or not re.fullmatch(r"[0-9]{1,5}", port_raw):
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    configured_port = int(port_raw)
+                    if not 1 <= configured_port <= 65535:
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    device_settings["fields"]["http"] = {
+                        "status": "read", "value": "enabled" if web_enabled and not https_only else "disabled",
+                        "source": f"POST /rest/config:{web_name},{only_name},{port_name}",
+                        "webAccessEnabled": web_enabled, "httpsOnly": https_only, "configuredPort": configured_port,
+                        "meaning": "web_http_allowed",
+                        "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                    }
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    device_settings["fields"]["http"] = {"status": "unavailable", "value": None}
+                    resource_errors["settings.http"] = _error_code(error)
+            if all(marker in main_text for marker in SNMP_BUNDLE_MARKERS):
+                try:
+                    service_name, version_name = SETTING_CONFIG_NAMES["snmpV2"]
+                    service_enabled = _polycom_string_bool(_read_exact_config_value(perform, service_name))
+                    configured_enabled = _polycom_string_bool(_read_exact_config_value(perform, version_name))
+                    if service_enabled is None or configured_enabled is None:
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    device_settings["fields"]["snmpV2"] = {
+                        "status": "read", "value": "enabled" if service_enabled and configured_enabled else "disabled",
+                        "source": f"POST /rest/config:{service_name},{version_name}",
+                        "serviceEnabled": service_enabled, "configuredEnabled": configured_enabled,
+                        "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                    }
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    device_settings["fields"]["snmpV2"] = {"status": "unavailable", "value": None}
+                    resource_errors["settings.snmpV2"] = _error_code(error)
+            if all(marker in main_text for marker in AUTO_UPDATE_BUNDLE_MARKERS):
+                try:
+                    auto_name = SETTING_CONFIG_NAMES["autoUpdate"][0]
+                    enabled = _polycom_string_bool(_read_exact_config_value(perform, auto_name))
+                    if enabled is None:
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    device_settings["fields"]["autoUpdate"] = {
+                        "status": "read", "value": "enabled" if enabled else "disabled",
+                        "source": f"POST /rest/config:{auto_name}",
+                        "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                    }
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    device_settings["fields"]["autoUpdate"] = {"status": "unavailable", "value": None}
+                    resource_errors["settings.autoUpdate"] = _error_code(error)
+            if all(marker in main_text for marker in AUTO_ANSWER_BUNDLE_MARKERS):
+                answer_names = SETTING_CONFIG_NAMES["autoAnswer"]
+                modes: dict[str, str | None] = {}
+                unconfirmed: list[str] = []
+                for label, name in zip(("pointToPoint", "multipoint"), answer_names):
                     try:
-                        raw_server = _read_exact_config_value(perform, name)
-                        safe_server = "" if label == "secondaryServer" and raw_server == "" else _safe_text(raw_server, secrets, 255)
-                        if safe_server is None:
+                        mode = _polycom_yes_no(_read_exact_config_value(perform, name))
+                        if mode is None:
                             raise PolycomContractError("configuration_value_unconfirmed")
-                        servers[label] = safe_server
+                        modes[label] = mode
                     except BaseException as error:
                         if isinstance(error, (KeyboardInterrupt, SystemExit)):
                             raise
-                        servers[label] = None
-                        unconfirmed_servers.append(label)
-                        resource_errors[f"settings.ntp.{label}"] = _error_code(error)
-                device_settings["fields"]["ntp"] = {
-                    "status": "read", "value": {"enabled": True, "mode": "manual", "modeCode": raw_mode, **servers},
-                    "source": f"POST /rest/config:{mode_name},{primary_name},{secondary_name}",
-                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
-                    **({"unconfirmedFields": unconfirmed_servers} if unconfirmed_servers else {}),
-                }
-            except BaseException as error:
-                if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                    raise
-                device_settings["fields"]["ntp"] = {"status": "unavailable", "value": None}
-                resource_errors["settings.ntp"] = _error_code(error)
-        if SSH_MENU_REFERENCE in main_text:
-            try:
-                menu_response = perform("GET", "/data/settingdata.json", maximum=4 * 1024 * 1024)
-                if int(menu_response.get("status_code") or 0) != 200:
-                    raise PolycomContractError("ssh_service_menu_unavailable")
-                try:
-                    menu = json.loads(_body_text(menu_response, 4 * 1024 * 1024))
-                except (json.JSONDecodeError, UnicodeError) as error:
-                    raise PolycomContractError("ssh_service_menu_unavailable") from error
-                primary_name = _discover_ssh_service_name(main_text, menu)
-                if primary_name is not None:
-                    enabled = _polycom_string_bool(_read_exact_config_value(
-                        perform, primary_name, bundle_confirmed_name=primary_name))
-                    if enabled is None:
-                        raise PolycomContractError("configuration_value_unconfirmed")
-                    device_settings["fields"]["ssh"] = {
-                        "status": "read", "value": "enabled" if enabled else "disabled",
-                        "source": f"POST /rest/config:{primary_name}", "basis": "ssh_service_direct",
-                        "meaning": "ssh_service_setting", "ruleVersion": SSH_SOURCE_RULE_VERSION,
-                        "validationStatus": "provisional_user_validation",
+                        modes[label] = None
+                        unconfirmed.append(label)
+                        resource_errors[f"settings.autoAnswer.{label}"] = _error_code(error)
+                if len(unconfirmed) < 2:
+                    device_settings["fields"]["autoAnswer"] = {
+                        "status": "read", "value": modes,
+                        "source": f"POST /rest/config:{','.join(answer_names)}",
+                        "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                        **({"unconfirmedFields": unconfirmed} if unconfirmed else {}),
                     }
-                elif all(marker in main_text for marker in SSH_LEGACY_BUNDLE_MARKERS):
-                    ssh_name = SETTING_CONFIG_NAMES["ssh"][0]
-                    legacy_enabled = _polycom_string_bool(_read_exact_config_value(perform, ssh_name))
-                    if legacy_enabled is None:
-                        raise PolycomContractError("configuration_value_unconfirmed")
-                    device_settings["fields"]["ssh"] = {
-                        "status": "read", "value": "enabled" if legacy_enabled else "disabled",
-                        "source": f"POST /rest/config:{ssh_name}", "basis": "legacy_api_fallback",
-                        "meaning": "ssh_audit_proxy", "ruleVersion": SSH_SOURCE_RULE_VERSION,
-                        "validationStatus": settings_validation,
-                    }
-            except BaseException as error:
-                if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                    raise
-                code = _error_code(error)
-                status = "protocol_required" if code in {"ssh_service_menu_unconfirmed", "ssh_service_contract_unconfirmed"} else "unavailable"
-                device_settings["fields"]["ssh"] = {"status": status, "value": None}
-                resource_errors["settings.ssh"] = _error_code(error)
-        if all(marker in main_text for marker in POWER_BUTTON_BUNDLE_MARKERS):
-            try:
-                power_name = SETTING_CONFIG_NAMES["powerManagement"][0]
-                action_code = _read_exact_config_value(perform, power_name)
-                if action_code != "Power_Off":
-                    raise PolycomContractError("configuration_value_unconfirmed")
-                device_settings["fields"]["powerManagement"] = {
-                    "status": "read", "value": {"hangupLongPressAction": "power_off", "actionCode": action_code, "sleepMode": None},
-                    "source": f"POST /rest/config:{power_name}", "meaning": "remote_hangup_long_press",
-                    "unconfirmedFields": ["sleepMode"],
-                    "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
-                }
-            except BaseException as error:
-                if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                    raise
-                device_settings["fields"]["powerManagement"] = {"status": "unavailable", "value": None}
-                resource_errors["settings.powerManagement"] = _error_code(error)
-
-        status_rows: list[dict[str, Any]] = []
-        try:
-            status_data = _json_response(perform("GET", STATUS_PATH))
-            if not isinstance(status_data, list) or len(status_data) > 64:
-                raise PolycomContractError("resource_schema_unconfirmed")
-            for item in status_data:
-                if not isinstance(item, dict):
-                    continue
-                name = _safe_text(item.get("name"), secrets, 100)
-                raw_state = item.get("state")
-                state: str | list[str] | None = None
-                if isinstance(raw_state, list) and len(raw_state) <= 16:
-                    values = [_safe_text(value, secrets, 100) for value in raw_state]
-                    state = [value for value in values if value] or None
                 else:
-                    state = _safe_text(raw_state, secrets, 100)
-                if name and state:
-                    status_rows.append({"name": name, "state": state})
-        except BaseException as error:
-            if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                raise
-            resource_errors["status"] = _error_code(error)
+                    device_settings["fields"]["autoAnswer"] = {"status": "unavailable", "value": None}
+            if all(marker in main_text for marker in NTP_BUNDLE_MARKERS):
+                try:
+                    mode_name, primary_name, secondary_name = SETTING_CONFIG_NAMES["ntp"]
+                    raw_mode = _read_exact_config_value(perform, mode_name)
+                    if raw_mode.casefold() != "manual":
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    servers: dict[str, str | None] = {}
+                    unconfirmed_servers: list[str] = []
+                    for label, name in (("primaryServer", primary_name), ("secondaryServer", secondary_name)):
+                        try:
+                            raw_server = _read_exact_config_value(perform, name)
+                            safe_server = "" if label == "secondaryServer" and raw_server == "" else _safe_text(raw_server, secrets, 255)
+                            if safe_server is None:
+                                raise PolycomContractError("configuration_value_unconfirmed")
+                            servers[label] = safe_server
+                        except BaseException as error:
+                            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                                raise
+                            servers[label] = None
+                            unconfirmed_servers.append(label)
+                            resource_errors[f"settings.ntp.{label}"] = _error_code(error)
+                    device_settings["fields"]["ntp"] = {
+                        "status": "read", "value": {"enabled": True, "mode": "manual", "modeCode": raw_mode, **servers},
+                        "source": f"POST /rest/config:{mode_name},{primary_name},{secondary_name}",
+                        "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                        **({"unconfirmedFields": unconfirmed_servers} if unconfirmed_servers else {}),
+                    }
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    device_settings["fields"]["ntp"] = {"status": "unavailable", "value": None}
+                    resource_errors["settings.ntp"] = _error_code(error)
+            if SSH_MENU_REFERENCE in main_text:
+                try:
+                    menu_response = perform("GET", "/data/settingdata.json", maximum=4 * 1024 * 1024)
+                    if int(menu_response.get("status_code") or 0) != 200:
+                        raise PolycomContractError("ssh_service_menu_unavailable")
+                    try:
+                        menu = json.loads(_body_text(menu_response, 4 * 1024 * 1024))
+                    except (json.JSONDecodeError, UnicodeError) as error:
+                        raise PolycomContractError("ssh_service_menu_unavailable") from error
+                    primary_name = _discover_ssh_service_name(main_text, menu)
+                    if primary_name is not None:
+                        enabled = _polycom_string_bool(_read_exact_config_value(
+                            perform, primary_name, bundle_confirmed_name=primary_name))
+                        if enabled is None:
+                            raise PolycomContractError("configuration_value_unconfirmed")
+                        device_settings["fields"]["ssh"] = {
+                            "status": "read", "value": "enabled" if enabled else "disabled",
+                            "source": f"POST /rest/config:{primary_name}", "basis": "ssh_service_direct",
+                            "meaning": "ssh_service_setting", "ruleVersion": SSH_SOURCE_RULE_VERSION,
+                            "validationStatus": "provisional_user_validation",
+                        }
+                    elif all(marker in main_text for marker in SSH_LEGACY_BUNDLE_MARKERS):
+                        ssh_name = SETTING_CONFIG_NAMES["ssh"][0]
+                        legacy_enabled = _polycom_string_bool(_read_exact_config_value(perform, ssh_name))
+                        if legacy_enabled is None:
+                            raise PolycomContractError("configuration_value_unconfirmed")
+                        device_settings["fields"]["ssh"] = {
+                            "status": "read", "value": "enabled" if legacy_enabled else "disabled",
+                            "source": f"POST /rest/config:{ssh_name}", "basis": "legacy_api_fallback",
+                            "meaning": "ssh_audit_proxy", "ruleVersion": SSH_SOURCE_RULE_VERSION,
+                            "validationStatus": settings_validation,
+                        }
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    code = _error_code(error)
+                    status = "protocol_required" if code in {"ssh_service_menu_unconfirmed", "ssh_service_contract_unconfirmed"} else "unavailable"
+                    device_settings["fields"]["ssh"] = {"status": status, "value": None}
+                    resource_errors["settings.ssh"] = _error_code(error)
+            if all(marker in main_text for marker in POWER_BUTTON_BUNDLE_MARKERS):
+                try:
+                    power_name = SETTING_CONFIG_NAMES["powerManagement"][0]
+                    action_code = _read_exact_config_value(perform, power_name)
+                    if action_code != "Power_Off":
+                        raise PolycomContractError("configuration_value_unconfirmed")
+                    device_settings["fields"]["powerManagement"] = {
+                        "status": "read", "value": {"hangupLongPressAction": "power_off", "actionCode": action_code, "sleepMode": None},
+                        "source": f"POST /rest/config:{power_name}", "meaning": "remote_hangup_long_press",
+                        "unconfirmedFields": ["sleepMode"],
+                        "validationStatus": "confirmed_user_validation" if model_number == 310 else settings_validation,
+                    }
+                except BaseException as error:
+                    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    device_settings["fields"]["powerManagement"] = {"status": "unavailable", "value": None}
+                    resource_errors["settings.powerManagement"] = _error_code(error)
 
-        device_time = None
-        try:
-            device_time = _safe_number(_json_response(perform("GET", TIME_PATH)))
-            if device_time is None:
-                raise PolycomContractError("resource_schema_unconfirmed")
-        except BaseException as error:
-            if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                raise
-            resource_errors["systemTime"] = _error_code(error)
-        uptime = None
-        try:
-            uptime = _safe_number(_json_response(perform("GET", UPTIME_PATH)))
-            if uptime is None:
-                raise PolycomContractError("resource_schema_unconfirmed")
-        except BaseException as error:
-            if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                raise
-            resource_errors["uptime"] = _error_code(error)
+            status_rows: list[dict[str, Any]] = []
+            try:
+                status_data = _json_response(perform("GET", STATUS_PATH))
+                if not isinstance(status_data, list) or len(status_data) > 64:
+                    raise PolycomContractError("resource_schema_unconfirmed")
+                for item in status_data:
+                    if not isinstance(item, dict):
+                        continue
+                    name = _safe_text(item.get("name"), secrets, 100)
+                    raw_state = item.get("state")
+                    state: str | list[str] | None = None
+                    if isinstance(raw_state, list) and len(raw_state) <= 16:
+                        values = [_safe_text(value, secrets, 100) for value in raw_state]
+                        state = [value for value in values if value] or None
+                    else:
+                        state = _safe_text(raw_state, secrets, 100)
+                    if name and state:
+                        status_rows.append({"name": name, "state": state})
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                resource_errors["status"] = _error_code(error)
 
-        safe_system = {
-            "model": contract["model"],
-            "serialNumber": serial,
-            "softwareVersion": firmware,
-            "build": _safe_text(system.get("build"), secrets, 80),
-            "hardwareVersion": _safe_text(system.get("hardwareVersion"), secrets, 120),
-            "systemName": _safe_text(system.get("systemName"), secrets, 256),
-            "state": _safe_text(system.get("state"), secrets, 80),
-            "systemTime": _safe_number(system.get("systemTime")),
-            "uptime": _safe_number(system.get("uptime")),
-            "macAddress": mac,
-        }
-        safe_system = {key: value for key, value in safe_system.items() if value is not None}
-        system_name = safe_system.get("systemName")
-        site_name = {"status": "read" if system_name else "unavailable", "value": system_name, "source": "polycom_system_name"}
-        web_blocks = {
-            "Device Info": {key: value for key, value in {
-                "Model": contract["model"], "Serial Number": serial, "MAC Address": mac,
-                "System Name": system_name, "Site Name": system_name,
-            }.items() if value is not None},
-            "Firmware": {key: value for key, value in {
-                "Version": firmware, "Build": safe_system.get("build"), "Hardware Version": safe_system.get("hardwareVersion"),
-            }.items() if value is not None},
-            "Device Status": {key: value for key, value in {
-                "State": safe_system.get("state"), "Uptime Raw": uptime, "System Time Raw": device_time,
-            }.items() if value is not None},
-            "LAN Settings": {key: value for key, value in {"IP Address": ip, "MAC Address": mac}.items() if value is not None},
-        }
-        result = {
-            **base,
-            "ok": True,
-            "webInterface": {"ok": True, "evidence": "Polycom Group web REST read-only", "insecureTls": not reject_unauthorized, "tlsProfile": "system_default"},
-            "webBlocks": web_blocks,
-            "siteName": site_name,
-            "deviceSettings": device_settings,
-            "rawResources": sanitize_result({"system": safe_system, "status": status_rows, "systemTime": device_time, "uptime": uptime}),
-            "readMode": "targeted",
-            "diagnostics": {"attemptedResourceKeys": ["system", "mac", "status", "systemTime", "uptime"], "resourceErrors": resource_errors},
-        }
+            device_time = None
+            try:
+                device_time = _safe_number(_json_response(perform("GET", TIME_PATH)))
+                if device_time is None:
+                    raise PolycomContractError("resource_schema_unconfirmed")
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                resource_errors["systemTime"] = _error_code(error)
+            uptime = None
+            try:
+                uptime = _safe_number(_json_response(perform("GET", UPTIME_PATH)))
+                if uptime is None:
+                    raise PolycomContractError("resource_schema_unconfirmed")
+            except BaseException as error:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    raise
+                resource_errors["uptime"] = _error_code(error)
+
+            safe_system = {
+                "model": contract["model"],
+                "serialNumber": serial,
+                "softwareVersion": firmware,
+                "build": _safe_text(system.get("build"), secrets, 80),
+                "hardwareVersion": _safe_text(system.get("hardwareVersion"), secrets, 120),
+                "systemName": _safe_text(system.get("systemName"), secrets, 256),
+                "state": _safe_text(system.get("state"), secrets, 80),
+                "systemTime": _safe_number(system.get("systemTime")),
+                "uptime": _safe_number(system.get("uptime")),
+                "macAddress": mac,
+            }
+            safe_system = {key: value for key, value in safe_system.items() if value is not None}
+            system_name = safe_system.get("systemName")
+            site_name = {"status": "read" if system_name else "unavailable", "value": system_name, "source": "polycom_system_name"}
+            web_blocks = {
+                "Device Info": {key: value for key, value in {
+                    "Model": contract["model"], "Serial Number": serial, "MAC Address": mac,
+                    "System Name": system_name, "Site Name": system_name,
+                }.items() if value is not None},
+                "Firmware": {key: value for key, value in {
+                    "Version": firmware, "Build": safe_system.get("build"), "Hardware Version": safe_system.get("hardwareVersion"),
+                }.items() if value is not None},
+                "Device Status": {key: value for key, value in {
+                    "State": safe_system.get("state"), "Uptime Raw": uptime, "System Time Raw": device_time,
+                }.items() if value is not None},
+                "LAN Settings": {key: value for key, value in {"IP Address": ip, "MAC Address": mac}.items() if value is not None},
+            }
+            result = {
+                **base,
+                "ok": True,
+                "webInterface": {"ok": True, "evidence": "Polycom Group web REST read-only", "insecureTls": not reject_unauthorized, "tlsProfile": "system_default"},
+                "webBlocks": web_blocks,
+                "siteName": site_name,
+                "deviceSettings": device_settings,
+                "rawResources": sanitize_result({"system": safe_system, "status": status_rows, "systemTime": device_time, "uptime": uptime}),
+                "readMode": "targeted",
+                "diagnostics": {"attemptedResourceKeys": ["system", "mac", "status", "systemTime", "uptime"], "resourceErrors": resource_errors},
+            }
         requested_management_tasks = [str(item) for item in (settings.get("management_tasks") or [])]
         if AUTO_ANSWER_ACTION in requested_management_tasks:
             if len(requested_management_tasks) != 1:

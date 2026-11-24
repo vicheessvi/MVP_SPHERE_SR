@@ -28,6 +28,10 @@
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
   const tests = [];
 
+  if (typeof require === "function") test("План v4: явные листы XLSX, действия и безопасное продолжение", async () => {
+    await require("./scripts/test-explicit-plan").run();
+  });
+
   if (typeof require === "function") test("Кнопка опроса обрабатывает Answer Mode внутри формы плана", () => {
     const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
     const submit = source.slice(source.indexOf("async function handleSubmit"), source.indexOf("async function handleChange"));
@@ -37,20 +41,19 @@
     assert(plan.indexOf("if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm") > plan.indexOf("const result = createPollingPlan"));
     assert(plan.indexOf("if (ui.pollingPlanSelection.teFamilyAnswerMode && !global.confirm") < plan.indexOf("await startAutomaticPolling"));
     const change = source.slice(source.indexOf("async function handleChange"), source.indexOf("function handleInput"));
-    assert(change.includes('event.target.name === "teFamilyAnswerMode"'));
+    assert(change.includes('POLLING_WRITE_FIELDS.includes(event.target.name)'));
+    for (const name of ["teFamilyAnswerMode", "huawei310AnswerMode", "huawei300AnswerMode", "polycomPointToPointAnswerMode", "polycomMultipointAnswerMode"]) assert(source.slice(source.indexOf("const POLLING_WRITE_FIELDS"), source.indexOf("function hasPollingWriteSelection")).includes(`"${name}"`));
     assert(source.includes('name="huawei310AnswerMode"'));
     assert(plan.includes('formData.get("huawei310AnswerMode")'));
     assert(plan.includes('if (ui.pollingPlanSelection.huawei310AnswerMode && !global.confirm'));
-    assert(change.includes('event.target.name === "huawei310AnswerMode"'));
     assert(source.includes('name="huawei300AnswerMode"'));
     assert(plan.includes('formData.get("huawei300AnswerMode")'));
     assert(plan.includes('if (ui.pollingPlanSelection.huawei300AnswerMode && !global.confirm'));
-    assert(change.includes('event.target.name === "huawei300AnswerMode"'));
     assert(source.includes('name="polycomPointToPointAnswerMode"'));
     assert(source.includes('name="polycomMultipointAnswerMode"'));
     assert(plan.includes('formData.get("polycomPointToPointAnswerMode")'));
     assert(plan.includes('formData.get("polycomMultipointAnswerMode")'));
-    assert(change.includes('"polycomPointToPointAnswerMode", "polycomMultipointAnswerMode"'));
+    assert(change.includes('syncZeroIntervalConsent(pollingPlanForm)'));
   });
 
   test("План показывает первичную настройку и вход, а пароль не сохраняется в state", () => {
@@ -2162,7 +2165,7 @@
 
     const blocked = api.createPollingPlan(api.createDemoState(), { disableInsecureManagementServices: true, categories: [api.POLLING_ALL], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL], scheduledAt: "2026-09-06T10:00:00", intervalSeconds: 0, credentialsReady: true, credentialSourceSha256: "f".repeat(64) });
     assert(!blocked.ok);
-    assert(blocked.errors.some((item) => item.includes("Список устройств для закрытия портов")));
+    assert(blocked.errors.some((item) => item.includes("список устройств для выбранных действий")));
   });
 
   test("Сверка настроек сохраняет исходные колонки и показывает только подтверждённый факт", () => {
@@ -4389,11 +4392,11 @@
     assert(css.includes('grid-template-columns: repeat(4, minmax(0, 1fr));'));
     assert(fs.readFileSync(require("path").join(__dirname, "index.html"), "utf8").includes('runtime/sphere.js'));
     assertEqual(typeof require("./runtime/sphere").mount, "function");
-    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для закрытия портов 80 и 23 (http, telnet)", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Отключить HTTP и Telnet по возможностям модели", "HTTP Huawei TE20 (один IP)", "Telnet Huawei TE20 (один IP)", "Автообновление Huawei TE20 (один IP)", "SSH Huawei TE20 (один IP)", "NTP Huawei TE20 (один IP)", "Имя сервера NTP", "Управление питанием Huawei TE20 (один IP)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для выбранных действий", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Отключить HTTP и Telnet по возможностям модели", "HTTP Huawei TE20 (один IP)", "Telnet Huawei TE20 (один IP)", "Автообновление Huawei TE20 (один IP)", "SSH Huawei TE20 (один IP)", "NTP Huawei TE20 (один IP)", "Имя сервера NTP", "Управление питанием Huawei TE20 (один IP)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
     assert(source.includes("Открытие включает соответствующий сетевой сервис."));
     assert(source.includes("На одном выбранном Huawei TE20 будет отключено автообновление"));
     assert(source.includes("Интервал между опросами устройств"));
-    assert(source.includes('intervalMinSeconds: "0", intervalMaxSeconds: "0"'));
+    assert(/intervalMinSeconds:\s*"0",\s*intervalMaxSeconds:\s*"0"/.test(source));
     assert(source.includes('name="intervalMinSeconds" aria-label="Интервал от, секунд" type="number" min="0"'));
     assert(source.includes('name="intervalMaxSeconds" aria-label="Интервал до, секунд" type="number" min="0"'));
     assert(source.includes("START_MVP_SPHERE_SR.py"));
