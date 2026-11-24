@@ -120,7 +120,7 @@ def fake_request(calls, model="Bar 300", code=18, *, bundle=None, site_name="Syn
 
 
 class Huawei300Tests(unittest.TestCase):
-    def test_box300_box600_answer_write_is_provisional_and_model_gated(self):
+    def test_box300_box600_answer_write_is_user_confirmed_and_model_gated(self):
         action_id = "set_huawei_300_auto_answer_manual"
         for poll, model, code, _contract in MODEL_CASES[1:]:
             with self.subTest(model=model):
@@ -143,7 +143,7 @@ class Huawei300Tests(unittest.TestCase):
                     [{"username": "synthetic-user", "password": "SYNTHETIC-SECRET"}],
                     {"request": request, "allow_insecure_tls": True, "management_tasks": [action_id]})
                 self.assertEqual(result["managementActions"][0]["status"], "applied")
-                self.assertEqual(result["managementActions"][0]["validationStatus"], "provisional_user_validation")
+                self.assertEqual(result["managementActions"][0]["validationStatus"], "confirmed_user_validation")
                 self.assertEqual(sum("WEB_SaveCfgParamAPI" in item["path"] for item in calls), 1)
                 self.assertNotIn("SYNTHETIC-SECRET", json.dumps(result))
 
@@ -188,7 +188,7 @@ class Huawei300Tests(unittest.TestCase):
                 self.assertEqual(result["managementActions"], [{"id": action_id, "transport": "https/443",
                     "status": "applied", "changed": True, "writeAttempted": True,
                     "before": before_label, "after": after_label,
-                    "validationStatus": "confirmed_local_validation"}])
+                    "validationStatus": "confirmed_user_validation"}])
                 self.assertEqual(sum("WEB_SaveCfgParamAPI" in item["path"] for item in calls), 1)
                 self.assertNotIn("SYNTHETIC-SECRET", json.dumps(result))
 

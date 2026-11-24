@@ -455,6 +455,7 @@ class PolycomGroupTests(unittest.TestCase):
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["managementActions"][0]["status"], "applied")
                 self.assertEqual(result["managementActions"][0]["writeAttempted"], True)
+                self.assertEqual(result["managementActions"][0]["validationStatus"], "confirmed_user_validation")
                 self.assertEqual([json.loads(call["body"])["vars"] for call in calls
                                   if call["path"] == "/rest/config" and "vars" in json.loads(call["body"])],
                                  [expected_rows])
@@ -533,7 +534,7 @@ class PolycomGroupTests(unittest.TestCase):
         self.assertEqual([body["vars"] for _method, _path, body in calls if "vars" in body],
                          [[{"name": AUTO_ANSWER_MULTI_NAME, "value": "Yes"}]])
 
-    def test_other_exact_groups_use_same_guarded_answer_contract_provisionally(self):
+    def test_other_exact_groups_use_same_user_confirmed_guarded_answer_contract(self):
         bundle = FULL_SETTINGS_BUNDLE + " " + AUTO_ANSWER_WRITE_MARKERS
         for model in ("RealPresence Group 300", "RealPresence Group 500", "RealPresence Group 700"):
             with self.subTest(model=model):
@@ -549,7 +550,7 @@ class PolycomGroupTests(unittest.TestCase):
                 )
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["managementActions"][0]["status"], "applied")
-                self.assertEqual(result["managementActions"][0]["validationStatus"], "provisional_user_validation")
+                self.assertEqual(result["managementActions"][0]["validationStatus"], "confirmed_user_validation")
                 self.assertEqual(len([call for call in calls if call["path"] == "/rest/config"
                                       and "vars" in json.loads(call["body"])]), 1)
                 wrong = WRAPPERS[model](

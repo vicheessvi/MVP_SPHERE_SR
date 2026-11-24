@@ -90,7 +90,7 @@
 ## Feature 057 — Answer mode Polycom RealPresence Group
 
 - `specs/057-polycom-group-answer-mode/`, ADR-0060. Два независимых выбора Point-to-Point и Multipoint доступны одному IP или совместимой группе exact Group 300/310/500/700 из актуальной SR. План содержит один action ID и nullable цели; смешанная группа и другие write-задачи блокируются до сети. UI показывает число целей и требует согласия.
-- `mvp_runtime/adapters/polycom_group.py` после прежних pre/post-auth model/identity gates и текущих read/save bundle markers читает оба значения `Yes/No`, при необходимости отправляет максимум один `POST /rest/config` с одним или двумя `vars`, затем ограниченно повторяет только чтение до двух устойчивых совпадений пары. `Do Not Disturb`, drift и неясный исход блокируют успех, write не повторяется. Exact Group 310 проверен одиночными и парными переходами с восстановлением исходного состояния; Group 300/500/700 write предварителен. Обычный JSON/логи read-only. Тесты: `python_tests/test_polycom_group.py`, `test_polling.py`, `test_server.py`, `tests.js`.
+- `mvp_runtime/adapters/polycom_group.py` после прежних pre/post-auth model/identity gates и текущих read/save bundle markers читает оба значения `Yes/No`, при необходимости отправляет максимум один `POST /rest/config` с одним или двумя `vars`, затем ограниченно повторяет только чтение до двух устойчивых совпадений пары. `Do Not Disturb`, drift и неясный исход блокируют успех, write не повторяется. Exact Group 310 ранее проверен контролируемыми одиночными и парными переходами с восстановлением исходного состояния. 2026-11-24 администратор дополнительно подтвердил Answer mode всех четырёх Group в обоих направлениях по одному IP и массово; новые write-результаты — confirmed_user_validation, исторические JSON не меняются. Обычный JSON/логи read-only. Тесты: `python_tests/test_polycom_group.py`, `test_polling.py`, `test_server.py`, `tests.js`.
 
 ## Feature 056 — сбор логов Polycom RealPresence Group
 
@@ -110,7 +110,7 @@
 ## Feature 053 — Answer mode Huawei CloudLink 300
 
 - Цель — добавить «Не менять / Автоматически / Вручную» рядом с существующими Answer mode в плане, для одного IP или совместимой группы exact Bar 300/Box 300/Box 600. `specs/053-cloudlink-300-answer-mode/`; существующие плановые gates — `app.js`, `mvp_runtime/polling.py`.
-- На Bar 300 по отдельным согласиям выполнен и web-меню подтверждён цикл Answer mode `autoreply=0→1→0`; узкий `WEB_SaveCfgParamAPI` затрагивал только `autoreply`, исходное «Авто» восстановлено. Новый production action — `mvp_runtime/adapters/huawei_300.py`, модельный allowlist — `runtime/device-catalog.json`, план/контроль группы — `app.js` и `mvp_runtime/polling.py`. Box 300/600 write остаётся предварительным до отдельных тестов. ADR-0056.
+- На Bar 300 по отдельным согласиям выполнен и web-меню подтверждён цикл Answer mode `autoreply=0→1→0`; узкий `WEB_SaveCfgParamAPI` затрагивал только `autoreply`, исходное «Авто» восстановлено. Новый production action — `mvp_runtime/adapters/huawei_300.py`, модельный allowlist — `runtime/device-catalog.json`, план/контроль группы — `app.js` и `mvp_runtime/polling.py`. 2026-11-24 администратор отдельно подтвердил Answer mode Bar 300/Box 300/Box 600 в обоих направлениях по одному IP и массово; новые write-результаты всех трёх моделей — confirmed_user_validation, исторические JSON не меняются. ADR-0056.
 
 ## Feature 052 — сбор логов Huawei CloudLink 300
 

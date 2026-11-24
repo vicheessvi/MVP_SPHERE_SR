@@ -238,7 +238,7 @@ def _set_huawei_300_answer_mode(
     if action_id not in HUAWEI_300_ANSWER_ACTIONS or model_key not in MODEL_CONTRACTS:
         raise ValueError("unsupported_answer_action")
     target = HUAWEI_300_ANSWER_ACTIONS[action_id]
-    validation = "confirmed_local_validation" if model_key == "bar300" else "provisional_user_validation"
+    validation = "confirmed_user_validation"
     base = {"id": action_id, "transport": "https/443", "changed": False,
             "writeAttempted": False, "validationStatus": validation}
     if (not BAR300_ANSWER_GROUP.search(bundle) or not BAR300_ANSWER_FORM.search(bundle)
@@ -517,7 +517,7 @@ def poll_huawei_300_device(device: dict[str, Any], credentials: Any, options: di
             if len(answer_tasks) != 1 or len(requested_management_tasks) != 1:
                 management_actions.append({"id": answer_tasks[0], "transport": "https/443",
                                            "status": "failed", "changed": False, "writeAttempted": False,
-                                           "validationStatus": "confirmed_local_validation" if model_key == "bar300" else "provisional_user_validation",
+                                           "validationStatus": "confirmed_user_validation",
                                            "safeError": "management_tasks_conflict"})
             else:
                 management_actions.append(_set_huawei_300_answer_mode(answer_tasks[0], model_key, bundle, csrf, action))

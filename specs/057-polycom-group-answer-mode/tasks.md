@@ -32,6 +32,7 @@
 
 - [x] T011 Обновить `AGENTS.md`, `docs/context-map.md`, `docs/implementation-log.md`, `docs/decisions/ADR-0060-polycom-group-answer-mode.md`, `product-catalog.js`.
 - [x] T012 Выполнить полные Python/JS/reference/syntax/secret проверки и удалить временный live-пробник `scripts/_probe_polycom_answer_combined.py`.
+- [x] T013 2026-11-24 зафиксировать подтверждение администратором Answer mode Group 300/310/500/700 в обоих направлениях, по IP и массово; новые write-результаты — confirmed_user_validation, без изменения команд/ограничений и исторических JSON.
 
 ## Dependencies
 
@@ -43,4 +44,4 @@ T001–T004 → T005–T008 → T009–T010 → T011–T012. Тесты пишу
 
 ## MVP
 
-US1 — безопасное изменение одного exact Group 310. US2 добавляет совместимую группу, оставляя Group 300/500/700 предварительными до реальных испытаний.
+US1 — безопасное изменение одного exact Group 310. US2 добавляет совместимую группу; первоначально другие Group были предварительными. Отдельное эксплуатационное подтверждение администратора 2026-11-24 отражено в T013.

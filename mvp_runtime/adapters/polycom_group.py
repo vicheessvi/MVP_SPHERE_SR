@@ -428,7 +428,7 @@ def _set_polycom_answer_mode(perform: Callable[..., dict[str, Any]], main_bundle
                              changes: Any, model_number: int,
                              wait: Callable[[float], Any] | None = None) -> dict[str, Any]:
     """One bounded POST for selected fields, with stable read-only verification."""
-    validation = "confirmed_local_validation" if model_number == 310 else "provisional_user_validation"
+    validation = "confirmed_user_validation"
     base = {"id": AUTO_ANSWER_ACTION, "transport": "https/443", "status": "failed",
             "changed": False, "writeAttempted": False, "validationStatus": validation}
     if (not isinstance(changes, dict) or set(changes) != {"pointToPoint", "multipoint"}

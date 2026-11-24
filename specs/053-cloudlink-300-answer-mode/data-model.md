@@ -13,7 +13,7 @@
 - `before` и `after`: `automatic`/`manual` только при точном чтении.
 - `changed`, `writeAttempted`: boolean; `writeAttempted` становится true до единственной сетевой записи и остаётся true при неясном ответе.
 - `safeError`: только безопасный код ошибки, без ответа, cookie, CSRF или учётных данных.
-- `validationStatus`: Bar 300 после контролируемого цикла; Box 300/600 предварительны до отдельной эксплуатационной проверки.
+- `validationStatus`: `confirmed_user_validation` для новых write-результатов Bar 300/Box 300/Box 600 после отдельного подтверждения администратором 2026-11-24 обоих направлений, по IP и массово. Исторические JSON сохраняют прежний статус.
 
 ## State transitions
 

@@ -26,16 +26,17 @@
 
 - [x] T008 [US2] Добавить тесты группы, mixed target, digest, конфликтующих задач и одного action в `tests.js`, `python_tests/test_polling.py`.
 - [x] T009 [US2] Встроить выбор серии 300 рядом с существующим Answer mode в `app.js`, включая состояние, план, форму, подтверждение и число целей.
-- [x] T010 [US2] Подключить новые action IDs к runtime-проверке плана в `mvp_runtime/polling.py`; Box 300/600 оставить provisional до отдельного live write-теста.
+- [x] T010 [US2] Подключить новые action IDs к runtime-проверке плана в `mvp_runtime/polling.py`; на этапе внедрения Box 300/600 оставались provisional до отдельной проверки (актуализация T013).
 
 ## Phase 5: Polish
 
 - [x] T011 Обновить `AGENTS.md`, `docs/context-map.md`, `docs/implementation-log.md`, `docs/decisions/ADR-0056-cloudlink-300-answer-mode.md` и `product-catalog.js`.
 - [x] T012 Выполнить полные Python/JS/reference/syntax/security проверки для изменённых файлов и контроль launcher через `python_tests/test_launcher.py` без реальной записи.
+- [x] T013 2026-11-24 зафиксировать отдельное подтверждение администратором Answer mode Bar 300/Box 300/Box 600 в обоих направлениях, по IP и массово; новые write-результаты — confirmed_user_validation, исторические JSON и команды не менять.
 
 ## Dependencies
 
-T001–T002 → T003–T004 → T005–T007 → T008–T010 → T011–T012. Box write остаётся предварительным до отдельных эксплуатационных тестов; их отсутствие не расширяет Bar-результат.
+T001–T002 → T003–T004 → T005–T007 → T008–T010 → T011–T012. Первоначальный предварительный Box write не выводился из Bar-проверки; отдельное подтверждение администратора 2026-11-24 зафиксировано в T013.
 
 ## Parallel opportunities
 

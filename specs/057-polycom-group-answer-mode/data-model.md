@@ -8,6 +8,10 @@
 
 `managementActions[]`: `id`, `status`, `changed`, `before` (оба поля), `target` (заданное поле/поля), `after` (оба поля), `validationStatus`, `safeError` при отказе. Секреты, raw HTTP, cookie и неизвестные поля не включаются. Возможные статусы соответствуют существующему формату действий: `applied`, `already_compliant`, `failed`; отсутствие подтверждённого контракта задаёт безопасный `safeError` без записи.
 
+Для новых write-результатов Group 300/310/500/700 `validationStatus=confirmed_user_validation`:
+2026-11-24 администратор подтвердил оба направления Answer mode по IP и массово.
+Это не меняет фактический `status` успеха/отказа конкретной операции; прежние JSON не переписываются.
+
 ## State transitions
 
 `validated_plan → exact_device_and_bundle → pre_read_pair → (already_compliant | one_POST) → bounded_post_read → verified_success | uncertain_failure`.

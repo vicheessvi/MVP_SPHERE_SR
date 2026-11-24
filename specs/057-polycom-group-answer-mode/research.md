@@ -1,5 +1,16 @@
 # Исследование Answer mode Polycom Group
 
+## Актуальный статус — 2026-11-24
+
+Администратор отдельно подтвердил изменение Answer mode для Polycom RealPresence Group 300, 310, 500 и 700
+в обоих направлениях, отдельно по IP и массово. Новые write-результаты имеют
+`confirmed_user_validation`; исторические JSON сохраняют прежний статус.
+Это пользовательская эксплуатационная проверка, а не независимый live-тест
+агента всех моделей/прошивок. Ниже сохранены исходные исследования и первоначальные
+ограничения; их предварительный статус заменён данным подтверждением, но
+model/identity/bundle/HTTPS gates и запрет повтора неясной записи остаются.
+
+
 ## Решение: точные поля и модель
 
 На exact Group 310 после pre-auth Polycom bundle gate и post-auth модели с serial/MAC узко прочитаны два поля `comm.callsetting.callfeatures.autoanswer.answersinglecall` и `comm.callsetting.callfeatures.autoanswer.answermultipointcall`. Исходные коды `Yes` / `No` соответствуют web-меню. Сырой ответ, идентификаторы устройства и учётные данные не сохранены. Официальное руководство Poly описывает отдельные настройки Point-to-Point и Multipoint со значениями Yes, No, Do Not Disturb: https://kaas.hpcloud.hp.com/pdf-public/pdf_9126112_en-US-1.pdf.
