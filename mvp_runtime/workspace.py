@@ -372,7 +372,8 @@ class WorkspaceStore:
         if scan is not None:
             marker_keys = {"kind", "localAt", "timeMs", "lineNumber", "model", "method"}
             gap_keys = {"bootLocalAt", "gapSeconds", "gapMinutes", "fromLocalAt", "toLocalAt", "knownAction", "clockAnomalyOrLongGap"}
-            if (set(scan) - {"ok", "markers", "coverage", "bootGaps", "digestAlgorithm", "contentDigest"}
+            if (set(scan) - {"ok", "markers", "coverage", "bootGaps", "digestAlgorithm", "contentDigest", "sourceCompleteness"}
+                    or ("sourceCompleteness" in scan and scan["sourceCompleteness"] not in ("complete","fragment"))
                     or any(not isinstance(item, dict) or set(item) - marker_keys for item in scan["markers"])
                     or any(not isinstance(item, dict) or set(item) - gap_keys for item in scan["bootGaps"])
                     or (scan.get("coverage") is not None and (not isinstance(scan["coverage"], dict)

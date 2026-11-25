@@ -154,6 +154,10 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(restarted.status()["pendingLogFiles"], 1)
         self.assertEqual(restarted.list_log_checkpoints(workspace, scope, "-"), [key])
         self.assertEqual(restarted.read_log_checkpoint(workspace, scope, key), result)
+        fragment={"kind":"te","scan":{**result["scan"],"sourceCompleteness":"fragment"}}
+        restarted.write_log_checkpoint(workspace,scope,key,fragment)
+        self.assertEqual(restarted.read_log_checkpoint(workspace,scope,key),fragment)
+        with self.assertRaises(WorkspaceError):restarted.write_log_checkpoint(workspace,scope,key,{"kind":"te","scan":{**result["scan"],"sourceCompleteness":"invented"}})
         with self.assertRaises(WorkspaceError):
             restarted.write_log_checkpoint(workspace, scope, "d" * 64, {**result, "rawText": "synthetic"})
         restarted.commit(0, sample_payload())

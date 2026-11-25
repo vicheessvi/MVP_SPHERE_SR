@@ -465,6 +465,8 @@ class ReadModel:
                             if row.get("kind")!="start_after_shutdown":result.pop("_shutdownLink",None)
                         for method in ("shutdownMethod","actionMethod"):
                             if result.get(method) in (None,"","unknown") and row.get(method):result[method]=row[method]
+                        if "sourceFragment" in prior or "sourceFragment" in row:
+                            result["sourceFragment"] = prior.get("sourceFragment") is True and row.get("sourceFragment") is True
                         gaps = [item for item in (prior.get("silenceGap"), row.get("silenceGap")) if isinstance(item, dict)]
                         if gaps and result.get("kind") == "unknown_start":
                             result["silenceGap"] = {**min(gaps, key=lambda item: item["seconds"]),
@@ -858,6 +860,7 @@ class ReadModel:
             calendar.append((day.isoformat(),day_kind(day)));day+=timedelta(days=1)
         c.executemany("INSERT INTO rm_offhours_calendar VALUES(?,?)",calendar)
         c.execute("CREATE TEMP TABLE rm_offhours_events AS "+sql+""" SELECT e.device,e.stamp,e.event_kind,
+            coalesce(json_extract(e.payload,'$.sourceFragment'),0) source_fragment,
             ((cast(strftime('%w',e.stamp) AS INTEGER)+6)%7) day,cast(substr(e.stamp,12,2) AS INTEGER) hour,
             CASE WHEN cal.kind!='workday' THEN cal.kind
                  WHEN substr(e.stamp,12,8)<'07:00:00' OR substr(e.stamp,12,8)>='18:00:00' THEN 'night'
@@ -869,7 +872,7 @@ class ReadModel:
         # A narrow temporary scalar projection, not copies of log/source payloads.
         device_sql,device_args=self.cte(c,{**scoped,"period":"all"})
         c.execute("CREATE TEMP TABLE rm_offhours_devices AS "+device_sql+""", counts AS (
-            SELECT device,count(*) observedEvents,min(stamp) firstObserved,max(stamp) lastObserved FROM rm_offhours_events GROUP BY device),
+            SELECT device,count(*) observedEvents,sum(source_fragment=0) completeEvents,min(stamp) firstObserved,max(stamp) lastObserved FROM rm_offhours_events GROUP BY device),
             outside AS (SELECT device,sum(event_kind='power_off') confirmed,sum(event_kind='suspected_power_loss') suspected,
                 sum(event_kind='confirmed_reboot') reboots,count(*) offhoursEvents,
                 min(CASE WHEN event_kind='power_off' THEN stamp END) firstPower,
@@ -881,7 +884,8 @@ class ReadModel:
                 coalesce(o.confirmed,0) confirmed,coalesce(o.suspected,0) suspected,coalesce(o.reboots,0) reboots,
                 coalesce(o.offhoursEvents,0) offhoursEvents,o.firstPower,o.lastPower,
                 CASE WHEN coalesce(a.observedEvents,0)=0 THEN 'unknown' WHEN o.confirmed=1 THEN 'once'
-                    WHEN o.confirmed>1 THEN 'repeated' WHEN o.suspected>0 THEN 'suspected' ELSE 'none' END cohort
+                    WHEN o.confirmed>1 THEN 'repeated' WHEN o.suspected>0 THEN 'suspected'
+                    WHEN coalesce(a.completeEvents,0)=0 THEN 'unknown' ELSE 'none' END cohort
             FROM devices d LEFT JOIN counts a ON a.device=d.key LEFT JOIN outside o ON o.device=d.key""",device_args+active_args)
         c.execute("CREATE UNIQUE INDEX rm_offhours_device ON rm_offhours_devices(device)")
         where="1=1" if selected=="all" else "d.cohort=?"

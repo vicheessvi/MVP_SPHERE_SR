@@ -25,7 +25,7 @@
     return /^\uFEFF?\s*<\?xml\b[\s\S]{0,512}<LogModule(?:\s|>)/i.test(String(prefix || ""));
   }
 
-  function collector() {
+  function collector(allowFragment=false) {
     let pending = "";
     let dropping = false;
     let tail = "";
@@ -71,7 +71,8 @@
       finish() {
         if (pending && !dropping) process(pending);
         else if (dropping) coverage.oversizedLines += 1;
-        if (!/<\/LogModule>\s*$/.test(tail)) return { ok: false, reason: "incomplete_log", markers: [], coverage, bootGaps: [] };
+        const sourceCompleteness = /<\/LogModule>\s*$/.test(tail) ? "complete" : "fragment";
+        if (!allowFragment && sourceCompleteness === "fragment") return { ok: false, reason: "incomplete_log", markers: [], coverage, bootGaps: [] };
         activityTimes.sort((a, b) => a - b);
         let uniqueCount = 0;
         for (let index = 0; index < activityTimes.length; index += 1) {
@@ -97,7 +98,7 @@
             knownAction: markers.some((item) => ["web_shutdown_command","terminal_shutdown_command"].includes(item.kind) && item.timeMs >= best.fromMs - 120000 && item.timeMs <= boot.timeMs),
             clockAnomalyOrLongGap: best.toMs - best.fromMs > MAX_PLAUSIBLE_GAP_MS });
         }
-        return { ok: true, markers, coverage, bootGaps };
+        return { ok: true, markers, coverage, bootGaps, ...(allowFragment ? {sourceCompleteness} : {}) };
       }
     };
   }
@@ -112,13 +113,16 @@
   async function scanFile(file, options) {
     if (!file || !Number.isSafeInteger(file.size) || file.size < 0 || typeof file.slice !== "function") return { ok: false, reason: "invalid_file", markers: [], coverage: null, bootGaps: [] };
     const decoder = new TextDecoder("utf-8", { fatal: false });
-    const prefix = decoder.decode(new Uint8Array(await file.slice(0, 2048).arrayBuffer()));
+    const prefixBytes = new Uint8Array(await file.slice(0, 2048).arrayBuffer());
+    if (prefixBytes.byteLength !== Math.min(2048,file.size)) return {ok:false,reason:"read_failed",markers:[],coverage:null,bootGaps:[]};
+    const prefix = decoder.decode(prefixBytes);
     if (!isLogPrefix(prefix)) return { ok: false, reason: "unsupported_log_format", markers: [], coverage: null, bootGaps: [] };
-    const parser = collector();
+    const parser = collector(true);
     for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
       if (options?.shouldCancel?.()) throw new Error("log_scan_cancelled");
       const end = Math.min(file.size, offset + CHUNK_BYTES);
       const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+      if (bytes.byteLength !== end-offset) return {ok:false,reason:"read_failed",markers:[],coverage:null,bootGaps:[]};
       parser.feed(decoder.decode(bytes, { stream: true }));
       await options?.onProgress?.(end, file.size, bytes);
     }

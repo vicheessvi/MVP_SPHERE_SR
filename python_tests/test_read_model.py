@@ -55,6 +55,24 @@ class ReadModelTests(unittest.TestCase):
     def view(self, name, filters=None, **kwargs):
         return self.model.view(self.workspace, self.revision, name, filters or {}, **kwargs)
 
+    def test_only_fragment_observations_never_prove_zero_offhours_shutdowns(self):
+        for fragment,kind,expected in ((True,"unknown_start","unknown"),(False,"unknown_start","none"),(True,"power_off","once")):
+            token=self.model.begin(self.workspace,self.revision,"logs-replace")["token"]
+            self.model.batch(self.workspace,token,"events:te",[{"id":"fragment-event","deviceId":"te","ip":"192.0.2.40","kind":kind,"deviceLocalTime":"2026-01-02 18:00:00","sourceFragment":fragment}])
+            self.model.finish(self.workspace,token,"a"*64);self.revision=self.model.bootstrap(self.workspace)["revision"]
+            result=self.view("offhours",{"offhoursUntil":"2026-03-01 00:00:00"})
+            item=next(row for row in result["rows"] if row["device"]=="te")
+            self.assertEqual(item["cohort"],expected)
+
+    def test_complete_duplicate_source_wins_over_fragment_quality(self):
+        event={"id":"quality-start","deviceId":"te","ip":"192.0.2.40","kind":"unknown_start","deviceLocalTime":"2026-01-02 18:00:00","sources":[{"path":"complete.xml","line":2}]}
+        token=self.model.begin(self.workspace,self.revision,"logs-replace")["token"];self.model.batch(self.workspace,token,"events:te",[event]);self.model.finish(self.workspace,token,"a"*64)
+        self.revision=self.model.bootstrap(self.workspace)["revision"]
+        token=self.model.begin(self.workspace,self.revision,"logs")["token"];self.model.batch(self.workspace,token,"events:te",[{**event,"kind":"confirmed_reboot","sourceFragment":True,"sources":[{"path":"fragment.xml","line":2}]}]);self.model.finish(self.workspace,token,"a"*64)
+        with closing(self.model.connect(self.workspace)) as c:
+            stored=json.loads(c.execute("SELECT payload FROM rm_records WHERE key='quality-start'").fetchone()[0])
+        self.assertFalse(stored["sourceFragment"]);self.assertEqual(stored["kind"],"confirmed_reboot")
+
     def test_rules_upgrade_notice_excludes_explicit_failed_or_metadata_only_analysis(self):
         token=self.model.begin(self.workspace,self.revision,"logs")["token"]
         self.model.batch(self.workspace,token,"logRegistry",[

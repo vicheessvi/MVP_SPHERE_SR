@@ -45,6 +45,8 @@ def safe_device(device: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def safe_job_error(error: BaseException) -> str:
     code = getattr(error, "code", "")
+    if code == "legacy_port_action_retired":
+        return code
     if code == "POLLING_CANCELLED":
         return "polling_cancelled"
     if code == "RESULT_SAVE_FAILED":

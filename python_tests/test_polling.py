@@ -521,62 +521,11 @@ class PollingTests(unittest.TestCase):
         self.assertFalse(results[6]["networkAttempted"])
         self.assertEqual(results[6]["vendorPolling"]["status"], "protocol_required")
 
-    def test_management_task_reaches_exact_te_bar_and_box_models_through_their_own_transports(self) -> None:
-        observed = []
-
-        def adapter(device, _credentials, options):
-            observed.append((device["model"], list(options.get("management_tasks") or [])))
-            result = {"ok": True, "capturedAt": "synthetic", "vendorPolling": {"status": "supported"}}
-            if options.get("management_tasks"):
-                result["managementActions"] = [{"id": "disable_insecure_management_services", "status": "applied", "changed": True}]
-            return result
-
-        results = run_plan(
-            {
-                "managementTasks": ["disable_insecure_management_services"],
-                "targetSource": "port_closure_list",
-                "targetSourceSha256": "a" * 64,
-                "intervalMinSeconds": 0,
-                "intervalMaxSeconds": 1,
-                "devices": [
-                    {**HUAWEI_TE20, "ip": "192.0.2.20"},
-                    *[
-                        {**device, "ip": f"192.0.2.{30 + index * 10}"}
-                        for index, device in enumerate(HUAWEI_MODELS)
-                    ],
-                    {**HUAWEI_BAR310, "ip": "192.0.2.80"},
-                    {**HUAWEI_BOX310, "ip": "192.0.2.81"},
-                    {**HUAWEI_BOX610, "ip": "192.0.2.82"},
-                ],
-            },
-            {
-                "ping": lambda *_args: {"ok": True, "durationMs": 1},
-                "get_credentials": lambda *_args: [{"username": "u", "password": "p"}],
-                "wait": lambda *_args: None,
-                "adapters": {
-                    "huawei_te20_web_cgi_v1": adapter,
-                    "huawei_te_web_cgi_v1": adapter,
-                    "huawei_310_rest_v1": adapter,
-                },
-            },
-        )
-        self.assertEqual(observed, [
-            ("TE20", ["disable_insecure_management_services"]),
-            ("TE30", ["disable_insecure_management_services"]),
-            ("TE40", ["disable_insecure_management_services"]),
-            ("TE50", ["disable_insecure_management_services"]),
-            ("TE60", ["disable_insecure_management_services"]),
-            ("Bar 310", ["disable_insecure_management_services"]),
-            ("Box 310", ["disable_insecure_management_services"]),
-            ("Box 610", ["disable_insecure_management_services"]),
-        ])
-        self.assertTrue(all(item["managementActions"][0]["status"] == "applied" for item in results))
-
-        with self.assertRaises(PollingError):
-            run_plan({"managementTasks": ["unknown"], "devices": [{**HUAWEI_MODELS[1], "ip": "192.0.2.40"}]})
-        with self.assertRaises(PollingError):
-            run_plan({"managementTasks": ["disable_insecure_management_services"], "devices": [{**HUAWEI_MODELS[1], "ip": "192.0.2.40"}]})
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_retired_bulk_task_never_reaches_any_model_or_transport(self) -> None:
+        devices = [{**HUAWEI_TE20,"ip":"192.0.2.20"}, *[{**d,"ip":f"192.0.2.{30+i*10}"} for i,d in enumerate(HUAWEI_MODELS)],
+                   {**HUAWEI_BAR310,"ip":"192.0.2.80"},{**HUAWEI_BOX310,"ip":"192.0.2.81"},{**HUAWEI_BOX610,"ip":"192.0.2.82"}]
+        with self.assertRaises(PollingError) as caught:
+            run_plan({"managementTasks":["disable_insecure_management_services"],"targetSource":"port_closure_list",
+                      "targetSourceSha256":"a"*64,"devices":devices},
+                     {"ping":lambda *_:self.fail("Retired bulk must stop before every ping")})
+        self.assertEqual(getattr(caught.exception,"code",None),"legacy_port_action_retired")

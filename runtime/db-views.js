@@ -212,7 +212,7 @@
         return [`<button type="button" class="text-button" data-db-device="${escape(row.device)}">${escape(row.name)}</button><small>${escape(row.model)} · ${escape(row.ip)}</small>`,
           escape(row.stamp), escape(KIND_LABELS[row.event_kind]), escape(row.locationName), escape(row.address),
           raw.basis==="date_minus_uptime" ? "Расчёт Date − Uptime" : row.event_kind === "suspected_power_loss" ? "Предположение · низкая" : row.event_kind === "unknown_start" ? "Причина неизвестна" : "Подтверждено логом",
-          escape(evidence)+(raw.sourceCount?`<small>Источников: ${raw.sourceCountIsMinimum?"не менее ":""}${number(raw.sourceCount)}</small>`:"")
+          escape(evidence)+(raw.sourceFragment?'<small>Источник — фрагмент журнала; полнота не подтверждена</small>':"")+(raw.sourceCount?`<small>Источников: ${raw.sourceCountIsMinimum?"не менее ":""}${number(raw.sourceCount)}</small>`:"")
             +(row.event_kind==="power_off"?`<small>Канал: ${{web:"Web",remote_control:"Пульт ДУ"}[raw.shutdownMethod]||"Не установлен"}. Инициатор: не установлен.</small>`:"")];
       });
       return table(["Устройство", "Время терминала", "Событие", "Локация", "Адрес", "Достоверность", "Источники"], rows) + pager(state, data);
@@ -263,7 +263,7 @@
         ...[r.ip,r.mac,r.locationName,r.address,r.domain,OFFHOURS_LABELS[r.cohort],r.confirmed,r.suspected,r.reboots,r.firstPower||"—",r.lastPower||"—",r.observedEvents].map(escape)]);
       return `<section class="db-section db-offhours-intro"><div><p class="eyebrow">Актуальная SR · статус оборудования «Учёт» · календарь РФ</p><h2>Выключения в нерабочее время</h2><p>${escape(data.period.from)} — ${escape(data.period.toExclusive)} <small>(окончание не включается)</small></p></div><div class="db-offhours-total"><b>${number(data.denominator)}</b><span>терминалов в фильтре</span></div>
         <p class="db-offhours-rule">Пятидневка с переносами. Выходные и праздники — весь день, рабочие дни — 18:00–07:00. Время локальное для каждого терминала.</p></section>
-        ${rings}<p class="db-offhours-note">«Выключения не зафиксированы» — в периоде есть события, но нет штатных выключений или предполагаемых пауз в выбранное нерабочее время. Это не доказательство непрерывной работы. Полнота журнала неизвестна. Архивы Polycom без событийного разбора — «Недостаточно данных».</p>
+        ${rings}<p class="db-offhours-note">«Выключения не зафиксированы» — в периоде есть события, но нет штатных выключений или предполагаемых пауз в выбранное нерабочее время. Это не доказательство непрерывной работы. Полнота журнала неизвестна. Одни фрагменты без положительных выключений — «Недостаточно данных», не доказательство отсутствия выключений. Архивы Polycom без событийного разбора — «Недостаточно данных».</p>
         ${heatmap(data,state,true)}
         ${data.tops?.length?`<section class="db-section"><div class="db-section-title"><h2>TOP 5 по перезагрузкам в выбранной группе</h2><span>Только подтверждённые события в нерабочее время</span></div><div class="db-offhours-top">${data.tops.map(r=>`<button type="button" data-db-device="${escape(r.device)}"><span>${escape(r.name)}</span><b>${number(r.reboots)}</b></button>`).join("")}</div></section>`:""}
         <section class="db-section"><div class="db-section-title"><div><h2>${escape(OFFHOURS_LABELS[selected]||"Все ВКС «Учёт»")}</h2><p>Устройств в списке: ${number(data.matchedDevices)}</p></div><button type="button" class="button secondary" data-db-export="offhours">Скачать выбранную группу XLSX</button></div>
@@ -463,7 +463,7 @@
             ["Событий за период","Все валидные события периода, включая рабочее время."],
             ["Доказательность","Отсутствие записи не доказывает непрерывную работу. Полнота журнала неизвестна."],
             ["Паузы","Только предположение, не подтверждённое отключение питания."],
-            ["Наблюдения","Времена первого/последнего события, не границы полного журнала."],
+            ["Наблюдения","Времена первого/последнего события, не границы полного журнала. Одни фрагменты без выключений не доказывают их отсутствие."],
             ...Object.entries({domain:"Домен",manufacturer:"Производитель",model:"Модель",locationId:"ID локации",address:"Адрес",vip:"VIP",search:"Поиск",day:"День недели (0=пн)",hour:"Час",logSilenceMinutes:"Порог паузы, минут",offhoursMetric:"События карты"}).filter(([key])=>state.filters[key]!==undefined&&state.filters[key]!=="").map(([key,label])=>[label,String(state.filters[key])]),
             ["Устройство",state.deviceId||"Все"],["Ревизия базы",startRevision]];
           const notes=root.XLSX.utils.aoa_to_sheet(terms);notes["!cols"]=[{wch:42},{wch:115}];

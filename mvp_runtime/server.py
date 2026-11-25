@@ -381,10 +381,11 @@ class LocalRuntimeHandler(BaseHTTPRequestHandler):
             if len(set(valid_ips)) != len(valid_ips):
                 raise ValueError("plan_invalid")
             validate_plan_interval(plan)
-        except (PlanSecretError, PollingError, ValueError, TypeError):
+        except (PlanSecretError, PollingError, ValueError, TypeError) as error:
             with self.server.state.lock:
                 session.clear_credentials()
-            self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "plan_invalid"})
+            code = "legacy_port_action_retired" if getattr(error,"code",None)=="legacy_port_action_retired" else "plan_invalid"
+            self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": code})
             return
         digest = str(plan.get("authenticationInputSha256") or "").casefold()
         state = self.server.state

@@ -7,7 +7,7 @@ const {chromium}=require(process.env.SPHERE_PLAYWRIGHT_MODULE||"playwright");
   try{
     const context=await browser.newContext({viewport:{width:1536,height:1100},reducedMotion:"reduce"});
     await context.addCookies([{name:"mvp_sphere_session",value:config.cookie,url:config.url,httpOnly:true,sameSite:"Strict"}]);
-    await context.addInitScript(()=>{const Original=Worker;window.__recheckScans=[];window.Worker=class extends Original{postMessage(message,...rest){if(message.type==="scan")window.__recheckScans.push(message.file.webkitRelativePath);return super.postMessage(message,...rest);}};});
+    await context.addInitScript(()=>{const Original=Worker;window.__recheckScans=[];window.__simulateReadFailure=false;window.Worker=class extends Original{postMessage(message,...rest){if(message.type==="scan"){window.__recheckScans.push(message.file.webkitRelativePath);if(window.__simulateReadFailure&&message.file.webkitRelativePath.includes('run-one')){queueMicrotask(()=>this.onmessage?.({data:{type:'failed',taskId:message.taskId,reason:'read_failed'}}));return;}}return super.postMessage(message,...rest);}};});
     const page=await context.newPage(),errors=[];page.on("pageerror",error=>errors.push(error.message));
     const status=()=>page.evaluate(async()=>{
       const session=await(await fetch("/api/session")).json(),workspace=await(await fetch("/api/workspace/status")).json();
@@ -17,8 +17,8 @@ const {chromium}=require(process.env.SPHERE_PLAYWRIGHT_MODULE||"playwright");
     });
     const upload=async()=>{await page.getByRole("button",{name:"Загрузка данных и опрос устройств",exact:true}).click();await page.waitForFunction(()=>!document.querySelector('[name="logFiles"]')?.disabled);await page.locator('[name="logFiles"]').setInputFiles(config.sources);};
     await page.goto(config.url);await page.waitForSelector(".db-workspace");const before=await status();
-    await upload();await page.getByRole("button",{name:"Импортировать папку логов",exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('[data-log-import-problems]')?.textContent.includes("Код: incomplete_log"));
+    await upload();await page.evaluate(()=>window.__simulateReadFailure=true);await page.getByRole("button",{name:"Импортировать папку логов",exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('[data-log-import-problems]')?.textContent.includes("Код: read_failed"));
     const report=await page.locator('[data-log-import-problems]').textContent(),firstScans=await page.evaluate(()=>window.__recheckScans);
     assert(report.includes("Проверено: 4 из 4"));assert(report.includes("Сохранено готовых разборов: 2"));assert(report.includes("run-one/198.18.0.1.xml"));
     assert.equal(firstScans.length,3,"A bad first file must not prevent the other scans");

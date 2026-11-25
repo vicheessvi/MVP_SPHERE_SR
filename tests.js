@@ -28,6 +28,10 @@
   const baselineExpected = global.MvpSphereSRBaselineExpectations;
   const tests = [];
 
+  if (typeof require === "function") test("Фрагменты журналов публикуются с provenance, а короткое чтение не становится успехом", async () => {
+    await require("./scripts/test-log-fragments").run();
+  });
+
   if (typeof require === "function") test("Смешанный Answer mode v5: per-device bindings, No change и recovery", async () => {
     await require("./scripts/test-mixed-answer-plan").run();
   });
@@ -84,12 +88,15 @@
   });
 
   test("Восстановление не повторяет неясную write-операцию", () => {
-    const plan = { schemaVersion: 3, managementTasks: ["disable_insecure_management_services"], devices: [{ ip: "192.0.2.1" }, { ip: "192.0.2.2" }, { ip: "192.0.2.3" }] };
+    const plan = { schemaVersion: 3, managementTasks: ["set_te20_http_closed"], devices: [{ ip: "192.0.2.1" }, { ip: "192.0.2.2" }, { ip: "192.0.2.3" }] };
     const manifest = pollingRecovery.create(plan, true);
     pollingRecovery.record(manifest, 0, true);
     const pending = pollingRecovery.remaining(manifest, [0]);
     assert(JSON.stringify(pending.skippedForReview) === JSON.stringify([1]));
     assert(JSON.stringify(pending.originalIndices) === JSON.stringify([2]));
+    const retired=pollingRecovery.create({...plan,managementTasks:["disable_insecure_management_services"]},true);
+    assertEqual(pollingRecovery.validate(retired).plan.managementTasks[0],"disable_insecure_management_services");
+    let legacyRejected=false;try{pollingRecovery.remaining(retired,[]);}catch(error){legacyRejected=error.message==="legacy_port_action_retired";}assert(legacyRejected,"History is readable, retired bulk cannot resume");
     let rejected = false;
     try { pollingRecovery.create({ schemaVersion: 3, devices: [{ ip: "192.0.2.1", password: "x" }] }, true); } catch { rejected = true; }
     assert(rejected);
@@ -2093,64 +2100,17 @@
     assert(blocked.errors.some((item) => item.includes("поддерживаемым автоматическим опросом")));
   });
 
-  test("Задача отключения небезопасных служб выключена по умолчанию и разрешена для точных Huawei TE/Bar/Box", () => {
-    const imported = api.importSrRows(api.createDemoState(), {
-      filename: "management-plan.xlsx", headers: srHeaders(), rows: [
-        srRow({ "Инвентарный номер": "TE40-1", "Серийный номер": "TE40-SN-1", MAC: "02-00-00-00-14-01", IP: "192.0.2.40", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "TE40" }),
-        srRow({ "Инвентарный номер": "TE50-1", "Серийный номер": "TE50-SN-1", MAC: "02-00-00-00-14-02", IP: "192.0.2.50", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "TE50" })
-      ]
-    });
-    const targetList = api.parseManagementTargetRows({ headers: srHeaders(), rows: [
-      ...["TE30", "TE40", "TE50", "TE60"].map((model, index) => srRow({ "Инвентарный номер": `LIST-${model}-1`, "Серийный номер": `LIST-${model}-SN-1`, MAC: `02-00-00-00-24-0${index + 1}`, IP: `192.0.2.${130 + index * 10}`, "Тип модели": "Video Conference", Производитель: "Huawei", Модель: model })),
-      srRow({ "Инвентарный номер": "LIST-TE20-1", "Серийный номер": "LIST-TE20-SN-1", MAC: "02-00-00-00-24-05", IP: "192.0.2.170", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "TE20" }),
-      srRow({ "Инвентарный номер": "LIST-BAR310-1", "Серийный номер": "LIST-BAR310-SN-1", MAC: "02-00-00-00-24-06", IP: "192.0.2.180", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "Bar 310" }),
-      srRow({ "Инвентарный номер": "LIST-BOX310-1", "Серийный номер": "LIST-BOX310-SN-1", MAC: "02-00-00-00-24-07", IP: "192.0.2.190", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "Box 310" }),
-      srRow({ "Инвентарный номер": "LIST-BOX610-1", "Серийный номер": "LIST-BOX610-SN-1", MAC: "02-00-00-00-24-08", IP: "192.0.2.200", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "Box 610" })
-    ] });
-    assert(targetList.ok, targetList.errors?.join("; "));
-    const projection = api.deriveAutomaticPollingPlan(imported.state, { disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL] });
-    assertEqual(projection.targetSource, "port_closure_list");
-    assertEqual(projection.managementEligibleDevices.length, 8);
-    assertEqual(projection.managementEligibleDevices.map((item) => item.modelNormalized).join(","), "bar 310,box 310,box 610,te20,te30,te40,te50,te60");
-    assertEqual(projection.managementSkippedDevices.length, 0);
-
-    const base = { categories: ["vcs"], manufacturers: ["huawei"], models: [api.POLLING_ALL], scheduledAt: "2026-09-06T10:00:00", intervalMinSeconds: 0, intervalMaxSeconds: 1, credentialsReady: true, credentialSourceSha256: "d".repeat(64) };
-    const ordinary = api.createPollingPlan(imported.state, base);
-    assert(ordinary.ok, ordinary.errors?.join("; "));
-    assertEqual(ordinary.plan.managementTasks.length, 0);
-    const hardened = api.createPollingPlan(api.createDemoState(), { ...base, disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, managementTargetSourceSha256: "e".repeat(64) });
-    assert(hardened.ok, hardened.errors?.join("; "));
-    assertEqual(hardened.plan.managementTasks.join(","), api.MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES);
-    assertEqual(hardened.plan.selectionSummary.managementEligible, 8);
-    assertEqual(hardened.plan.selectionSummary.managementSkipped, 0);
-    assertEqual(hardened.plan.targetSource, "port_closure_list");
-    assertEqual(hardened.plan.deviceIds.length, 0);
-    assertEqual(hardened.plan.targetDevices.length, 8);
-    const exported = api.buildPollingPlanExport(hardened.state, hardened.plan.id);
-    assertEqual(exported.payload.schemaVersion, 3);
-    assertEqual(exported.payload.managementTasks.join(","), api.MANAGEMENT_TASK_DISABLE_INSECURE_SERVICES);
-    assertEqual(exported.payload.targetSource, "port_closure_list");
-    assertEqual(exported.payload.devices.map((item) => item.ip).sort().join(","), "192.0.2.130,192.0.2.140,192.0.2.150,192.0.2.160,192.0.2.170,192.0.2.180,192.0.2.190,192.0.2.200");
-    assert(!/password|username|authorization|cookie|secret/i.test(JSON.stringify(exported.payload)));
-
-    const te50Only = api.createPollingPlan(api.createDemoState(), { ...base, models: ["te50"], disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, managementTargetSourceSha256: "e".repeat(64) });
-    assert(te50Only.ok, te50Only.errors?.join("; "));
-    assertEqual(te50Only.plan.selectionSummary.managementEligible, 1);
-    const te20Only = api.createPollingPlan(api.createDemoState(), { ...base, models: ["te20"], disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, managementTargetSourceSha256: "e".repeat(64) });
-    assert(te20Only.ok, te20Only.errors?.join("; "));
-    assertEqual(te20Only.plan.selectionSummary.managementEligible, 1);
-    const barOnly = api.createPollingPlan(api.createDemoState(), { ...base, models: ["bar 310"], disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, managementTargetSourceSha256: "e".repeat(64) });
-    assert(barOnly.ok, barOnly.errors?.join("; "));
-    assertEqual(barOnly.plan.selectionSummary.managementEligible, 1);
-    if (typeof require === "function") {
-      const source = require("fs").readFileSync(require("path").join(__dirname, "app.js"), "utf8");
-      assert(source.includes("HTTP-запись на Box 310/610 ещё не проверена на реальном устройстве"));
+  test("Порты по умолчанию не меняются, а retired bulk не создаёт план", () => {
+    const state=api.createDemoState(),rows=["TE20","TE30","TE40","TE50","TE60","Bar 310","Box 310","Box 610"].map((model,i)=>srRow({IP:"192.0.2."+(130+i),"Тип модели":"Video Conference",Производитель:"Huawei",Модель:model}));
+    const targets=api.parseManagementTargetRows({headers:srHeaders(),rows});assert(targets.ok);
+    const base={explicitActions:true,targetSource:"device_list",managementTargetDevices:targets.devices,managementTargetSourceSha256:"e".repeat(64),managementTargetSheets:["Devices"],categories:["vcs"],manufacturers:["huawei"],models:[api.POLLING_ALL],scheduledAt:"2026-09-06T10:00:00",intervalMinSeconds:0,intervalMaxSeconds:1,credentialsReady:true,credentialSourceSha256:"d".repeat(64),collectJson:true,collectLogs:false};
+    const normal=api.createPollingPlan(state,base);assert(normal.ok,normal.errors?.join("; "));assertEqual(normal.plan.managementTasks.length,0);
+    assert(!Object.hasOwn(normal.plan.selectionSummary,"managementSkipped"));
+    for(const model of [api.POLLING_ALL,"te20","te40","bar 310","box 310","box 610"]){
+      const denied=api.createPollingPlan(state,{...base,models:[model],disableInsecureManagementServices:true});
+      assert(!denied.ok);assert(denied.errors.some(message=>message.includes("Комплексное закрытие")));assertEqual(JSON.stringify(denied.state),JSON.stringify(state));
     }
-    for (const model of ["box 310", "box 610"]) {
-      const boxOnly = api.createPollingPlan(api.createDemoState(), { ...base, models: [model], disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, managementTargetSourceSha256: "e".repeat(64) });
-      assert(boxOnly.ok, boxOnly.errors?.join("; "));
-      assertEqual(boxOnly.plan.selectionSummary.managementEligible, 1);
-    }
+    if(typeof require==="function"){const source=require("fs").readFileSync(require("path").join(__dirname,"app.js"),"utf8");assert(!source.includes('name="disableInsecureManagementServices"'));assert(!source.includes("Закрытие портов будет пропущено"));}
   });
 
   test("Отдельный список закрытия портов валидируется атомарно и не изменяет SR", () => {
@@ -2173,7 +2133,7 @@
 
     const blocked = api.createPollingPlan(api.createDemoState(), { disableInsecureManagementServices: true, categories: [api.POLLING_ALL], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL], scheduledAt: "2026-09-06T10:00:00", intervalSeconds: 0, credentialsReady: true, credentialSourceSha256: "f".repeat(64) });
     assert(!blocked.ok);
-    assert(blocked.errors.some((item) => item.includes("список устройств для выбранных действий")));
+    assert(blocked.errors.some((item) => item.includes("Комплексное закрытие")));
   });
 
   test("Сверка настроек сохраняет исходные колонки и показывает только подтверждённый факт", () => {
@@ -4265,7 +4225,7 @@
     } finally { global.fetch = originalFetch; }
   });
 
-  test("Галочка переключает доменный каскад и точный IP с SR на отдельный список", () => {
+  test("Источник списка выбирается явно, без deprecated портовой галочки", () => {
     const headers = [...srHeaders(), "Домен"];
     const sr = api.importSrRows(api.createDemoState(), { headers, rows: [srRow({ IP: "192.0.2.211", Домен: "SR-Domain", "Тип модели": "Video Conference", Производитель: "Huawei", Модель: "TE40" })] });
     const targetList = api.parseManagementTargetRows({ headers, rows: [
@@ -4278,16 +4238,18 @@
     assertEqual(ordinary.targetSource, "sr");
     assertEqual(ordinary.selectedDevices.map((item) => item.ipNormalized).join(","), "192.0.2.211");
     assertEqual(ordinary.availableDomains.map((item) => item.value).join(","), "sr-domain");
+    const ignored=api.deriveAutomaticPollingPlan(sr.state,{disableInsecureManagementServices:true,managementTargetDevices:targetList.devices,domains:[api.POLLING_ALL],categories:[api.POLLING_ALL],manufacturers:[api.POLLING_ALL],models:[api.POLLING_ALL]});
+    assertEqual(ignored.targetSource,"sr");assertEqual(ignored.selectedDevices[0].ipNormalized,"192.0.2.211");
 
-    const hardened = api.deriveAutomaticPollingPlan(sr.state, { disableInsecureManagementServices: true, managementTargetDevices: targetList.devices, domains: ["closure-a"], categories: [api.POLLING_ALL], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL] });
-    assertEqual(hardened.targetSource, "port_closure_list");
+    const hardened = api.deriveAutomaticPollingPlan(sr.state, { targetSource: "device_list", managementTargetDevices: targetList.devices, domains: ["closure-a"], categories: [api.POLLING_ALL], manufacturers: [api.POLLING_ALL], models: [api.POLLING_ALL] });
+    assertEqual(hardened.targetSource, "device_list");
     assertEqual(hardened.selectedDevices.map((item) => item.ipNormalized).join(","), "192.0.2.212");
     assertEqual(hardened.availableDomains.map((item) => item.value).sort().join(","), "closure-a,closure-b");
 
-    const byListIp = api.deriveAutomaticPollingPlan(sr.state, { mode: "single_ip", ipAddress: "192.0.2.212", disableInsecureManagementServices: true, managementTargetDevices: targetList.devices });
+    const byListIp = api.deriveAutomaticPollingPlan(sr.state, { mode: "single_ip", ipAddress: "192.0.2.212", targetSource: "device_list", managementTargetDevices: targetList.devices });
     assertEqual(byListIp.ipResolution.status, "found");
     assertEqual(byListIp.selectedDevices[0].domain, "Closure-A");
-    const srIpExcluded = api.deriveAutomaticPollingPlan(sr.state, { mode: "single_ip", ipAddress: "192.0.2.211", disableInsecureManagementServices: true, managementTargetDevices: targetList.devices });
+    const srIpExcluded = api.deriveAutomaticPollingPlan(sr.state, { mode: "single_ip", ipAddress: "192.0.2.211", targetSource: "device_list", managementTargetDevices: targetList.devices });
     assertEqual(srIpExcluded.ipResolution.status, "not_found");
   });
 
@@ -4400,7 +4362,7 @@
     assert(css.includes('grid-template-columns: repeat(4, minmax(0, 1fr));'));
     assert(fs.readFileSync(require("path").join(__dirname, "index.html"), "utf8").includes('runtime/sphere.js'));
     assertEqual(typeof require("./runtime/sphere").mount, "function");
-    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для выбранных действий", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "Отключить HTTP и Telnet по возможностям модели", "HTTP Huawei TE20 (один IP)", "Telnet Huawei TE20 (один IP)", "Автообновление Huawei TE20 (один IP)", "SSH Huawei TE20 (один IP)", "NTP Huawei TE20 (один IP)", "Имя сервера NTP", "Управление питанием Huawei TE20 (один IP)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
+    ["1. Выгрузка SR", "2. Общая папка результатов опросов", "3. Учётные данные оборудования", "4. План автоматического опроса", "Список устройств для выбранных действий", "Класс оборудования", "Дата и время начала опроса", "Интервал", "name=\"intervalMinSeconds\"", "name=\"intervalMaxSeconds\"", "HTTP Huawei TE20 (один IP)", "Telnet Huawei TE20 (один IP)", "Автообновление Huawei TE20 (один IP)", "SSH Huawei TE20 (один IP)", "NTP Huawei TE20 (один IP)", "Имя сервера NTP", "Управление питанием Huawei TE20 (один IP)"].forEach((text) => assert(source.includes(text), `Нет подписи: ${text}`));
     assert(source.includes("Открытие включает соответствующий сетевой сервис."));
     assert(source.includes("На одном выбранном Huawei TE20 будет отключено автообновление"));
     assert(source.includes("Интервал между опросами устройств"));

@@ -17,7 +17,8 @@ async function metadataDoesNotBlock(){
   const initial=await api.prepareDeviceLogImport([files[0],broken],current);
   const retried=await api.prepareDeviceLogImport([files[0],broken],current,{existing:legacy(initial)});
   assert.equal(retried.indexes.te.events.length,1);assert.equal(retried.problems.total,1);assert.equal(retried.problems.blocking,0);
-  assert.equal(retried.registry.find(row=>row.path.startsWith("bad/")).analysisComplete,false);
+  assert.equal(retried.registry.find(row=>row.path.startsWith("bad/")).analysisComplete,true);
+  assert.equal(retried.registry.find(row=>row.path.startsWith("bad/")).sourceCompleteness,'fragment');
   const added=await api.prepareDeviceLogImport([files[0],broken,valid("new","13")],current,{existing:retried});
   assert.equal(added.fullRecheck,false,"A known parse failure must not force a rules-upgrade loop");
 }
@@ -41,10 +42,10 @@ async function evidenceFailureProcessesRestAndResumes(){
 async function xmlPaddingIsNotTruncation(){
   for(const parser of [te,h310,h300]){
     assert.equal((await parser.scanFile(file("padding",head+tail+" ".repeat(1024*1024+1024)))).ok,true,"Closing tag followed by whitespace is complete");
-    assert.equal((await parser.scanFile(file("truncated",head+"Synthetic partial body"))).ok,false);
-    assert.equal((await parser.scanFile(file("garbage",head+tail+"unrecognized trailer"))).ok,false);
+    assert.equal((await parser.scanFile(file("truncated",head+"Synthetic partial body"))).sourceCompleteness,'fragment');
+    assert.equal((await parser.scanFile(file("garbage",head+tail+"unrecognized trailer"))).sourceCompleteness,'fragment');
     const brokenTag=head+"x".repeat(1024*1024-head.length-5-100)+"</Log"+" ".repeat(100)+"Module>";
-    assert.equal((await parser.scanFile(file("split-invalid-tag",brokenTag))).ok,false,"Whitespace at a chunk boundary must not stitch an invalid closing tag");
+    assert.equal((await parser.scanFile(file("split-invalid-tag",brokenTag))).sourceCompleteness,'fragment',"Whitespace at a chunk boundary must not stitch an invalid closing tag into complete XML");
   }
 }
 async function crashedWorkerIsReplaced(){
@@ -67,6 +68,6 @@ async function boundedReportPrioritizesEvidence(){
   try{await api.prepareDeviceLogImport(files,current,{existing:previous,scanClient:{scan:()=>Promise.reject(Error("synthetic"))}});}catch(value){error=value;}
   assert(error);assert.equal(error.logProblems.processed,106);assert.equal(error.logProblems.total,106);assert.equal(error.logProblems.items.length,100);assert.equal(error.logProblems.items[0].blocking,true);assert.equal(error.logProblems.items[0].path,"one/192.0.2.40.xml");
 }
-async function run(){await metadataDoesNotBlock();await evidenceFailureProcessesRestAndResumes();await xmlPaddingIsNotTruncation();await crashedWorkerIsReplaced();await boundedReportPrioritizesEvidence();console.log("PASS: metadata does not block; evidence failures finish other files and resume; bounded errors prioritize evidence; workers recover; complete XML padding accepted, truncation rejected");}
+async function run(){await metadataDoesNotBlock();await evidenceFailureProcessesRestAndResumes();await xmlPaddingIsNotTruncation();await crashedWorkerIsReplaced();await boundedReportPrioritizesEvidence();console.log("PASS: metadata does not block; evidence read failures finish other files and resume; bounded errors prioritize evidence; workers recover; XML fragments explicitly qualified");}
 module.exports={run,metadataDoesNotBlock,evidenceFailureProcessesRestAndResumes,xmlPaddingIsNotTruncation};
 if(require.main===module)run().catch(error=>{console.error(error.stack||String(error));process.exitCode=1;});

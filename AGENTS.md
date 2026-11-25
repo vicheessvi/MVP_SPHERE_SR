@@ -4,7 +4,7 @@
 
 Проект подготовлен к дальнейшему редактированию через ИИ-агента и GitHub SpecKit.
 
-- Видение: `docs/project-vision.md`. Текущая feature: `specs/065-mixed-answer-mode/`; DB-first архитектура feature 061 сохраняется.
+- Видение: `docs/project-vision.md`. Текущая feature: `specs/066-explicit-ports-log-fragments/`; DB-first архитектура feature 061 сохраняется.
 - Интерфейс: Windows, HTML5, CSS3, Vanilla JavaScript, browser File/System Access API, vendored SheetJS CE 0.20.3.
 - Production runtime автоматического опроса: установленный Python 3.11+ и только стандартная библиотека; `START_MVP_SPHERE_SR.py` открывает авторизованную loopback-сессию.
 - Node.js используется только при разработке для JavaScript regression/reference checks и не требуется пользователю.
@@ -16,6 +16,24 @@
 - Feature 061: миллион событий — контрольный масштаб, не лимит.
 
 ## Правила работы агента
+
+- Feature 066 / ADR-0070 по явному требованию администратора отменяет общую
+  disable_insecure_management_services: нет checkbox/port counters, launch/probe/
+  resume любого schema с этим ID запрещены до сети. Старые отчёты читаются, не
+  переписываются; старый bulk job не переигрывать. Только существующие отдельные
+  explicit port controls/IDs (подтверждённые TE20 open/closed/Не менять), без
+  расширения контрактов остальных моделей. Загрузка любой таблицы сбрасывает
+  действия/сборы, не меняет порты. Автоматический rollback/open запрещён.
+  Для известных Huawei LogModule полный успешный byte-read может дать
+  sourceCompleteness=fragment без штатного XML EOF: прежние строгие записи
+  анализируются, sourceFragment хранится с событиями, warning не блокирует
+  публикацию. Это не полный XML/журнал и не основание отрицательного вывода:
+  only-fragment observed coverage не даёт offhours none. Полный дубликат источника
+  сильнее fragment quality. Ошибка/короткое чтение и неизвестный формат НЕ
+  превращаются во фрагмент и сохраняют прежние safety guards. Исходники не
+  чинить/не дописывать; current complete checkpoints совместимы и переиспользуются.
+  Это уточняет прежний XML EOF запрет feature 064 только для полностью прочитанного
+  известного формата; event grammar, SRC/IP/model gates и vendor API не меняются.
 
 - Feature 065 / ADR-0069 по явному одобрению администратора разрешает смешанные
   Answer mode планы v5 (managementRouting=per_device_answer): root содержит до

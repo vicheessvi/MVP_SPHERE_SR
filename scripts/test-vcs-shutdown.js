@@ -42,7 +42,7 @@ async function run(options={}){
     assert.equal(events.find(event=>event.kind==="power_off").method,"unknown");
     const file=await parser.scanFile(new Blob([xml]),options);assert(file.ok);
     assert.deepEqual(file.markers,scan.markers);
-    const invalid=await parser.scanFile(new Blob([xml.replace(tail,"")]),options);assert.equal(invalid.ok,false,"Incomplete XML cannot be published");
+    const fragment=await parser.scanFile(new Blob([xml.replace(tail,"")]),options);assert.equal(fragment.ok,true);assert.equal(fragment.sourceCompleteness,'fragment');assert.deepEqual(fragment.markers,file.markers,'Recognized records survive missing XML footer with explicit fragment quality');
     for(const message of negative){
       const bad=parser.scanText(head+line("2026-11-01 18:01:00",message)+tail,options);
       assert.equal(parser.deriveEvents(bad.markers).filter(event=>event.kind==="power_off").length,0,message);
@@ -84,7 +84,7 @@ async function run(options={}){
   assert(resumed.registry.every(row=>row.analysisRuleset===api.LOG_ANALYSIS_RULESET&&row.analysisRuleVersion===te.RULE_VERSION));
   reads=[];await api.prepareDeviceLogImport(files,state,{existing:resumed,scanClient:client});assert.equal(reads.length,0);
   if(!options.quiet){
-    console.log("PASS: shared shutdown classifier, 4 known formats, file/text parity, failures, incomplete XML, dedup and next startup");
+    console.log("PASS: shared shutdown classifier, 4 known formats, file/text parity, failures, fragment provenance, dedup and next startup");
     console.log("PASS: old rules require a complete selection; interrupted upgrade resumes checkpoints; current rules skip unchanged sources");
   }
 }

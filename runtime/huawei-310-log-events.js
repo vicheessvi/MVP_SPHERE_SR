@@ -76,7 +76,7 @@
       finish() {
         if (pending && !dropping) process(pending);
         else if (dropping) coverage.oversizedLines += 1;
-        if(requireComplete&&!/<\/LogModule>\s*$/.test(tail))return {ok:false,reason:"incomplete_log",markers:[],coverage,bootGaps:[]};
+        const sourceCompleteness = /<\/LogModule>\s*$/.test(tail) ? "complete" : "fragment";
         activityTimes.sort((a, b) => a - b);
         let uniqueCount = 0;
         for (let index = 0; index < activityTimes.length; index += 1) {
@@ -103,7 +103,7 @@
             toLocalAt: new Date(best.toMs).toISOString().slice(0, 19).replace("T", " "),
             knownAction, clockAnomalyOrLongGap: best.toMs - best.fromMs > MAX_PLAUSIBLE_GAP_MS });
         }
-        return { markers, coverage, bootGaps };
+        return { markers, coverage, bootGaps, ...(requireComplete ? { sourceCompleteness } : {}) };
       }
     };
   }
@@ -118,13 +118,16 @@
   async function scanFile(file, options) {
     if (!file || !Number.isSafeInteger(file.size) || file.size < 0 || typeof file.slice !== "function") return { ok: false, reason: "invalid_file", markers: [], coverage: null };
     const decoder = new TextDecoder("utf-8", { fatal: false });
-    const prefix = decoder.decode(new Uint8Array(await file.slice(0, 2048).arrayBuffer()));
+    const prefixBytes = new Uint8Array(await file.slice(0, 2048).arrayBuffer());
+    if (prefixBytes.byteLength !== Math.min(2048,file.size)) return {ok:false,reason:"read_failed",markers:[],coverage:null,bootGaps:[]};
+    const prefix = decoder.decode(prefixBytes);
     if (!isLogPrefix(prefix)) return { ok: false, reason: "unsupported_log_format", markers: [], coverage: null };
     const parser = collector(true);
     for (let offset = 0; offset < file.size; offset += CHUNK_BYTES) {
       if (options?.shouldCancel?.()) throw new Error("log_scan_cancelled");
       const end = Math.min(file.size, offset + CHUNK_BYTES);
       const bytes = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+      if (bytes.byteLength !== end-offset) return {ok:false,reason:"read_failed",markers:[],coverage:null,bootGaps:[]};
       parser.feed(decoder.decode(bytes, { stream: true }));
       await options?.onProgress?.(end, file.size, bytes);
     }

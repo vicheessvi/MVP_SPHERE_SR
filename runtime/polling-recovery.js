@@ -106,6 +106,7 @@
 
   function remaining(value, verifiedSavedIndices) {
     validate(value);
+    if (value.plan.managementTasks?.includes("disable_insecure_management_services")) throw new Error("legacy_port_action_retired");
     const saved = new Set(verifiedSavedIndices);
     const skippedForReview = [];
     const originalIndices = [];

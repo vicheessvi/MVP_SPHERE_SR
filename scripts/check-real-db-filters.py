@@ -22,6 +22,7 @@ parser.add_argument("--baseline",action="store_true",help="Reproduce with the pr
 parser.add_argument("--offhours",action="store_true",help="Check VCS out-of-hours UI and Excel against real SQL")
 parser.add_argument("--shutdown",action="store_true",help="Check a real interrupted shutdown-rules upgrade and resume")
 parser.add_argument("--recheck",action="store_true",help="Check per-file recheck errors, old revision protection, refresh and repair/resume")
+parser.add_argument("--fragment-upgrade",action="store_true",help="Reanalyse unchanged unterminated source and reuse legacy complete checkpoints")
 args=parser.parse_args()
 
 with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
@@ -30,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
     store=server.state.workspace_store;workspace=store.select(temp/"workspace")["workspaceId"]
     model=ReadModel(store);model.prepare(workspace)
     token=model.begin(workspace,model.bootstrap(workspace)["revision"],"sr")["token"]
-    device_count=1 if args.shutdown or args.recheck else 5000
+    device_count=1 if args.shutdown or args.recheck or args.fragment_upgrade else 5000
     for first in range(0,device_count,500):
         model.batch(workspace,token,"inventoryDevices",[{"id":f"synthetic-{i}","nameRaw":f"Synthetic terminal {i}","category":"vcs",
             "manufacturerRaw":"Huawei" if args.offhours or i%2==0 else "Polycom","modelRaw":"TE40" if args.offhours or i%2==0 else "RealPresence Group 310",
@@ -63,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
                 if i%5==2:events.append({**event,"id":event["id"]+"-second","deviceLocalTime":"2026-11-04 12:00:00"})
             model.batch(workspace,token,"events:te",events)
         model.finish(workspace,token,"a"*64)
-    if args.recheck:
+    if args.recheck or args.fragment_upgrade:
         sources=temp/"sources"
         token=model.begin(workspace,model.bootstrap(workspace)["revision"],"logs")["token"]
         for run,message,stamp in (("run-one","Controller command: Shut down","2026-11-01 18:01:00"),("run-two","System start","2026-11-02 07:00:00"),("run-three","System start","2026-11-03 07:00:00")):
@@ -103,18 +104,19 @@ with tempfile.TemporaryDirectory(prefix="sphere-real-filters-") as directory:
         status,_,_=request("POST","/api/admin/setup",{"username":"synthetic-admin","password":secrets.token_urlsafe(24)})
         assert status==200,"Synthetic admin setup failed"
         config={"url":url,"cookie":cookie}
-        if args.shutdown or args.recheck:config["sources"]=str(sources)
-        if args.recheck:config["preview"]=str(temp.parent/("sphere-recheck-"+secrets.token_hex(4)+".png"))
+        if args.shutdown or args.recheck or args.fragment_upgrade:config["sources"]=str(sources)
+        if args.recheck or args.fragment_upgrade:config["preview"]=str(temp.parent/("sphere-recheck-"+secrets.token_hex(4)+".png"))
         if args.baseline:config["clientScript"]=subprocess.check_output(["git","show","9219d15:runtime/db-views.js"],cwd=ROOT,encoding="utf-8")
-        result=subprocess.run(["node",str(ROOT/("scripts/check-log-recheck-ui.js" if args.recheck else "scripts/check-shutdown-import-ui.js" if args.shutdown else "scripts/check-offhours-ui.js" if args.offhours else "scripts/check-real-db-filters.js"))],input=json.dumps(config),
+        result=subprocess.run(["node",str(ROOT/("scripts/check-log-fragment-ui.js" if args.fragment_upgrade else "scripts/check-log-recheck-ui.js" if args.recheck else "scripts/check-shutdown-import-ui.js" if args.shutdown else "scripts/check-offhours-ui.js" if args.offhours else "scripts/check-real-db-filters.js"))],input=json.dumps(config),
                               cwd=ROOT,text=True,encoding="utf-8",capture_output=True,timeout=90)
         if result.returncode:
             print(result.stderr or "Real browser test failed",file=sys.stderr)
             raise SystemExit(result.returncode)
-        assert (fingerprint()!=before) if args.shutdown or args.recheck else (fingerprint()==before),"Unexpected synthetic data changes"
-        assert (model.bootstrap(workspace)["revision"]!=revision) if args.shutdown or args.recheck else (model.bootstrap(workspace)["revision"]==revision)
+        changed=args.shutdown or args.recheck or args.fragment_upgrade
+        assert (fingerprint()!=before) if changed else (fingerprint()==before),"Unexpected synthetic data changes"
+        assert (model.bootstrap(workspace)["revision"]!=revision) if changed else (model.bootstrap(workspace)["revision"]==revision)
         print(result.stdout.strip())
-        print(json.dumps({"syntheticDatabaseUnchanged":not (args.shutdown or args.recheck),"devices":device_count}))
-        if args.recheck:print(config["preview"])
+        print(json.dumps({"syntheticDatabaseUnchanged":not changed,"devices":device_count}))
+        if args.recheck or args.fragment_upgrade:print(config["preview"])
     finally:
         server.shutdown();server.server_close();thread.join(timeout=3)

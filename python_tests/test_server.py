@@ -576,7 +576,7 @@ class ServerTests(unittest.TestCase):
                     "targetSource": "sr", "targetSourceSha256": "a" * 64, "selection": selection, "devices": devices}
             status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": plan}).encode())
             self.assertEqual(status, 400)
-            self.assertEqual(json.loads(body)["error"], "plan_invalid")
+            self.assertEqual(json.loads(body)["error"], "legacy_port_action_retired" if "disable_insecure_management_services" in tasks else "plan_invalid")
 
     def test_polycom_answer_mode_invalid_plans_rejected_before_job_start(self) -> None:
         cookie, csrf = self.harness.session()
@@ -663,7 +663,7 @@ class ServerTests(unittest.TestCase):
         missing_list_source = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": ["disable_insecure_management_services"], "devices": [{"ip": "192.0.2.40"}]}
         status, _, body = self.harness.request("POST", "/api/polling/jobs", headers=self._mutation_headers(cookie, csrf), body=json.dumps({"plan": missing_list_source}).encode())
         self.assertEqual(status, 400)
-        self.assertEqual(json.loads(body)["error"], "plan_invalid")
+        self.assertEqual(json.loads(body)["error"], "legacy_port_action_retired")
 
         digest = self._upload_credentials(cookie, csrf)
         unknown_task = {"schemaVersion": 3, "authenticationInputSha256": digest, "managementTasks": ["unknown"], "devices": [{"ip": "192.0.2.40"}]}

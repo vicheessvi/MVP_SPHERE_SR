@@ -1,5 +1,20 @@
 # Карта контекста
 
+## Feature 066 — явные порты и лог-фрагменты
+
+- `specs/066-explicit-ports-log-fragments/`, ADR-0070: bulk port ID retired на всех
+  launch/probe/resume путях, UI checkbox/counters удалены. TE20 independent controls
+  сохранены, иных port writes не добавлено. Upload/Answer-only не создают port tasks.
+- Huawei File scanners: complete/fragment quality после полного byte-read;
+  known records сохраняются без XML footer, short IO/header failure не маскируются.
+- `workspace.py`: backward-compatible scan enum в checkpoints. `app.js`/`read_model.py`
+  объединяют качество источников, complete duplicate wins; SQL offhours не выдаёт
+  none при only-fragment coverage. `db-views.js` показывает provenance warning.
+- Проверки: `test_explicit_port_policy.py`, `scripts/test-log-fragments.js`,
+  `test_read_model.py`, `check-real-db-filters.py --fragment-upgrade` и прежний
+  `--recheck` с реальным failure. Byte-identical fragment публикуется с warning,
+  два old-shape complete checkpoints восстанавливаются без тела, исходник не меняется.
+
 ## Feature 065 — смешанный Answer mode по контрактам
 
 - `specs/065-mixed-answer-mode/`, ADR-0069: новый plan v5 с per-device binding,
@@ -440,7 +455,7 @@
 - State, secrets, sessions и jobs — только память. Готовые JSON — только выбранная папка.
 - Внешних API, package manager, CDN и telemetry нет.
 - Подтверждены локальный динамический HTTPS web contract Extron controller/panel, отдельный exact TLS 1.1 web-CGI contract Huawei TE20, общий guarded HTTPS web-CGI contract Huawei TE30/40/50/60, три отдельных HTTPS contract Huawei Bar 310/Box 310/Box 610 и read-only HTTPS web contract Polycom RealPresence Group 300/310/500/700 на проверенных устройствах. Обычный `/v1`-опрос Huawei 310 подтверждён эксплуатацией; отдельная opt-in HTTP-only задача Huawei Box 310/610 пока provisional. У Group 300 старая HTTP-only прошивка остаётся несовместимой с защищённым опросом; HDX и остальные неподтверждённые модели остаются `protocol_required`.
-- Opt-in write-задача отключения HTTP/Telnet разрешена для exact TE20/TE30/TE40/TE50/TE60 и Bar 310 и использует отдельный сеансовый XLSX-список целей структуры SR; основная SR для неё не используется. Bar 310 изменяет только `enable_http=0`, а неподдерживаемый firmware-параметр Telnet не записывает и показывает `not_exposed`. Реальная write-проверка выполнена на TE20 и TE40, а TE30/TE50/TE60 ожидают контролируемой проверки пользователя. Достаточно подтверждённо изменить значения в меню кодека; TCP listener не влияет на статус отчёта.
+- Прежняя opt-in задача disable_insecure_management_services retired по feature 066 / ADR-0070. Её исторические контракты/JSON читаются, новые launch/probe/resume запрещены. Только отдельные explicit TE20 port controls сохраняют свои прежние ограничения; другие vendor port writes не добавлены.
 - Модули/Справочник меняются через `product-catalog.js`; device manifests — через `runtime/device-catalog.json`.
 
 ## История

@@ -28,6 +28,8 @@ const {chromium}=require(process.env.SPHERE_PLAYWRIGHT_MODULE||"playwright");
     const setup=async()=>{const past=new Date(Date.now()-86400000);past.setMinutes(past.getMinutes()-past.getTimezoneOffset());await page.locator('[name="scheduledAt"]').fill(past.toISOString().slice(0,16));await page.locator('[name="confirmNoInterval"]').check();};
     const finish=async(success,noop)=>{await page.locator('[data-start-automatic-polling]').click();await page.waitForFunction(([s,n])=>document.querySelector('[data-polling-completion]')?.textContent.includes('Успешно: '+s+'; без выбранных действий: '+n),[success,noop]);await page.waitForFunction(()=>document.querySelector('[name="managementTargetListFile"]')?.disabled===false);};
     await upload();for(const name of ['te20AnswerMode','teFamilyAnswerMode','huawei310AnswerMode','huawei300AnswerMode','polycomPointToPointAnswerMode','polycomMultipointAnswerMode'])await page.locator(`[name="${name}"]`).selectOption('manual');
+    assert.equal(accepted.length,0,'Loading and selecting Answer modes never launches a job');
+    assert.equal(await page.locator('[name="te20HttpMode"]').inputValue(),'');assert.equal(await page.locator('[name="te20TelnetMode"]').inputValue(),'');
     await setup();await page.locator('[data-select-polling-output]').last().click();await credentials();
     // The real API must reject a cross-contract binding before starting a job.
     const bad=api.createPollingPlan(f.state,f.input);const badPlan=api.buildPollingPlanExport(bad.state,bad.plan.id).payload;badPlan.devices[0].managementTasks=['set_te20_auto_answer_manual'];
@@ -36,6 +38,7 @@ const {chromium}=require(process.env.SPHERE_PLAYWRIGHT_MODULE||"playwright");
     await page.locator('[data-polling-target-preview] summary').click();assert.equal(await page.locator('[data-polling-target-preview] tbody tr').count(),15);
     await page.locator('[data-polling-target-preview]').screenshot({path:config.preview});
     await finish(15,0);assert.equal(accepted[0].managementTasks.length,5);assert(accepted[0].devices.every(d=>d.managementTasks.length===1));
+    assert(accepted[0].managementTasks.every(task=>!task.includes('http')&&!task.includes('telnet')&&!task.includes('insecure')));
     assert(dialogs.some(d=>d.includes('Huawei TE30/40/50/60')&&d.includes('Polycom Group')&&d.includes('устройств: 4')));
     let names=await page.evaluate(()=>[...window.__mixedFiles.keys()]);assert.equal(names.length,1);assert(names[0].endsWith('/polling-recovery.json'));
     await upload();await page.locator('[name="te20AnswerMode"]').selectOption('automatic');await setup();await credentials();await finish(1,14);

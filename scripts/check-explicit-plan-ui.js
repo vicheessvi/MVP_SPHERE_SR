@@ -26,9 +26,13 @@ const {workbook}=require("./test-explicit-plan");
     await page.getByRole("button",{name:"Загрузка данных и опрос устройств",exact:true}).click();
     await page.waitForSelector("[data-polling-plan-form]");
     const start=page.locator("[data-start-automatic-polling]");assert(await start.isDisabled());
+    assert.equal(await page.locator('[name="disableInsecureManagementServices"]').count(),0,'Legacy bulk port checkbox must not exist');
+    assert.equal(await page.getByText('Закрытие портов будет пропущено',{exact:true}).count(),0);
     const single=global.XLSX.read(workbook(),{type:"array"});single.SheetNames=["Второй"];
     await page.locator('[name="managementTargetListFile"]').setInputFiles({name:"single-target.xlsx",mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",buffer:Buffer.from(global.XLSX.write(single,{type:"array",bookType:"xlsx"}))});
     await page.getByText("Принято устройств: 1",{exact:true}).waitFor();
+    assert.equal(jobs.length,0,'Uploading XLSX must never launch a job');
+    for(const name of ['te20HttpMode','te20TelnetMode','te20AnswerMode','teFamilyAnswerMode','huawei310AnswerMode','huawei300AnswerMode','polycomPointToPointAnswerMode','polycomMultipointAnswerMode'])assert.equal(await page.locator(`[name="${name}"]`).inputValue(),'','Upload defaults must be No change');
     assert.equal(await page.locator('[name="managementTargetListFile"]').evaluate(element=>element.files[0]?.name),'single-target.xlsx');
     assert((await page.locator('[data-management-target-feedback]').textContent()).includes('single-target.xlsx'));
     const upload=async duplicate=>{await page.locator('[name="managementTargetListFile"]').setInputFiles({name:"synthetic-targets.xlsx",mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",buffer:Buffer.from(workbook(duplicate))});await page.getByText("Выберите листы XLSX для работы",{exact:true}).waitFor();};
@@ -85,6 +89,7 @@ const {workbook}=require("./test-explicit-plan");
     try{await page.getByText(/План завершён\. Успешно: 2/).waitFor({timeout:20000});}
     catch(error){throw new Error(error.message+"\n"+JSON.stringify({jobs,errors,dialogs,body:(await page.locator("body").innerText()).slice(-6500),files:await page.evaluate(()=>[...window.__planFiles.keys()])}));}
     assert.equal(jobs.length,1);assert.deepEqual(jobs[0].selectedActions,["set_te20_auto_answer_manual"]);
+    assert(jobs[0].managementTasks.every(task=>!task.includes('http')&&!task.includes('telnet')&&!task.includes('insecure')),'Answer-only cannot include port tasks');
     assert.deepEqual(jobs[0].targetSourceSheets,["Первый","Второй"]);
     assert(dialogs.some(message=>message.includes("Обычный JSON: нет. Логи: нет.")&&message.includes("Answer mode: Вручную")));
     const saved=await page.evaluate(()=>[...window.__planFiles.entries()]);

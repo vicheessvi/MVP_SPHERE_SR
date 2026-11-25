@@ -19,6 +19,15 @@ class PollingError(RuntimeError):
     pass
 
 
+class RetiredPortActionError(PollingError):
+    code = "legacy_port_action_retired"
+
+
+def reject_legacy_port_action(tasks) -> None:
+    if "disable_insecure_management_services" in tasks:
+        raise RetiredPortActionError("Bulk HTTP/Telnet closing is retired; choose an independent explicit port action")
+
+
 class PollingCancelled(PollingError):
     code = "POLLING_CANCELLED"
 
@@ -211,6 +220,7 @@ def validate_plan_actions(plan: dict[str,Any]) -> None:
     if not isinstance(plan,dict):raise PollingError("Polling plan is invalid")
     tasks=plan.get("managementTasks") or []
     if not isinstance(tasks,list) or any(not isinstance(item,str) for item in tasks):raise PollingError("Management task selection is invalid")
+    reject_legacy_port_action(tasks)
     if (type(plan.get("collectJson",True)) is not bool or type(plan.get("collectLogs",False)) is not bool
             or plan.get("collectJson") is False and plan.get("collectLogs") is not True and not tasks):
         raise PollingError("Select at least one explicit action")
@@ -381,6 +391,7 @@ def probe_device(device: dict[str, Any], options: dict[str, Any] | None = None) 
     captured_at = utc_now()
     manifest = resolve_manifest(device)
     requested_management_tasks = [str(item) for item in settings.get("management_tasks", [])]
+    reject_legacy_port_action(requested_management_tasks)
     collect_json=settings.get("collect_json",True) is True
     collect_logs = settings.get("collect_logs") is True
     supported_management_tasks = [item for item in requested_management_tasks if resolve_management_action(device, item).get("supported")]
